@@ -16,7 +16,7 @@ final class ModpackManagerPlugin implements Plugin
 
     public function getId(): string
     {
-        return 'modpack-manager';
+        return 'arcturus-modpack-manager';
     }
 
     public function register(Panel $panel): void
