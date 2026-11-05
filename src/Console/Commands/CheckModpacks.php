@@ -9,7 +9,7 @@ use Illuminate\Console\Command;
 
 final class CheckModpacks extends Command
 {
-    protected $signature = 'modpack:check {--server= : Managed server database ID}';
+    protected $signature = 'arcturus-modpack:check {--server= : Managed server database ID}';
     protected $description = 'Check configured modpack sources for new stable releases';
 
     public function handle(ReleaseChecker $checker): int
