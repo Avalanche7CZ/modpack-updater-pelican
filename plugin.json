@@ -1,0 +1,14 @@
+{
+  "id": "modpack-manager",
+  "name": "Modpack Manager",
+  "author": "Avalanche7CZ",
+  "version": "0.1.0",
+  "description": "Safety-first modpack update planning for Pelican",
+  "category": "plugin",
+  "namespace": "Arcturus\\ModpackManager",
+  "class": "ModpackManagerPlugin",
+  "panels": [
+    "admin"
+  ],
+  "api_version": 1
+}
