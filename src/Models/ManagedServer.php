@@ -16,6 +16,8 @@ final class ManagedServer extends Model
         return [
             'enabled' => 'boolean',
             'file_rules' => 'array',
+            'preview_summary' => 'array',
+            'last_preview_at' => 'datetime',
             'last_checked_at' => 'datetime',
             'last_success_at' => 'datetime',
         ];
