@@ -6,103 +6,75 @@ require_once __DIR__ . '/../src/Services/UpdatePlanner.php';
 
 use Arcturus\ModpackManager\Services\UpdatePlanner;
 
-function hashOf(string $value): string
-{
-    return hash('sha256', $value);
+function h(string $s): string { return hash('sha256', $s); }
+function eq(mixed $want, mixed $got, string $message = ''): void {
+    if ($want !== $got) { throw new RuntimeException("{$message}: expected " . var_export($want, true) . ', got ' . var_export($got, true)); }
 }
-
-function assertAction(array $plan, string $path, string $expected): void
-{
-    foreach ($plan['changes'] as $change) {
-        if ($change['path'] === $path) {
-            if ($change['action'] !== $expected) {
-                throw new RuntimeException("{$path}: expected {$expected}, got {$change['action']}");
-            }
-            return;
-        }
-    }
-    throw new RuntimeException("Missing path: {$path}");
+function act(array $plan, string $path): string {
+    foreach ($plan['changes'] as $entry) { if ($entry['path'] === $path) { return $entry['action']; } }
+    throw new RuntimeException("Path missing: {$path}");
+}
+function fails(callable $f, string $label): void {
+    try { $f(); } catch (InvalidArgumentException|RuntimeException $e) { return; }
+    throw new RuntimeException("Expected exception: {$label}");
 }
 
 $p = new UpdatePlanner();
-$a = hashOf('base');
-$b = hashOf('target');
-$c = hashOf('custom');
-
-$plan = $p->plan(
-    [
-        'mods/A.jar' => $a,
-        'mods/B.jar' => $a,
-        'mods/C.jar' => $a,
-        'config/custom.cfg' => $a,
-        'config/merge.cfg' => $a,
-        'mods/Disabled-1.0.jar' => $a,
-        'world/level.dat' => $a,
-    ],
-    [
-        'mods/A.jar' => $a,
-        'mods/B.jar' => $c,
-        'config/custom.cfg' => $c,
-        'config/merge.cfg' => $c,
-        'mods/Disabled-1.0.jar' => $a,
-        'mods/Extra.jar' => $c,
-        'world/level.dat' => $a,
-    ],
-    [
-        'mods/A.jar' => $b,
-        'mods/B.jar' => $b,
-        'mods/New.jar' => $b,
-        'config/custom.cfg' => $b,
-        'config/merge.cfg' => $b,
-        'mods/Disabled-1.0.jar' => $b,
-        'world/level.dat' => $b,
-    ],
-    [
-        ['pattern' => 'config/custom.cfg', 'mode' => 'protect'],
-        ['pattern' => 'config/merge.cfg', 'mode' => 'merge'],
-        ['pattern' => 'mods/Disabled-*.jar', 'mode' => 'disable'],
-    ],
-);
-
+$base = [
+    'mods/update.jar' => h('a'), 'mods/conflict.jar' => h('a'),
+    'mods/old.jar' => h('a'), 'config/protected.cfg' => h('a'),
+    'config/merge.cfg' => h('a'), 'mods/Angelica-1.jar' => h('a'),
+    'world/level.dat' => h('a'), 'server.properties' => h('a'),
+];
+$local = [
+    'mods/update.jar' => h('a'), 'mods/conflict.jar' => h('custom'),
+    'config/protected.cfg' => h('custom'), 'config/merge.cfg' => h('custom'),
+    'mods/Angelica-1.jar' => h('a'), 'mods/custom.jar' => h('custom'),
+    'world/level.dat' => h('a'), 'server.properties' => h('custom'),
+];
+$target = [
+    'mods/update.jar' => h('b'), 'mods/conflict.jar' => h('b'),
+    'mods/add.jar' => h('b'), 'config/protected.cfg' => h('b'),
+    'config/merge.cfg' => h('b'), 'mods/Angelica-2.jar' => h('b'),
+    'world/level.dat' => h('b'), 'server.properties' => h('b'),
+];
+$rules = [
+    ['pattern' => 'config/protected.cfg', 'mode' => 'protect'],
+    ['pattern' => 'config/merge.cfg', 'mode' => 'merge'],
+    ['pattern' => 'mods/Angelica-*.jar', 'mode' => 'disable'],
+    ['pattern' => 'server.properties', 'mode' => 'replace'],
+];
+$plan = $p->plan($base, $local, $target, $rules);
 foreach ([
-    'mods/A.jar' => 'update',
-    'mods/B.jar' => 'conflict',
-    'mods/C.jar' => 'already_absent',
-    'mods/New.jar' => 'add',
-    'mods/Extra.jar' => 'preserve_local_extra',
-    'config/custom.cfg' => 'preserve',
-    'config/merge.cfg' => 'merge_required',
-    'mods/Disabled-1.0.jar' => 'disable_requires_enforcement',
-    'world/level.dat' => 'preserve',
-] as $path => $action) {
-    assertAction($plan, $path, $action);
+    'mods/update.jar' => 'update', 'mods/conflict.jar' => 'conflict',
+    'mods/old.jar' => 'already_absent', 'mods/add.jar' => 'add',
+    'config/protected.cfg' => 'preserve', 'config/merge.cfg' => 'merge_required',
+    'mods/Angelica-1.jar' => 'disable_requires_enforcement',
+    'mods/Angelica-2.jar' => 'skip_disabled',
+    'mods/custom.jar' => 'preserve_local_extra',
+    'world/level.dat' => 'preserve', 'server.properties' => 'preserve',
+] as $path => $expected) {
+    eq($expected, act($plan, $path), $path);
 }
+eq(3, $plan['blocked'], 'blocked count');
+eq(false, $plan['applicable'], 'applicable flag');
 
-if ($plan['blocked'] !== 3) {
-    throw new RuntimeException('Expected three blocked actions');
-}
-
-$override = $p->plan(['config/a.cfg' => $a], ['config/a.cfg' => $c], ['config/a.cfg' => $b], [
+$replace = $p->plan(['config/a.cfg' => h('a')], ['config/a.cfg' => h('custom')], ['config/a.cfg' => h('b')], [
     ['pattern' => 'config/*.cfg', 'mode' => 'protect'],
     ['pattern' => 'config/a.cfg', 'mode' => 'replace'],
 ]);
-assertAction($override, 'config/a.cfg', 'replace_with_override');
+eq('replace_with_override', act($replace, 'config/a.cfg'), 'override');
+$preserve = $p->plan(['config/a.cfg' => h('a')], ['config/a.cfg' => h('custom')], ['config/a.cfg' => h('a')]);
+eq('preserve_local_change', act($preserve, 'config/a.cfg'), 'unchanged upstream but customized');
+$deleted = $p->plan(['mods/missing.jar' => h('a')], [], ['mods/missing.jar' => h('b')]);
+eq('conflict', act($deleted, 'mods/missing.jar'), 'locally removed mod should not be re-enabled');
 
-$preserve = $p->plan(['config/a.cfg' => $a], ['config/a.cfg' => $c], ['config/a.cfg' => $a]);
-assertAction($preserve, 'config/a.cfg', 'preserve_local_change');
-
-foreach (['../escape', '/absolute', 'mods/../../escape', 'mods\\windows.jar', 'mods//double.jar'] as $unsafe) {
-    try {
-        $p->plan([], [$unsafe => $a], []);
-        throw new RuntimeException("Unsafe path accepted: {$unsafe}");
-    } catch (InvalidArgumentException $expected) {
-    }
+foreach (['../escape', '/absolute', 'mods/../../escape', 'mods\\windows.jar', 'mods//double.jar', 'C:/windows', 'mods/./foo'] as $unsafe) {
+    fails(fn() => $p->plan([], [$unsafe => h('a')], []), $unsafe);
 }
+fails(fn() => $p->plan([], ['mods/a.jar' => 'not-a-hash'], []), 'hash');
+eq(true, UpdatePlanner::matches('config/**/*.cfg', 'config/a/b/hi.cfg'), 'recursive glob');
+eq(true, UpdatePlanner::matches('config/**/*.cfg', 'config/hi.cfg'), 'zero-level recursive glob');
+eq(false, UpdatePlanner::matches('config/*.cfg', 'config/a/hi.cfg'), 'single-level glob');
 
-try {
-    $p->plan([], ['mods/unknown.jar' => 'not-a-hash'], []);
-    throw new RuntimeException('Invalid SHA-256 accepted');
-} catch (InvalidArgumentException $expected) {
-}
-
-echo "Planner tests passed.\n";
+echo "Planner tests passed\n";
