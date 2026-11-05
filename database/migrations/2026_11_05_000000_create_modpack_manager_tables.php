@@ -8,6 +8,9 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration {
     public function up(): void
     {
+        // MySQL/MariaDB utf8mb4: eight VARCHAR(2048) fields alone can exceed
+        // the 65,535-byte maximum logical row size (ERROR 1118). TEXT columns
+        // keep long URLs/paths without forcing the bytes into the row budget.
         Schema::create('modpack_manager_servers', function (Blueprint $table): void {
             $table->id();
             $table->string('label', 120);
@@ -17,20 +20,20 @@ return new class extends Migration {
             $table->string('asset_pattern', 160)->nullable();
             $table->string('installed_version', 120);
             $table->string('available_version', 120)->nullable();
-            $table->string('available_asset_url', 2048)->nullable();
+            $table->text('available_asset_url')->nullable();
             $table->string('available_asset_sha256', 64)->nullable();
-            $table->string('available_release_url', 2048)->nullable();
+            $table->text('available_release_url')->nullable();
             $table->string('policy', 16)->default('notify');
             $table->boolean('enabled')->default(true);
             $table->boolean('deploy_enabled')->default(false);
             $table->json('file_rules')->nullable();
             $table->string('worker_key', 120)->nullable();
-            $table->string('local_root', 2048)->nullable();
-            $table->string('base_manifest_path', 2048)->nullable();
-            $table->string('target_manifest_path', 2048)->nullable();
-            $table->string('staging_parent', 2048)->nullable();
-            $table->string('prepared_root', 2048)->nullable();
-            $table->string('backup_root', 2048)->nullable();
+            $table->text('local_root')->nullable();
+            $table->text('base_manifest_path')->nullable();
+            $table->text('target_manifest_path')->nullable();
+            $table->text('staging_parent')->nullable();
+            $table->text('prepared_root')->nullable();
+            $table->text('backup_root')->nullable();
             $table->string('artifact_sha256', 64)->nullable();
             $table->json('preview_summary')->nullable();
             $table->timestamp('last_preview_at')->nullable();

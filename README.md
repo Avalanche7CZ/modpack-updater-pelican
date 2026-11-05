@@ -60,6 +60,16 @@ Pelican automatically registers plugin migrations, providers, commands and views
 
 Latest install ZIP: [modpack-manager.zip](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/modpack-manager.zip). This URL becomes available once the first automatic Release has been published.
 
+## Installation troubleshooting (MySQL / MariaDB)
+
+If Pelican reports an SQL migration error containing `Row size too large` (MySQL/MariaDB error 1118) while creating `modpack_manager_servers`, you have an old plugin package: its initial migration used eight `VARCHAR(2048)` fields. With `utf8mb4`, those fields alone can exceed MySQL's 65,535-byte logical row limit.
+
+**Fix:** Download the newest `modpack-manager.zip` from [Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), re-import it in Pelican and retry installation. The corrected migration uses `TEXT` for long URLs and filesystem paths. A failed installation normally remains in the `NotInstalled` state, and can be retried after replacing the plugin's files.
+
+Do **not** run `migrate:fresh` or drop Pelican tables to solve this. If a retry reports `table already exists`, inspect the full error and migration state first: a previous partial installation could have created some tables before failing.
+
+This schema change has an offline regression check, but the exact Pelican/Wings integration should still be verified on the operator's installation.
+
 ## Environment
 
 Set these values on the Pelican **panel/queue worker host**, never in GitHub. Restart the queue workers after changes.
