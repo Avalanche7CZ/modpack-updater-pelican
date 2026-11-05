@@ -22,6 +22,7 @@ return new class extends Migration {
             $table->string('available_release_url', 2048)->nullable();
             $table->string('policy', 16)->default('notify');
             $table->boolean('enabled')->default(true);
+            $table->boolean('deploy_enabled')->default(false);
             $table->json('file_rules')->nullable();
             $table->string('worker_key', 120)->nullable();
             $table->string('local_root', 2048)->nullable();
