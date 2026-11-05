@@ -12,7 +12,8 @@ use Throwable;
 /**
  * Local-node, OFFLINE-ONLY deployment of a trusted, already unpacked server pack.
  *
- * Full backup is taken before any modification. No shell execution, downloads,
+ * Filesystem mode takes a full local snapshot; Pelican mode uses an externally
+ * verified locked Pelican backup before any modification. No shell execution, downloads,
  * ZIP extraction, symlink following, or Pelican power controls are performed here.
  *
  * Caller MUST verify the Pelican server is stopped and the pack source is trusted.
@@ -32,7 +33,7 @@ final class LocalDeployment
      * @param array<string,string> $base
      * @param array<string,string> $target
      * @param list<array{pattern:string,mode:string}> $rules
-     * @return array{backup:string,modified:list<string>,plan:array<string,mixed>}
+     * @return array{backup:?string,external_backup_uuid:?string,modified:list<string>,plan:array<string,mixed>}
      */
     public function apply(
         string $liveRoot,
@@ -41,7 +42,8 @@ final class LocalDeployment
         array $base,
         array $target,
         array $rules,
-        bool $offlineConfirmed = false
+        bool $offlineConfirmed = false,
+        ?string $verifiedPelicanBackupUuid = null
     ): array {
         if (!$offlineConfirmed) {
             throw new RuntimeException('Server stop must be explicitly confirmed before deployment');
@@ -51,8 +53,19 @@ final class LocalDeployment
         }
         $live = $this->root($liveRoot);
         $stage = $this->root($stagedRoot);
-        $backups = $this->root($backupParent);
-        $this->checkSeparate($live, $stage, $backups);
+        // Only the Pelican-integrated job may supply a previously completed
+        // backup UUID. The standalone CLI always uses a local snapshot.
+        if ($verifiedPelicanBackupUuid !== null &&
+            preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iD',
+                $verifiedPelicanBackupUuid) !== 1) {
+            throw new RuntimeException('Invalid external Pelican backup reference');
+        }
+        $backups = $verifiedPelicanBackupUuid === null ? $this->root($backupParent) : null;
+        if ($backups === null) {
+            $this->checkSeparate($live, $stage);
+        } else {
+            $this->checkSeparate($live, $stage, $backups);
+        }
         $lockPath = dirname($live) . '/.' . basename($live) . '.modpack-manager.lock';
         if (is_link($lockPath)) {
             throw new RuntimeException('Unsafe lock file');
@@ -92,17 +105,22 @@ final class LocalDeployment
                 }
             }
 
-            $name = basename($live) . '-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(4));
-            $backup = $backups . '/' . $name;
-            if (!@mkdir($backup, 0700)) {
-                throw new RuntimeException('Could not create backup directory');
+            $backup = null;
+            if ($backups !== null) {
+                $name = basename($live) . '-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(4));
+                $backup = $backups . '/' . $name;
+                if (!@mkdir($backup, 0700)) {
+                    throw new RuntimeException('Could not create backup directory');
+                }
             }
             $modified = [];
             try {
-                $this->copyTree($live, $backup);
-                $backupChecks = $this->inventory->hashPaths($backup, array_keys($local));
-                if ($backupChecks !== $local) {
-                    throw new RuntimeException('Full backup verification failed');
+                if ($backup !== null) {
+                    $this->copyTree($live, $backup);
+                    $backupChecks = $this->inventory->hashPaths($backup, array_keys($local));
+                    if ($backupChecks !== $local) {
+                        throw new RuntimeException('Full backup verification failed');
+                    }
                 }
 
                 foreach ($mutations as $entry) {
@@ -127,20 +145,35 @@ final class LocalDeployment
                         throw new RuntimeException("Post-install hash mismatch: {$path}");
                     }
                 }
-                $metadata = [
-                    'schema' => 1,
-                    'original_root' => $live,
-                    'date' => gmdate(DATE_ATOM),
-                    'changed_paths' => $modified,
-                    'status' => 'completed',
-                ];
-                $written = @file_put_contents($backup . '/.modpack-manager-backup.json',
-                    json_encode($metadata, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
-                if ($written === false) {
-                    throw new RuntimeException('Could not save backup metadata');
+                if ($backup !== null) {
+                    $metadata = [
+                        'schema' => 1,
+                        'original_root' => $live,
+                        'date' => gmdate(DATE_ATOM),
+                        'changed_paths' => $modified,
+                        'status' => 'completed',
+                    ];
+                    $written = @file_put_contents($backup . '/.modpack-manager-backup.json',
+                        json_encode($metadata, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+                    if ($written === false) {
+                        throw new RuntimeException('Could not save backup metadata');
+                    }
                 }
-                return ['backup' => $backup, 'modified' => $modified, 'plan' => $plan];
+                return [
+                    'backup' => $backup,
+                    'external_backup_uuid' => $verifiedPelicanBackupUuid,
+                    'modified' => $modified, 'plan' => $plan,
+                ];
             } catch (Throwable $error) {
+                if ($backup === null) {
+                    // Do NOT attempt to restore a Pelican snapshot as ordinary
+                    // files. The orchestrator must request Pelican's full restore.
+                    throw new RuntimeException(
+                        'Deployment failed; Pelican restore required (backup ' .
+                        $verifiedPelicanBackupUuid . '): ' . $error->getMessage(),
+                        previous: $error
+                    );
+                }
                 // Restore every touched file from the verified pre-update snapshot.
                 $failures = [];
                 foreach (array_reverse($modified) as $path) {
