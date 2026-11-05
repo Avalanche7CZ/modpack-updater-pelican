@@ -27,7 +27,7 @@ final class PreviewService
         if (!$root || !is_dir($root) || is_link($server->local_root)) {
             throw new RuntimeException('Live root is not accessible or is a symlink');
         }
-        $allowed = (array) config('modpack-manager.allowed_live_roots', []);
+        $allowed = (array) config('arcturus-modpack-manager.allowed_live_roots', []);
         $accepted = false;
         foreach ($allowed as $candidate) {
             $canonical = realpath($candidate);
@@ -38,7 +38,7 @@ final class PreviewService
             }
         }
         if (!$accepted) {
-            throw new RuntimeException('Live root is not inside MODPACK_MANAGER_ALLOWED_LIVE_ROOTS');
+            throw new RuntimeException('Live root is not inside ARCTURUS_MODPACK_MANAGER_ALLOWED_LIVE_ROOTS');
         }
         $base = $this->manifests->load($server->base_manifest_path);
         $target = $this->manifests->load($server->target_manifest_path);
