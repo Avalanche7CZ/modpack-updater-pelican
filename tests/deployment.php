@@ -112,6 +112,22 @@ try {
     verify(file_get_contents("$live/mods/A.jar") === 'local changed',
         'Conflict did not preserve local mod');
 
+    // A full rollback restores the exact pre-update snapshot, including world
+    // and config files, without deleting the failed post-update installation.
+    try {
+        $worker->restore($live, $result['backup']);
+        throw new RuntimeException('Unconfirmed rollback accepted');
+    } catch (RuntimeException $e) {
+        verify(str_contains($e->getMessage(), 'Offline confirmation'), 'Unsafe rollback refusal');
+    }
+    $displaced = $worker->restore($live, $result['backup'], true);
+    verify(is_dir($displaced), 'Failed installation was not retained');
+    verify(file_get_contents("$live/mods/A.jar") === 'old', 'Rollback did not restore old mod');
+    verify(is_file("$live/mods/Removed.jar"), 'Rollback did not restore removed mod');
+    verify(!file_exists("$live/mods/Added.jar"), 'Rollback kept added mod');
+    verify(file_get_contents("$live/config/local.cfg") === 'custom', 'Rollback damaged local config');
+    verify(file_get_contents("$live/world/level.dat") === 'my world must survive', 'Rollback damaged world');
+
     echo "Offline deployment tests passed\n";
 } finally {
     removeTree($root);
