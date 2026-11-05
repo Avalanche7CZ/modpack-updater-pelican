@@ -111,7 +111,7 @@
                                                 wire:click="prepareOne({{ $server->id }})" wire:confirm="Prepare the release in staging? The live server will not be modified."
                                                 wire:loading.attr="disabled">Prepare</button>
                                         @endif
-                                        @if($server->deploy_enabled && config('modpack-manager.enable_deploy', false) && $server->prepared_root && $server->target_manifest_path)
+                                        @if($server->deploy_enabled && config('arcturus-modpack-manager.enable_deploy', false) && $server->prepared_root && $server->target_manifest_path)
                                             <button class="mpm-button" type="button"
                                                 wire:click="deployOne({{ $server->id }})"
                                                 wire:confirm="This will stop the Minecraft server, update files and restart it. Continue?"
