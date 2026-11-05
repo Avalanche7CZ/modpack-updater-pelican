@@ -82,6 +82,8 @@ final class ManagedServerResource extends Resource
                         ->options(['notify' => 'Notify only', 'approve' => 'Require admin approval',
                             'auto' => 'Auto (requires verified worker)']),
                     Toggle::make('enabled')->label('Monitor this server')->default(true),
+                    Toggle::make('deploy_enabled')->label('Allow deployment for this server')->default(false)
+                        ->helperText('Also requires MODPACK_MANAGER_ENABLE_DEPLOY=1 and a verified Wings volume mapping.'),
                 ]),
             Section::make('Local preview (advanced)')
                 ->description('Optional single-host setup. The panel must have read-only access to the Wings volume. Leave blank for remote nodes.')
