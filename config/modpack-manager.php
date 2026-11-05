@@ -4,6 +4,9 @@ declare(strict_types=1);
 return [
     // The plugin never updates a server just because a release exists.
     'automatic_deploy' => (bool) env('MODPACK_MANAGER_AUTOMATIC_DEPLOY', false),
+    'enable_deploy' => (bool) env('MODPACK_MANAGER_ENABLE_DEPLOY', false),
+    'ftb_installer_binary' => env('MODPACK_MANAGER_FTB_INSTALLER_BINARY'),
+    'max_archive_bytes' => (int) env('MODPACK_MANAGER_MAX_ARCHIVE_BYTES', 8589934592),
     'discord_webhook' => env('MODPACK_MANAGER_DISCORD_WEBHOOK'),
     'discord_events' => (bool) env('MODPACK_MANAGER_DISCORD_EVENTS', true),
     'user_agent' => 'Pelican-Modpack-Manager/0.2 (+https://github.com/Avalanche7CZ/modpack-updater-pelican)',
