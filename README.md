@@ -1,8 +1,8 @@
-# Pelican Arcturus Modpack Manager
+# Arcturus Modpack Manager
 
 Pelican plugin for Minecraft modpack release checks, protected config changes, file-diff previews, staged updates, native Pelican Backups and Discord notifications.
 
-**Status: 0.2.0 development / experimental.** Do not deploy to production until tested on the exact Panel and Wings version. The plugin does not modify Pelican core or require new eggs.
+**Status: 0.3.x development / experimental.** Do not deploy to production until tested on the exact Panel and Wings version. The plugin does not modify Pelican core or require new eggs.
 
 ## Features
 
@@ -51,7 +51,7 @@ Pelican automatically registers plugin migrations, providers, commands and views
 
 - On every push/merge commit to `main`, **Auto Release — Pelican plugin** runs PHP lint, planner, inventory, backup-safety and deployment regression tests plus a CLI smoke test.
 - Only after tests pass, the job packages the correct ZIP and publishes a numbered GitHub Release with `arcturus-modpack-manager.zip`, `update.json` and `SHA256SUMS.txt`.
-- Versions are generated from the major/minor in the repository's `plugin.json` and a monotonically increasing workflow run number (for example, `0.2.1`, `0.2.2`). The ZIP's `plugin.json` uses the actual release version. Tags are `vX.Y.Z`.
+- Versions are generated from the major/minor in the repository's `plugin.json` and a monotonically increasing workflow run number (for example, `0.3.1`, `0.3.2`). The ZIP's `plugin.json` uses the actual release version. Tags are `vX.Y.Z`.
 - The repository's `plugin.json` has `update_url` set to the stable URL:
   `https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/update.json`.
 - The feed tells Pelican which exact tagged ZIP to download and supplies its SHA-256 hash. Pelican's plugin page can then offer **Update** after a new release is published (the panel may cache update checks for a few minutes).
@@ -62,7 +62,7 @@ Latest install ZIP: [arcturus-modpack-manager.zip](https://github.com/Avalanche7
 
 ## Installation troubleshooting (MySQL / MariaDB)
 
-If Pelican reports an SQL migration error containing `Row size too large` (MySQL/MariaDB error 1118) while creating `arcturus_modpack_servers`, you have an old plugin package: its initial migration used eight `VARCHAR(2048)` fields. With `utf8mb4`, those fields alone can exceed MySQL's 65,535-byte logical row limit.
+If Pelican reports an SQL migration error containing `Row size too large` (MySQL/MariaDB error 1118), you may be installing one of the earlier Arcturus packages under the conflicting `modpack-manager` ID. Those packages created `modpack_manager_servers` with eight `VARCHAR(2048)` fields. With `utf8mb4`, those fields alone can exceed MySQL's 65,535-byte logical row limit.
 
 **Fix:** Download the newest `arcturus-modpack-manager.zip` from [Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), re-import it in Pelican and retry installation. The corrected migration uses `TEXT` for long URLs and filesystem paths. A failed installation normally remains in the `NotInstalled` state, and can be retried after replacing the plugin's files.
 
