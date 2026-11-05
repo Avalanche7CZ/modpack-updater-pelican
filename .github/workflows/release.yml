@@ -1,0 +1,126 @@
+name: Auto Release — Pelican plugin
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serial publishing prevents competing release/tag writes.
+concurrency:
+  group: pelican-plugin-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: zip
+          coverage: none
+          tools: none
+      - name: PHP lint and offline regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src bin tests -name '*.php' -print0 | xargs -0 -n1 php -l
+          php tests/planner.php
+          php tests/inventory.php
+          php tests/deployment.php
+          php tests/backup_safety.php
+          php tests/backup_exclusions.php
+          php tests/preserved_folders.php
+      - name: CLI dry-run smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TEMP_DIR"' EXIT
+          mkdir -p "$TEMP_DIR/base/mods" "$TEMP_DIR/target/mods" "$TEMP_DIR/live/mods"
+          printf old > "$TEMP_DIR/base/mods/A.jar"
+          printf new > "$TEMP_DIR/target/mods/A.jar"
+          printf old > "$TEMP_DIR/live/mods/A.jar"
+          php bin/modpack.php manifest "$TEMP_DIR/base" 1.0 > "$TEMP_DIR/base.json"
+          php bin/modpack.php manifest "$TEMP_DIR/target" 2.0 > "$TEMP_DIR/target.json"
+          php bin/modpack.php preview "$TEMP_DIR/base.json" "$TEMP_DIR/target.json" "$TEMP_DIR/live" > "$TEMP_DIR/preview.json"
+          php -r '$p=json_decode(file_get_contents($argv[1]),true); if (($p["counts"]["update"] ?? 0) !== 1 || $p["blocked"] !== 0) exit(1);' "$TEMP_DIR/preview.json"
+
+  release:
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: zip
+          coverage: none
+          tools: none
+      - name: Compute next unique semantic version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE="$(php -r '$p=json_decode(file_get_contents("plugin.json"),true,512,JSON_THROW_ON_ERROR); echo $p["version"];')"
+          if [[ ! "$BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "plugin.json version must be numeric MAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          MAJOR="$(echo "$BASE" | cut -d. -f1)"
+          MINOR="$(echo "$BASE" | cut -d. -f2)"
+          PATCH="$(echo "$BASE" | cut -d. -f3)"
+          VERSION="$MAJOR.$MINOR.$((10#$PATCH + GITHUB_RUN_NUMBER))"
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          LATEST="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          if [[ -n "$LATEST" && "$LATEST" != "$TAG" ]]; then
+            php -r '
+              if (version_compare(ltrim($argv[1], "v"), ltrim($argv[2], "v"), "<=")) {
+                  fwrite(STDERR, "Computed release is not newer than the latest published release\n"); exit(1);
+              }
+            ' "$TAG" "$LATEST"
+          fi
+      - name: Assemble and validate installable ZIP and update feed
+        shell: bash
+        run: |
+          bash scripts/build-release.sh "${{ steps.version.outputs.version }}" "${{ steps.version.outputs.tag }}" "$GITHUB_REPOSITORY"
+          unzip -tq dist/modpack-manager.zip
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+      - name: Publish GitHub Release with Pelican ZIP
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists (rerun); skipping duplicate publication."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            dist/modpack-manager.zip \
+            dist/update.json \
+            dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --latest \
+            --title "Pelican Modpack Manager ${{ steps.version.outputs.version }}" \
+            --notes "Automatically published from main commit $GITHUB_SHA.
+
+          Install: download modpack-manager.zip and import in Pelican Admin → Plugins.
+          Update feed: update.json is consumed by Pelican's built-in plugin updater.
+          Safety: experimental plugin; Minecraft auto-deploy remains disabled by default."
