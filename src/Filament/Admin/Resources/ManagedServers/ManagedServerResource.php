@@ -48,9 +48,15 @@ final class ManagedServerResource extends Resource
                 ->description('Bind an existing Pelican server. Checking releases never restarts it.')
                 ->columns(2)->schema([
                     TextInput::make('label')->label('Display name')->required()->maxLength(120),
-                    TextInput::make('pelican_server_uuid')->label('Pelican server UUID')
-                        ->helperText('Use the existing server UUID; this does not create a new server.')
-                        ->required()->regex('/^[A-Za-z0-9-]{8,64}$/D')->unique(ignoreRecord: true),
+                    Select::make('pelican_server_uuid')->label('Existing Pelican server')
+                        ->required()->searchable()->native(false)
+                        ->options(fn (): array => \App\Models\Server::query()
+                            ->orderBy('name')->get(['uuid', 'name'])
+                            ->mapWithKeys(fn ($server) => [
+                                $server->uuid => $server->name . ' · ' . $server->uuid,
+                            ])->all())
+                        ->helperText('This binds an existing server. It does not create or reinstall it.')
+                        ->unique(ignoreRecord: true),
                     Select::make('provider')->label('Provider')->required()
                         ->options([
                             'ftb' => 'FTB · Feed The Beast',
