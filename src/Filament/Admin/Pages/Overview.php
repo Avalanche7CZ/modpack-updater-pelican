@@ -17,10 +17,11 @@ final class Overview extends Page
 {
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-arrow-path-rounded-square';
     protected static ?int $navigationSort = 1;
-    protected static ?string $title = 'Modpack Manager';
-    protected string $view = 'modpack-manager::overview';
+    protected static ?string $title = 'Arcturus Modpack Manager';
+    protected static ?string $slug = 'arcturus-modpack-manager';
+    protected string $view = 'arcturus-modpack-manager::overview';
 
-    public static function getNavigationGroup(): ?string { return 'Modpack Manager'; }
+    public static function getNavigationGroup(): ?string { return 'Arcturus Modpack Manager'; }
     public static function getNavigationLabel(): string { return 'Overview'; }
 
     public static function canAccess(): bool
@@ -75,7 +76,7 @@ final class Overview extends Page
     public function deployOne(int $serverId): void
     {
         $server = ManagedServer::findOrFail($serverId);
-        if (!$server->deploy_enabled || !config('modpack-manager.enable_deploy', false) ||
+        if (!$server->deploy_enabled || !config('arcturus-modpack-manager.enable_deploy', false) ||
             !$server->prepared_root || !$server->target_manifest_path) {
             Notification::make()->title('Deployment is not configured')->danger()->send();
             return;
