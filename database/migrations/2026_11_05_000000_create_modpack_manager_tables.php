@@ -27,6 +27,10 @@ return new class extends Migration {
             $table->string('local_root', 2048)->nullable();
             $table->string('base_manifest_path', 2048)->nullable();
             $table->string('target_manifest_path', 2048)->nullable();
+            $table->string('staging_parent', 2048)->nullable();
+            $table->string('prepared_root', 2048)->nullable();
+            $table->string('backup_root', 2048)->nullable();
+            $table->string('artifact_sha256', 64)->nullable();
             $table->json('preview_summary')->nullable();
             $table->timestamp('last_preview_at')->nullable();
             $table->timestamp('last_checked_at')->nullable();
