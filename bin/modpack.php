@@ -18,6 +18,7 @@ Usage:
   php bin/modpack.php manifest <unpacked-release-dir> <version>
   php bin/modpack.php preview <base.json> <target.json> <live-dir> [rules.json]
   php bin/modpack.php deploy <base.json> <target.json> <live-dir> <staged-dir> <backup-dir> <rules.json|-> --offline-confirmed
+  php bin/modpack.php rollback <live-dir> <backup-snapshot-dir> --offline-confirmed
 
 The deploy command MUST run directly on the Wings node after the server is stopped.
 It does not stop/restart Minecraft or fetch releases. The full verified backup is
@@ -80,6 +81,13 @@ try {
             'target_version' => $target['version'],
             'backup_directory' => $result['backup'],
             'modified_paths' => $result['modified'],
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";
+    } elseif ($action === 'rollback' && $argc === 5 && $argv[4] === '--offline-confirmed') {
+        $failedRoot = (new LocalDeployment())->restore($argv[2], $argv[3], true);
+        echo json_encode([
+            'status' => 'restored_offline',
+            'displaced_failed_installation' => $failedRoot,
+            'notice' => 'Snapshot restored. Start the server manually and verify compatibility.',
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";
     } else {
         usage();
