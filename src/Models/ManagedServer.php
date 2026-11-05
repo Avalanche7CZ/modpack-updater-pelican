@@ -17,6 +17,7 @@ final class ManagedServer extends Model
             'enabled' => 'boolean',
             'deploy_enabled' => 'boolean',
             'file_rules' => 'array',
+            'backup_excluded_directories' => 'array',
             'preview_summary' => 'array',
             'last_preview_at' => 'datetime',
             'last_checked_at' => 'datetime',
