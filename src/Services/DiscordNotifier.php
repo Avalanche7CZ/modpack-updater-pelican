@@ -11,10 +11,10 @@ final class DiscordNotifier
 {
     public function announce(ManagedServer $server, string $kind, string $message): void
     {
-        if (!config('modpack-manager.discord_events', true)) {
+        if (!config('arcturus-modpack-manager.discord_events', true)) {
             return;
         }
-        $webhook = config('modpack-manager.discord_webhook');
+        $webhook = config('arcturus-modpack-manager.discord_webhook');
         if (!$webhook) {
             return;
         }
