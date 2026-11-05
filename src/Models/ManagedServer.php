@@ -15,6 +15,7 @@ final class ManagedServer extends Model
     {
         return [
             'enabled' => 'boolean',
+            'deploy_enabled' => 'boolean',
             'file_rules' => 'array',
             'preview_summary' => 'array',
             'last_preview_at' => 'datetime',
