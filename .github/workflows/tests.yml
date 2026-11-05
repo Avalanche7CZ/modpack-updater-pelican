@@ -1,0 +1,24 @@
+name: Planner tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  php-planner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: none
+          coverage: none
+      - name: Check syntax
+        run: |
+          php -l src/ModpackManagerPlugin.php
+          php -l src/Services/UpdatePlanner.php
+          php -l tests/planner.php
+      - name: Run planner tests
+        run: php tests/planner.php
