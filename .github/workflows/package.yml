@@ -1,0 +1,28 @@
+name: Build Pelican plugin ZIP
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble plugin directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/modpack-manager
+          cp plugin.json README.md dist/modpack-manager/
+          cp -R src config database resources bin examples dist/modpack-manager/
+          cd dist
+          zip -qr modpack-manager.zip modpack-manager
+          unzip -l modpack-manager.zip | grep -q 'modpack-manager/plugin.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pelican-modpack-manager-plugin
+          path: dist/modpack-manager.zip
+          if-no-files-found: error
+          retention-days: 14
