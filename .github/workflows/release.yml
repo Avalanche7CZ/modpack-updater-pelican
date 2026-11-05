@@ -39,6 +39,7 @@ jobs:
           php tests/backup_exclusions.php
           php tests/preserved_folders.php
           php tests/migration_schema.php
+          php tests/plugin_identity.php
       - name: CLI dry-run smoke test
         shell: bash
         run: |
