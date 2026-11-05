@@ -32,8 +32,9 @@ final class ManagedServerResource extends Resource
     protected static ?string $model = ManagedServer::class;
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-server-stack';
     protected static ?int $navigationSort = 2;
+    protected static ?string $slug = 'arcturus-managed-modpacks';
 
-    public static function getNavigationGroup(): ?string { return 'Modpack Manager'; }
+    public static function getNavigationGroup(): ?string { return 'Arcturus Modpack Manager'; }
     public static function getNavigationLabel(): string { return 'Managed servers'; }
     public static function getModelLabel(): string { return 'managed server'; }
     public static function getPluralModelLabel(): string { return 'managed servers'; }
@@ -86,14 +87,14 @@ final class ManagedServerResource extends Resource
                             'auto' => 'Auto (requires verified worker)']),
                     Toggle::make('enabled')->label('Monitor this server')->default(true),
                     Toggle::make('deploy_enabled')->label('Allow deployment for this server')->default(false)
-                        ->helperText('Also requires MODPACK_MANAGER_ENABLE_DEPLOY=1 and a verified Wings volume mapping.'),
+                        ->helperText('Also requires ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY=1 and a verified Wings volume mapping.'),
                 ]),
             Section::make('Local preview (advanced)')
                 ->description('Optional single-host setup. The panel must have read-only access to the Wings volume. Leave blank for remote nodes.')
                 ->collapsible()->collapsed()->columns(1)->schema([
                     TextInput::make('local_root')->label('Live server directory')->maxLength(2048)
                         ->placeholder('/var/lib/pelican/volumes/server-uuid')
-                        ->helperText('Must be within the operator-configured MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.'),
+                        ->helperText('Must be within the operator-configured ARCTURUS_MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.'),
                     TextInput::make('base_manifest_path')->label('Verified installed-release manifest')->maxLength(2048),
                     TextInput::make('target_manifest_path')->label('Verified target-release manifest')->maxLength(2048),
                     TextInput::make('staging_parent')->label('Staging parent (host)')->maxLength(2048),
@@ -186,7 +187,7 @@ final class ManagedServerResource extends Resource
                 ->modalDescription('Requires a verified backup path and local Wings mount. A failed start triggers rollback.')
                 ->visible(fn (ManagedServer $record) => $record->prepared_root &&
                     $record->target_manifest_path && $record->deploy_enabled &&
-                    config('modpack-manager.enable_deploy', false))
+                    config('arcturus-modpack-manager.enable_deploy', false))
                 ->action(function (ManagedServer $record): void {
                     DeployManagedServer::dispatch($record->id, false);
                     Notification::make()->title('Managed deployment queued')
