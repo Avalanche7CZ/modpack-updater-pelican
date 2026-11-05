@@ -37,7 +37,7 @@ final class ManagedServerResource extends Resource
     public static function canViewAny(): bool
     {
         // Plugin is admin-panel only. No client/subuser permissions are inherited.
-        return auth()->check() && (bool) (auth()->user()->root_admin ?? false);
+        return auth()->check() && (bool) auth()->user()->isRootAdmin();
     }
 
     public static function form(Schema $schema): Schema
