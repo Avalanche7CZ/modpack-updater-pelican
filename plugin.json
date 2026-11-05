@@ -11,5 +11,6 @@
     "admin"
   ],
   "api_version": 1,
-  "url": "https://github.com/Avalanche7CZ/modpack-updater-pelican"
+  "url": "https://github.com/Avalanche7CZ/modpack-updater-pelican",
+  "update_url": "https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/update.json"
 }
