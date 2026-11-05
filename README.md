@@ -29,9 +29,11 @@ Pelican plugin for Minecraft modpack release checks, protected config changes, f
 
 ## Install
 
-GitHub Actions uploads **pelican-modpack-manager-plugin** as a ZIP artifact. The ZIP has a root folder named **modpack-manager**, matching the plugin ID.
+Every successful commit to **main** automatically publishes a GitHub Release with the verified **modpack-manager.zip** installer. Download it from [GitHub Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), not the source-code ZIP GitHub generates automatically.
 
-Import that ZIP in Pelican Admin → Plugins → Import, then Install. For manual installation, copy plugin.json and the src, config, database, resources and bin folders to:
+The plugin ZIP has one top-level folder named **modpack-manager**, matching the `plugin.json` ID. The same release also includes `SHA256SUMS.txt` and `update.json`. The archive's embedded `plugin.json` gets a distinct semantic version for each release; the published checksum matches that exact ZIP. GitHub Actions also builds a preview artifact for PRs, but the release ZIP is the supported installable distribution.
+
+Import **modpack-manager.zip** in Pelican Admin → Plugins → Import, then Install. For manual installation, copy plugin.json and the src, config, database, resources and bin folders to:
 
 ~~~text
 /var/www/pelican/plugins/modpack-manager/
@@ -44,6 +46,19 @@ php artisan p:plugin:install modpack-manager
 ~~~
 
 Pelican automatically registers plugin migrations, providers, commands and views. The plugin is limited to the admin panel and its resources are limited to root administrators.
+
+## Automatic GitHub Releases and Pelican updates
+
+- On every push/merge commit to `main`, **Auto Release — Pelican plugin** runs PHP lint, planner, inventory, backup-safety and deployment regression tests plus a CLI smoke test.
+- Only after tests pass, the job packages the correct ZIP and publishes a numbered GitHub Release with `modpack-manager.zip`, `update.json` and `SHA256SUMS.txt`.
+- Versions are generated from the major/minor in the repository's `plugin.json` and a monotonically increasing workflow run number (for example, `0.2.1`, `0.2.2`). The ZIP's `plugin.json` uses the actual release version. Tags are `vX.Y.Z`.
+- The repository's `plugin.json` has `update_url` set to the stable URL:
+  `https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/update.json`.
+- The feed tells Pelican which exact tagged ZIP to download and supplies its SHA-256 hash. Pelican's plugin page can then offer **Update** after a new release is published (the panel may cache update checks for a few minutes).
+- **Important:** This update feed requires an anonymously accessible GitHub Release. For private repositories, Pelican cannot fetch the public `releases/latest/download` URL without separate authentication. Source-code ZIP archives are **not** Pelican installation packages.
+- No commit or GitHub Release automatically changes a running Pelican installation or Minecraft server. Installing/updating the plugin remains an admin decision; Minecraft auto-deploy is separately disabled by default.
+
+Latest install ZIP: [modpack-manager.zip](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/modpack-manager.zip). This URL becomes available once the first automatic Release has been published.
 
 ## Environment
 
@@ -185,7 +200,7 @@ php tests/inventory.php
 php tests/deployment.php
 ~~~
 
-GitHub Actions runs these tests, a CLI smoke test and builds the plugin ZIP. **CI does not test an actual Pelican installation, Wings daemon or Minecraft boot.** Live integration remains required before enabling deployment.
+GitHub Actions runs these tests, a CLI smoke test and validates the plugin ZIP before each release. **CI does not test an actual Pelican installation, Wings daemon or Minecraft boot.** Live integration remains required before enabling deployment.
 
 ## Safety limitations
 
