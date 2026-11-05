@@ -89,11 +89,46 @@
                                 </td>
                                 <td><span class="mpm-tag">{{ ucfirst($server->policy) }}</span></td>
                                 <td>
-                                    <button class="mpm-button" type="button" wire:click="checkOne({{ $server->id }})" wire:loading.attr="disabled">
-                                        Check
-                                    </button>
+                                    <div class="mpm-inline">
+                                        <button class="mpm-button" type="button" wire:click="checkOne({{ $server->id }})" wire:loading.attr="disabled">
+                                            Check
+                                        </button>
+                                        <button class="mpm-button" type="button" wire:click="previewOne({{ $server->id }})" wire:loading.attr="disabled">
+                                            Preview
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
+                            @if($server->preview_summary)
+                                <tr wire:key="mpm-preview-{{ $server->id }}">
+                                    <td colspan="4" style="padding-top:0">
+                                        <details>
+                                            <summary class="mpm-muted" style="cursor:pointer">
+                                                Last dry-run: {{ $server->preview_summary['from'] ?? '?' }}
+                                                → {{ $server->preview_summary['to'] ?? '?' }} ·
+                                                {{ $server->preview_summary['blocked'] ?? 0 }} unresolved ·
+                                                {{ $server->last_preview_at?->diffForHumans() }}
+                                            </summary>
+                                            <div style="padding:12px 0;max-height:320px;overflow:auto">
+                                                <div class="mpm-inline" style="margin-bottom:10px">
+                                                @foreach(($server->preview_summary['counts'] ?? []) as $action => $count)
+                                                    <span class="mpm-tag">{{ $action }}: {{ $count }}</span>
+                                                @endforeach
+                                                </div>
+                                                <table class="mpm-table">
+                                                    <thead><tr><th>File path</th><th>Planned action</th></tr></thead>
+                                                    <tbody>
+                                                    @foreach(($server->preview_summary['sample'] ?? []) as $change)
+                                                        <tr><td><code style="word-break:break-all">{{ $change['path'] ?? '' }}</code></td>
+                                                            <td><span class="mpm-tag {{ !empty($change['blocked']) ? 'mpm-tag-danger' : '' }}">{{ $change['action'] ?? '' }}</span></td></tr>
+                                                    @endforeach
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </details>
+                                    </td>
+                                </tr>
+                            @endif
                         @endforeach
                         </tbody>
                     </table>
