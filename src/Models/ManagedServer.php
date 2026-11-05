@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 final class ManagedServer extends Model
 {
-    protected $table = 'modpack_manager_servers';
+    protected $table = 'arcturus_modpack_servers';
     protected $guarded = ['id'];
 
     protected function casts(): array
