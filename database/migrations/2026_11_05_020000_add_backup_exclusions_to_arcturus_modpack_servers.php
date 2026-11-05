@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration {
     public function up(): void
     {
-        Schema::table('modpack_manager_servers', function (Blueprint $table): void {
+        Schema::table('arcturus_modpack_servers', function (Blueprint $table): void {
             // NULL inherits defaults for servers already configured before this migration.
             $table->json('backup_excluded_directories')->nullable();
         });
@@ -16,7 +16,7 @@ return new class extends Migration {
 
     public function down(): void
     {
-        Schema::table('modpack_manager_servers', function (Blueprint $table): void {
+        Schema::table('arcturus_modpack_servers', function (Blueprint $table): void {
             $table->dropColumn('backup_excluded_directories');
         });
     }

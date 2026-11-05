@@ -9,7 +9,7 @@ declare(strict_types=1);
  * verified against the operator's Pelican MariaDB/MySQL.
  */
 $migration = file_get_contents(
-    __DIR__ . '/../database/migrations/2026_11_05_000000_create_modpack_manager_tables.php'
+    __DIR__ . '/../database/migrations/2026_11_05_000000_create_arcturus_modpack_tables.php'
 );
 if (!is_string($migration)) {
     throw new RuntimeException('Cannot load initial plugin schema');

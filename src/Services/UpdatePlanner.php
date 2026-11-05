@@ -12,7 +12,7 @@ final class UpdatePlanner
     /** Runtime data is never package-owned, including with an explicit replace rule. */
     private const RUNTIME_DIRS = [
         'world', 'world_nether', 'world_the_end', 'logs', 'crash-reports',
-        'backups', '.modpack-manager', 'DIM-1', 'DIM1', 'saves',
+        'backups', '.arcturus-modpack-manager', 'DIM-1', 'DIM1', 'saves',
     ];
     private const RUNTIME_FILES = [
         'server.properties', 'eula.txt', 'ops.json', 'whitelist.json',

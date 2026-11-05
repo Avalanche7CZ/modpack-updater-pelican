@@ -31,7 +31,7 @@ final class PrepareRelease
         if (!$staging || is_link($server->staging_parent) || !is_dir($staging)) {
             throw new RuntimeException('Staging parent must be an existing real directory');
         }
-        $allow = (array) config('modpack-manager.allowed_live_roots', []);
+        $allow = (array) config('arcturus-modpack-manager.allowed_live_roots', []);
         $live = realpath((string) $server->local_root);
         if (!$live || !is_dir($live) || is_link($server->local_root)) {
             throw new RuntimeException('Live root must exist for update preparation');
@@ -50,10 +50,10 @@ final class PrepareRelease
             }
         }
         if (!$allowed) {
-            throw new RuntimeException('Live root is not within MODPACK_MANAGER_ALLOWED_LIVE_ROOTS');
+            throw new RuntimeException('Live root is not within ARCTURUS_MODPACK_MANAGER_ALLOWED_LIVE_ROOTS');
         }
 
-        $work = $staging . '/mpm-' . $server->id . '-' . bin2hex(random_bytes(6));
+        $work = $staging . '/arcturus-mpm-' . $server->id . '-' . bin2hex(random_bytes(6));
         $filesDir = $work . '/files';
         if (!@mkdir($filesDir, 0700, true)) {
             throw new RuntimeException('Cannot create staging directory');
@@ -75,7 +75,7 @@ final class PrepareRelease
             }
             $actualRoot = $this->effectiveRoot($filesDir);
             $files = $this->inventory->hashTree(
-                $actualRoot, 100000, (int) config('modpack-manager.max_archive_bytes', 8589934592)
+                $actualRoot, 100000, (int) config('arcturus-modpack-manager.max_archive_bytes', 8589934592)
             );
             if (!$files) {
                 throw new RuntimeException('Extracted server pack is empty');
@@ -96,10 +96,10 @@ final class PrepareRelease
 
     private function installFtb(ManagedServer $server, string $directory): void
     {
-        $binary = (string) config('modpack-manager.ftb_installer_binary', '');
+        $binary = (string) config('arcturus-modpack-manager.ftb_installer_binary', '');
         if ($binary === '' || !str_starts_with($binary, '/') ||
             is_link($binary) || !is_file($binary) || !is_executable($binary)) {
-            throw new RuntimeException('Configure a trusted executable MODPACK_MANAGER_FTB_INSTALLER_BINARY');
+            throw new RuntimeException('Configure a trusted executable ARCTURUS_MODPACK_MANAGER_FTB_INSTALLER_BINARY');
         }
         if (!ctype_digit($server->source) || !ctype_digit($server->available_version)) {
             throw new RuntimeException('Invalid FTB pack/version IDs');
@@ -134,10 +134,10 @@ final class PrepareRelease
             throw new RuntimeException('Untrusted modpack download host');
         }
         $response = Http::withHeaders([
-            'User-Agent' => config('modpack-manager.user_agent'),
+            'User-Agent' => config('arcturus-modpack-manager.user_agent'),
         ])->timeout(1800)->withOptions(['sink' => $destination])->get($url);
         $response->throw();
-        $limit = (int) config('modpack-manager.max_archive_bytes', 8589934592);
+        $limit = (int) config('arcturus-modpack-manager.max_archive_bytes', 8589934592);
         $bytes = @filesize($destination);
         if ($bytes === false || $bytes < 1 || $bytes > $limit) {
             throw new RuntimeException('Artifact exceeds configured byte limit');
@@ -166,7 +166,7 @@ final class PrepareRelease
             }
             $total = 0;
             $seen = [];
-            $max = (int) config('modpack-manager.max_archive_bytes', 8589934592);
+            $max = (int) config('arcturus-modpack-manager.max_archive_bytes', 8589934592);
             for ($i = 0; $i < $zip->numFiles; $i++) {
                 $stat = $zip->statIndex($i);
                 $raw = $zip->getNameIndex($i);

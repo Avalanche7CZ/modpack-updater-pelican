@@ -11,7 +11,7 @@ return new class extends Migration {
         // MySQL/MariaDB utf8mb4: eight VARCHAR(2048) fields alone can exceed
         // the 65,535-byte maximum logical row size (ERROR 1118). TEXT columns
         // keep long URLs/paths without forcing the bytes into the row budget.
-        Schema::create('modpack_manager_servers', function (Blueprint $table): void {
+        Schema::create('arcturus_modpack_servers', function (Blueprint $table): void {
             $table->id();
             $table->string('label', 120);
             $table->string('pelican_server_uuid', 64)->unique();
@@ -43,9 +43,9 @@ return new class extends Migration {
             $table->timestamps();
             $table->index(['enabled', 'provider']);
         });
-        Schema::create('modpack_manager_events', function (Blueprint $table): void {
+        Schema::create('arcturus_modpack_events', function (Blueprint $table): void {
             $table->id();
-            $table->foreignId('managed_server_id')->constrained('modpack_manager_servers')->cascadeOnDelete();
+            $table->foreignId('managed_server_id')->constrained('arcturus_modpack_servers')->cascadeOnDelete();
             $table->string('kind', 32);
             $table->string('status', 24)->default('info');
             $table->string('from_version', 120)->nullable();
@@ -59,7 +59,7 @@ return new class extends Migration {
 
     public function down(): void
     {
-        Schema::dropIfExists('modpack_manager_events');
-        Schema::dropIfExists('modpack_manager_servers');
+        Schema::dropIfExists('arcturus_modpack_events');
+        Schema::dropIfExists('arcturus_modpack_servers');
     }
 };

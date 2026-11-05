@@ -48,10 +48,10 @@ final class DeployManagedServer implements ShouldQueue
         ExcludedFolderPreserver $preserver,
         DiscordNotifier $discord
     ): void {
-        if (!config('modpack-manager.enable_deploy', false)) {
+        if (!config('arcturus-modpack-manager.enable_deploy', false)) {
             throw new RuntimeException('Deploy feature not enabled by operator');
         }
-        $lock = Cache::lock('modpack-manager-deploy-' . $this->managedServerId, 14400);
+        $lock = Cache::lock('arcturus-modpack-manager-deploy-' . $this->managedServerId, 14400);
         if (!$lock->get()) {
             throw new RuntimeException('Another deploy already holds this server lock');
         }
@@ -63,7 +63,7 @@ final class DeployManagedServer implements ShouldQueue
             }
             if ($this->automatic && (
                 $managed->policy !== 'auto' ||
-                !config('modpack-manager.automatic_deploy', false) ||
+                !config('arcturus-modpack-manager.automatic_deploy', false) ||
                 ($managed->provider !== 'ftb' && !$managed->available_asset_sha256)
             )) {
                 throw new RuntimeException('Automatic deployment policy or verified digest not satisfied');

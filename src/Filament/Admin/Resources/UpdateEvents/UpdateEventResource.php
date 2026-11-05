@@ -16,8 +16,9 @@ final class UpdateEventResource extends Resource
     protected static ?string $model = UpdateEvent::class;
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-clock';
     protected static ?int $navigationSort = 3;
+    protected static ?string $slug = 'arcturus-modpack-history';
 
-    public static function getNavigationGroup(): ?string { return 'Modpack Manager'; }
+    public static function getNavigationGroup(): ?string { return 'Arcturus Modpack Manager'; }
     public static function getNavigationLabel(): string { return 'Update history'; }
     public static function getModelLabel(): string { return 'update event'; }
     public static function getPluralModelLabel(): string { return 'update history'; }

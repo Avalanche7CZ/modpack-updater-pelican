@@ -18,7 +18,7 @@ final class ReleaseChecker
     /** @return array{state:string,version?:string,error?:string} */
     public function check(ManagedServer $server): array
     {
-        $lock = Cache::lock('modpack-manager-check-' . $server->id, 90);
+        $lock = Cache::lock('arcturus-modpack-manager-check-' . $server->id, 90);
         if (!$lock->get()) {
             return ['state' => 'busy'];
         }
@@ -53,8 +53,8 @@ final class ReleaseChecker
                         report($error);
                     }
                     if ($server->policy === 'auto' && $server->deploy_enabled &&
-                        config('modpack-manager.automatic_deploy', false) &&
-                        config('modpack-manager.enable_deploy', false)) {
+                        config('arcturus-modpack-manager.automatic_deploy', false) &&
+                        config('arcturus-modpack-manager.enable_deploy', false)) {
                         PrepareUpdate::dispatch($server->id);
                     }
                 }

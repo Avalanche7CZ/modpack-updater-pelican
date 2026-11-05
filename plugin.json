@@ -1,9 +1,9 @@
 {
-  "id": "modpack-manager",
-  "name": "Modpack Manager",
+  "id": "arcturus-modpack-manager",
+  "name": "Arcturus Modpack Manager",
   "author": "Avalanche7CZ",
-  "version": "0.2.0",
-  "description": "Modpack release monitoring, Filament administration and offline update tooling",
+  "version": "0.3.0",
+  "description": "Arcturus Network: safe modpack release monitoring, backups and managed updates",
   "category": "plugin",
   "namespace": "Arcturus\\ModpackManager",
   "class": "ModpackManagerPlugin",

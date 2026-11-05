@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration {
     public function up(): void
     {
-        Schema::table('modpack_manager_servers', function (Blueprint $table): void {
+        Schema::table('arcturus_modpack_servers', function (Blueprint $table): void {
             $table->string('backup_mode', 16)->default('pelican');
             $table->uuid('last_backup_uuid')->nullable();
         });
@@ -16,7 +16,7 @@ return new class extends Migration {
 
     public function down(): void
     {
-        Schema::table('modpack_manager_servers', function (Blueprint $table): void {
+        Schema::table('arcturus_modpack_servers', function (Blueprint $table): void {
             $table->dropColumn(['backup_mode', 'last_backup_uuid']);
         });
     }

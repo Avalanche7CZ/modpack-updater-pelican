@@ -1,8 +1,8 @@
-# Pelican Modpack Manager
+# Arcturus Modpack Manager
 
 Pelican plugin for Minecraft modpack release checks, protected config changes, file-diff previews, staged updates, native Pelican Backups and Discord notifications.
 
-**Status: 0.2.0 development / experimental.** Do not deploy to production until tested on the exact Panel and Wings version. The plugin does not modify Pelican core or require new eggs.
+**Status: 0.3.x development / experimental.** Do not deploy to production until tested on the exact Panel and Wings version. The plugin does not modify Pelican core or require new eggs.
 
 ## Features
 
@@ -29,20 +29,20 @@ Pelican plugin for Minecraft modpack release checks, protected config changes, f
 
 ## Install
 
-Every successful commit to **main** automatically publishes a GitHub Release with the verified **modpack-manager.zip** installer. Download it from [GitHub Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), not the source-code ZIP GitHub generates automatically.
+Every successful commit to **main** automatically publishes a GitHub Release with the verified **arcturus-modpack-manager.zip** installer. Download it from [GitHub Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), not the source-code ZIP GitHub generates automatically.
 
-The plugin ZIP has one top-level folder named **modpack-manager**, matching the `plugin.json` ID. The same release also includes `SHA256SUMS.txt` and `update.json`. The archive's embedded `plugin.json` gets a distinct semantic version for each release; the published checksum matches that exact ZIP. GitHub Actions also builds a preview artifact for PRs, but the release ZIP is the supported installable distribution.
+The plugin ZIP has one top-level folder named **arcturus-modpack-manager**, matching the `plugin.json` ID. The same release also includes `SHA256SUMS.txt` and `update.json`. The archive's embedded `plugin.json` gets a distinct semantic version for each release; the published checksum matches that exact ZIP. GitHub Actions also builds a preview artifact for PRs, but the release ZIP is the supported installable distribution.
 
-Import **modpack-manager.zip** in Pelican Admin → Plugins → Import, then Install. For manual installation, copy plugin.json and the src, config, database, resources and bin folders to:
+Import **arcturus-modpack-manager.zip** in Pelican Admin → Plugins → Import, then Install. For manual installation, copy plugin.json and the src, config, database, resources and bin folders to:
 
 ~~~text
-/var/www/pelican/plugins/modpack-manager/
+/var/www/pelican/plugins/arcturus-modpack-manager/
 ~~~
 
 From the Pelican installation directory:
 
 ~~~bash
-php artisan p:plugin:install modpack-manager
+php artisan p:plugin:install arcturus-modpack-manager
 ~~~
 
 Pelican automatically registers plugin migrations, providers, commands and views. The plugin is limited to the admin panel and its resources are limited to root administrators.
@@ -50,21 +50,21 @@ Pelican automatically registers plugin migrations, providers, commands and views
 ## Automatic GitHub Releases and Pelican updates
 
 - On every push/merge commit to `main`, **Auto Release — Pelican plugin** runs PHP lint, planner, inventory, backup-safety and deployment regression tests plus a CLI smoke test.
-- Only after tests pass, the job packages the correct ZIP and publishes a numbered GitHub Release with `modpack-manager.zip`, `update.json` and `SHA256SUMS.txt`.
-- Versions are generated from the major/minor in the repository's `plugin.json` and a monotonically increasing workflow run number (for example, `0.2.1`, `0.2.2`). The ZIP's `plugin.json` uses the actual release version. Tags are `vX.Y.Z`.
+- Only after tests pass, the job packages the correct ZIP and publishes a numbered GitHub Release with `arcturus-modpack-manager.zip`, `update.json` and `SHA256SUMS.txt`.
+- Versions are generated from the major/minor in the repository's `plugin.json` and a monotonically increasing workflow run number (for example, `0.3.1`, `0.3.2`). The ZIP's `plugin.json` uses the actual release version. Tags are `vX.Y.Z`.
 - The repository's `plugin.json` has `update_url` set to the stable URL:
   `https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/update.json`.
 - The feed tells Pelican which exact tagged ZIP to download and supplies its SHA-256 hash. Pelican's plugin page can then offer **Update** after a new release is published (the panel may cache update checks for a few minutes).
 - **Important:** This update feed requires an anonymously accessible GitHub Release. For private repositories, Pelican cannot fetch the public `releases/latest/download` URL without separate authentication. Source-code ZIP archives are **not** Pelican installation packages.
 - No commit or GitHub Release automatically changes a running Pelican installation or Minecraft server. Installing/updating the plugin remains an admin decision; Minecraft auto-deploy is separately disabled by default.
 
-Latest install ZIP: [modpack-manager.zip](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/modpack-manager.zip). This URL becomes available once the first automatic Release has been published.
+Latest install ZIP: [arcturus-modpack-manager.zip](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/arcturus-modpack-manager.zip). This URL becomes available once the first automatic Release has been published.
 
 ## Installation troubleshooting (MySQL / MariaDB)
 
-If Pelican reports an SQL migration error containing `Row size too large` (MySQL/MariaDB error 1118) while creating `modpack_manager_servers`, you have an old plugin package: its initial migration used eight `VARCHAR(2048)` fields. With `utf8mb4`, those fields alone can exceed MySQL's 65,535-byte logical row limit.
+If Pelican reports an SQL migration error containing `Row size too large` (MySQL/MariaDB error 1118), you may be installing one of the earlier Arcturus packages under the conflicting `modpack-manager` ID. Those packages created `modpack_manager_servers` with eight `VARCHAR(2048)` fields. With `utf8mb4`, those fields alone can exceed MySQL's 65,535-byte logical row limit.
 
-**Fix:** Download the newest `modpack-manager.zip` from [Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), re-import it in Pelican and retry installation. The corrected migration uses `TEXT` for long URLs and filesystem paths. A failed installation normally remains in the `NotInstalled` state, and can be retried after replacing the plugin's files.
+**Fix:** Download the newest `arcturus-modpack-manager.zip` from [Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), re-import it in Pelican and retry installation. The corrected migration uses `TEXT` for long URLs and filesystem paths. A failed installation normally remains in the `NotInstalled` state, and can be retried after replacing the plugin's files.
 
 Do **not** run `migrate:fresh` or drop Pelican tables to solve this. If a retry reports `table already exists`, inspect the full error and migration state first: a previous partial installation could have created some tables before failing.
 
@@ -75,16 +75,16 @@ This schema change has an offline regression check, but the exact Pelican/Wings 
 Set these values on the Pelican **panel/queue worker host**, never in GitHub. Restart the queue workers after changes.
 
 ~~~dotenv
-MODPACK_MANAGER_CHECK_INTERVAL_HOURS=6
-MODPACK_MANAGER_DISCORD_WEBHOOK=
-MODPACK_MANAGER_CURSEFORGE_API_KEY=
-MODPACK_MANAGER_CUSTOM_MANIFEST_DIRECTORY=/srv/modpack-manifests
-MODPACK_MANAGER_ALLOWED_LIVE_ROOTS=/var/lib/pelican/volumes
-MODPACK_MANAGER_FTB_INSTALLER_BINARY=/usr/local/bin/ftb-server
+ARCTURUS_MODPACK_MANAGER_CHECK_INTERVAL_HOURS=6
+ARCTURUS_MODPACK_MANAGER_DISCORD_WEBHOOK=
+ARCTURUS_MODPACK_MANAGER_CURSEFORGE_API_KEY=
+ARCTURUS_MODPACK_MANAGER_CUSTOM_MANIFEST_DIRECTORY=/srv/modpack-manifests
+ARCTURUS_MODPACK_MANAGER_ALLOWED_LIVE_ROOTS=/var/lib/pelican/volumes
+ARCTURUS_MODPACK_MANAGER_FTB_INSTALLER_BINARY=/usr/local/bin/ftb-server
 
 # Both are intentionally disabled by default.
-MODPACK_MANAGER_ENABLE_DEPLOY=false
-MODPACK_MANAGER_AUTOMATIC_DEPLOY=false
+ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY=false
+ARCTURUS_MODPACK_MANAGER_AUTOMATIC_DEPLOY=false
 ~~~
 
 The standard Laravel queue worker needs to run. Backup, restore and startup checks can require a worker timeout longer than **10800 seconds**; ensure queue supervisor retry_after / timeout settings accommodate the job without duplicate execution. Ensure the Laravel scheduler is active; automatic checks use the modpack:check Artisan command.
@@ -93,7 +93,7 @@ For deployment, give the **dedicated queue worker** narrowly scoped access to th
 
 ## Connect a server
 
-Open **Modpack Manager → Managed servers → Connect server**. Select an existing Pelican server, release provider, source ID, the verified installed pack version and protection rules.
+Open **Arcturus Modpack Manager → Managed servers → Connect server**. Select an existing Pelican server, release provider, source ID, the verified installed pack version and protection rules.
 
 Provider source formats:
 
@@ -132,7 +132,7 @@ php bin/modpack.php manifest /srv/upstream/GTNH-2.8.1 2.8.1 > /srv/manifests/gtn
 
 To use the UI's read-only preview, set:
 
-- Live root: existing local Wings volume path within MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.
+- Live root: existing local Wings volume path within ARCTURUS_MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.
 - Baseline manifest path: trusted JSON file for installed upstream release.
 - Target manifest path: versioned JSON manifest of the new server pack.
 
@@ -148,13 +148,13 @@ The panel only reads hashes during preview. Remote nodes need a separate worker 
 6. The updater applies the staged files without creating a second copy of the whole server, and then verifies Minecraft's startup marker.
 7. On failure it requests **Pelican Restore (truncate existing files)** for that backup UUID, waits for the Wings restore-success callback, checks managed file hashes, then attempts to restart the original version. A failed or timed-out restore leaves the server stopped for manual recovery.
 
-**Manual deployment** requires MODPACK_MANAGER_ENABLE_DEPLOY=true and the per-server deploy toggle. **Automatic deployment** additionally requires MODPACK_MANAGER_AUTOMATIC_DEPLOY=true, policy Auto, no unresolved conflicts, and an upstream artifact digest (or validated FTB installer). Both flags are OFF by default.
+**Manual deployment** requires ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY=true and the per-server deploy toggle. **Automatic deployment** additionally requires ARCTURUS_MODPACK_MANAGER_AUTOMATIC_DEPLOY=true, policy Auto, no unresolved conflicts, and an upstream artifact digest (or validated FTB installer). Both flags are OFF by default.
 
 For major GTNH upgrades, use Approval policy. A successful boot cannot guarantee world/machine migration correctness. The pre-update backup is **locked** and visible under the server's Pelican Backups. If the backup quota is full, updating stops rather than deleting another backup. Excluded directories are not stored in the archive.
 
 ## Backup backend configuration
 
-Use **Modpack Manager → Managed servers → Backup backend**:
+Use **Arcturus Modpack Manager → Managed servers → Backup backend**:
 
 - **Pelican Backups (default):** creates a locked pre-update backup under the server's existing Pelican Backup Host (Wings or S3), records its UUID, and waits for the completed callback. No extra `backup_root` path is required. By default the top-level `backup/` and `backups/` directories are excluded.
 - **Legacy filesystem snapshots:** uses the old local directory copy and atomic-swap rollback. Requires `backup_root` outside the server. Intended only as a fallback when Pelican-native backups cannot be used.
@@ -163,7 +163,7 @@ If the server has reached its Pelican backup limit, increase the limit or free a
 
 ### Exclude large in-server backup directories
 
-In **Modpack Manager → Managed servers → Backup backend → Exclude folders from Pelican backup** you can edit the list (default: `backup`, `backups`). Enter **folder names from the root of the Minecraft server**, not glob patterns. Wings receives anchored gitignore rules:
+In **Arcturus Modpack Manager → Managed servers → Backup backend → Exclude folders from Pelican backup** you can edit the list (default: `backup`, `backups`). Enter **folder names from the root of the Minecraft server**, not glob patterns. Wings receives anchored gitignore rules:
 
 ~~~text
 /backup/
@@ -225,3 +225,9 @@ GitHub Actions runs these tests, a CLI smoke test and validates the plugin ZIP b
 - The legacy filesystem mode remains available as an operator-selected fallback. Full snapshots can be large and may not work if the live volume cannot be renamed.
 
 Development continues in the draft PR. Use a disposable staging server first.
+
+## Compatibility with the cosmii02 Modpack Manager plugin
+
+This is a **separate** plugin with ID `arcturus-modpack-manager`, distinct from [`cosmii02/pelican-modpackmanager`](https://github.com/cosmii02/pelican-modpackmanager), whose ID is `modpack-manager`. Both may be installed together because their plugin IDs, configuration namespaces, admin routes, commands and database tables are different.
+
+**Never import older Arcturus ZIPs named `modpack-manager.zip`:** those were published under the conflicting ID and can overwrite the existing cosmii02 plugin. Install only `arcturus-modpack-manager.zip` from a release created **after** this change. The corrected SQL migration uses `TEXT` columns for long URLs and paths to avoid MariaDB error 1118. If a prior install failed, verify the original cosmii02 plugin's files still show author `cosmii02`, and remove the incorrect Arcturus package through Pelican's normal plugin interface if necessary. Do not delete SQL tables without inspecting migration state.

@@ -57,7 +57,7 @@ final class BackupExclusions
         if ($names === []) {
             // Wings otherwise silently falls back to .pelicanignore, which
             // might exclude world data from a supposed full recovery backup.
-            return ['# modpack-manager: do not inherit .pelicanignore'];
+            return ['# arcturus-modpack-manager: do not inherit .pelicanignore'];
         }
         return array_map(static fn(string $name): string => '/' . $name . '/', $names);
     }
