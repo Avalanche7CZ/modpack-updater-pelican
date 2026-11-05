@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Services;
 
 use Arcturus\ModpackManager\Models\ManagedServer;
+use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
 
@@ -50,6 +51,11 @@ final class ReleaseChecker
                             "Version **{$version}** is available. Approval or a separate deployment worker is required.");
                     } catch (Throwable $error) {
                         report($error);
+                    }
+                    if ($server->policy === 'auto' && $server->deploy_enabled &&
+                        config('modpack-manager.automatic_deploy', false) &&
+                        config('modpack-manager.enable_deploy', false)) {
+                        PrepareUpdate::dispatch($server->id);
                     }
                 }
                 return ['state' => $version === $server->installed_version ? 'current' : 'available',
