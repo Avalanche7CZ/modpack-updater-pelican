@@ -21,6 +21,7 @@ final class ReleaseDiscoverer
             'github' => $this->github($server->source, $server->asset_pattern),
             'modrinth' => $this->modrinth($server->source),
             'ftb' => $this->ftb($server->source),
+            'curseforge' => $this->curseforge($server->source),
             'custom' => $this->custom($server->source),
             default => throw new InvalidArgumentException('Unsupported modpack provider'),
         };
@@ -132,17 +133,64 @@ final class ReleaseDiscoverer
         throw new RuntimeException('No stable FTB release found');
     }
 
+    private function curseforge(string $id): array
+    {
+        if (!preg_match('/^[1-9][0-9]{0,10}$/D', $id)) {
+            throw new InvalidArgumentException('CurseForge source must be a numeric mod ID');
+        }
+        $apiKey = config('modpack-manager.curseforge_api_key');
+        if (!$apiKey) {
+            throw new RuntimeException('CURSEFORGE_API_KEY is not configured');
+        }
+        $response = Http::withHeaders([
+            'x-api-key' => $apiKey,
+            'Accept' => 'application/json',
+            'User-Agent' => config('modpack-manager.user_agent'),
+        ])->timeout(20)->get("https://api.curseforge.com/v1/mods/{$id}/files", [
+            'pageSize' => 50,
+            'index' => 0,
+        ])->throw()->json();
+        $files = $response['data'] ?? [];
+        if (!is_array($files)) {
+            throw new RuntimeException('Invalid CurseForge file listing');
+        }
+        foreach ($files as $file) {
+            if (!is_array($file) || (int) ($file['releaseType'] ?? 0) !== 1) {
+                continue;
+            }
+            $version = (string) ($file['displayName'] ?? $file['fileName'] ?? '');
+            if ($version === '') {
+                continue;
+            }
+            // The server pack is not necessarily the client file. Never download
+            // arbitrary client files just because a new version was released.
+            return [
+                'version' => mb_substr($version, 0, 120),
+                'asset_url' => null,
+                'sha256' => null,
+                'release_url' => 'https://www.curseforge.com/minecraft/modpacks/' . $id,
+            ];
+        }
+        throw new RuntimeException('No stable CurseForge file found');
+    }
+
     private function custom(string $source): array
     {
-        $url = parse_url($source);
-        $host = strtolower((string) ($url['host'] ?? ''));
-        $allowed = array_map('strtolower', (array) config('modpack-manager.allowed_custom_hosts', []));
-        if (($url['scheme'] ?? '') !== 'https' || !$host ||
-            !in_array($host, $allowed, true) || isset($url['user']) || isset($url['pass'])) {
-            throw new InvalidArgumentException('Custom manifest HTTPS host is not allow-listed');
+        // Offline custom modpacks use a local manifest within the operator-owned
+        // manifest directory. No arbitrary URL fetches or SSRF risk.
+        $root = (string) config('modpack-manager.custom_manifest_directory', '');
+        $realRoot = $root !== '' ? realpath($root) : false;
+        $path = realpath($source);
+        if (!$realRoot || !$path || !is_file($path) ||
+            is_link($source) || !str_starts_with($path, rtrim($realRoot, '/') . '/')) {
+            throw new InvalidArgumentException('Custom source must be a local JSON manifest inside the approved directory');
         }
-        // SSRF defense also requires disabling redirects and blocking nonpublic DNS resolutions
-        // on the runtime network. Custom fetch is disabled rather than assuming those protections.
-        throw new RuntimeException('Custom URL discovery is not enabled until network isolation is configured');
+        $manifest = (new ManifestJson())->load($path);
+        return [
+            'version' => $manifest['version'],
+            'asset_url' => null,
+            'sha256' => null,
+            'release_url' => null,
+        ];
     }
 }
