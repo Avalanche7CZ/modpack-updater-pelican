@@ -128,6 +128,23 @@ try {
     verify(file_get_contents("$live/config/local.cfg") === 'custom', 'Rollback damaged local config');
     verify(file_get_contents("$live/world/level.dat") === 'my world must survive', 'Rollback damaged world');
 
+    // External-backup mode never duplicates a complete snapshot on the node.
+    // The application must have waited for Pelican's successful backup callback.
+    $pelicanUuid = 'aeb5f31d-40f0-4d8d-9abe-3c3bf8127f85';
+    $beforeBackupDirectories = count(glob($backups . '/*', GLOB_ONLYDIR) ?: []);
+    $external = $worker->apply(
+        $live, $stage, '/does-not-exist-and-must-not-be-used',
+        $baseManifest, $targetManifest, $rules, true, $pelicanUuid
+    );
+    verify($external['backup'] === null, 'External backup incorrectly created local snapshot');
+    verify($external['external_backup_uuid'] === $pelicanUuid, 'Pelican backup UUID not returned');
+    verify(count(glob($backups . '/*', GLOB_ONLYDIR) ?: []) === $beforeBackupDirectories,
+        'External mode duplicated a local snapshot');
+    verify(file_get_contents("$live/mods/A.jar") === 'new', 'External mode failed to update a mod');
+    verify(!file_exists("$live/mods/Angelica-2.jar"), 'External mode re-enabled a disabled mod');
+    verify(file_get_contents("$live/world/level.dat") === 'my world must survive',
+        'External mode modified player world');
+
     echo "Offline deployment tests passed\n";
 } finally {
     removeTree($root);
