@@ -1,43 +1,74 @@
-name: Planner tests
-
+name: Validate Arcturus plugin
 on:
   push:
   pull_request:
-
+  workflow_call:
+permissions:
+  contents: read
 jobs:
-  php-planner:
+  regression:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['8.4', '8.5']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: zip, mbstring
+          coverage: none
+          tools: none
+      - run: bash scripts/test.sh
+  pelican:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        panel: ['v1.0.0-rc.1', 'v1.0.0-rc.2']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: zip, intl, pdo_sqlite, mbstring, bcmath, sodium, curl
+          tools: composer
+          coverage: none
+      - name: Install disposable official Pelican dependencies
+        env:
+          PANEL_REF: ${{ matrix.panel }}
+        run: |
+          git clone --depth=1 --branch "$PANEL_REF" https://github.com/pelican-dev/panel.git /tmp/arcturus-panel
+          composer install --working-dir=/tmp/arcturus-panel --no-dev --no-scripts --no-interaction --prefer-dist
+      - name: Exercise native framework contracts and migrations
+        env:
+          PELICAN_SOURCE: /tmp/arcturus-panel
+        run: |
+          php tests/integration/pelican.php
+          php tests/integration/filament.php
+          php tests/integration/livewire.php
+          php tests/integration/adoption.php
+  package:
+    needs: [regression, pelican]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+      - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: '8.4'
+          extensions: zip
           tools: none
           coverage: none
-      - name: Check syntax
+      - name: Validate installable package and update feed
         run: |
-          find src bin tests -name '*.php' -print0 | xargs -0 -n1 php -l
-      - name: Test read-only engine
-        run: |
-          php tests/planner.php
-          php tests/inventory.php
-          php tests/deployment.php
-          php tests/backup_safety.php
-          php tests/backup_exclusions.php
-          php tests/preserved_folders.php
-          php tests/migration_schema.php
-          php tests/plugin_identity.php
-      - name: CLI smoke test
-        run: |
-          set -eu
-          TEMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TEMP_DIR"' EXIT
-          mkdir -p "$TEMP_DIR/base/mods" "$TEMP_DIR/target/mods" "$TEMP_DIR/live/mods"
-          printf old > "$TEMP_DIR/base/mods/A.jar"
-          printf new > "$TEMP_DIR/target/mods/A.jar"
-          printf old > "$TEMP_DIR/live/mods/A.jar"
-          php bin/modpack.php manifest "$TEMP_DIR/base" 1.0 > "$TEMP_DIR/base.json"
-          php bin/modpack.php manifest "$TEMP_DIR/target" 2.0 > "$TEMP_DIR/target.json"
-          php bin/modpack.php preview "$TEMP_DIR/base.json" "$TEMP_DIR/target.json" "$TEMP_DIR/live" > "$TEMP_DIR/preview.json"
-          php -r '$p=json_decode(file_get_contents($argv[1]),true); if (($p["counts"]["update"] ?? 0) !== 1 || $p["blocked"] !== 0) exit(1);' "$TEMP_DIR/preview.json"
+          VERSION=$(php -r 'echo json_decode(file_get_contents("plugin.json"),true,512,JSON_THROW_ON_ERROR)["version"];')
+          bash scripts/build-release.sh "$VERSION" "v$VERSION" "$GITHUB_REPOSITORY"
+          unzip -tq dist/arcturus-modpack-manager.zip
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arcturus-modpack-manager-preview
+          path: |
+            dist/arcturus-modpack-manager.zip
+            dist/update.json
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
