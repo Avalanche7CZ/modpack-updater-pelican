@@ -24,6 +24,11 @@ return new class extends Migration {
             $table->boolean('enabled')->default(true);
             $table->json('file_rules')->nullable();
             $table->string('worker_key', 120)->nullable();
+            $table->string('local_root', 2048)->nullable();
+            $table->string('base_manifest_path', 2048)->nullable();
+            $table->string('target_manifest_path', 2048)->nullable();
+            $table->json('preview_summary')->nullable();
+            $table->timestamp('last_preview_at')->nullable();
             $table->timestamp('last_checked_at')->nullable();
             $table->timestamp('last_success_at')->nullable();
             $table->text('last_error')->nullable();
