@@ -10,6 +10,9 @@ return [
     'release_timeout_seconds' => 20,
     'check_interval_hours' => (int) env('MODPACK_MANAGER_CHECK_INTERVAL_HOURS', 6),
     // No arbitrary external URL fetches. Custom sources require an explicit host allow-list.
+    'allowed_live_roots' => array_values(array_filter(array_map(
+        'trim', explode(',', (string) env('MODPACK_MANAGER_ALLOWED_LIVE_ROOTS', ''))
+    ))),
     'allowed_custom_hosts' => array_values(array_filter(array_map(
         'trim', explode(',', (string) env('MODPACK_MANAGER_ALLOWED_CUSTOM_HOSTS', ''))
     ))),
