@@ -96,7 +96,15 @@ final class ManagedServerResource extends Resource
                     TextInput::make('base_manifest_path')->label('Verified installed-release manifest')->maxLength(2048),
                     TextInput::make('target_manifest_path')->label('Verified target-release manifest')->maxLength(2048),
                     TextInput::make('staging_parent')->label('Staging parent (host)')->maxLength(2048),
-                    TextInput::make('backup_root')->label('Backup parent (outside server)')->maxLength(2048),
+                    Select::make('backup_mode')->label('Backup backend')->required()->native(false)
+                        ->default('pelican')
+                        ->options([
+                            'pelican' => 'Pelican Backups (recommended)',
+                            'filesystem' => 'Legacy filesystem snapshots',
+                        ])->helperText('Pelican uses the existing Wings/S3 backup host and locks the pre-update backup.'),
+                    TextInput::make('backup_root')->label('Legacy snapshot directory (filesystem mode only)')
+                        ->helperText('Optional with Pelican Backups. Required for filesystem mode; must be outside the live server.')
+                        ->maxLength(2048),
                 ]),
             Section::make('File protection')
                 ->description('Rules apply in order. The last matching rule wins. The planner always protects world/runtime data.')
@@ -126,6 +134,8 @@ final class ManagedServerResource extends Resource
             TextColumn::make('available_version')->label('Latest')
                 ->placeholder('Not checked')->badge()
                 ->color(fn (ManagedServer $record) => $record->hasUpdate() ? 'warning' : 'success'),
+            TextColumn::make('backup_mode')->label('Backup')->badge()->color('gray'),
+            TextColumn::make('last_backup_uuid')->label('Latest backup UUID')->placeholder('—')->copyable()->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('policy')->badge()->color(fn ($state) => match ($state) {
                 'auto' => 'warning', 'approve' => 'info', default => 'gray',
             }),
