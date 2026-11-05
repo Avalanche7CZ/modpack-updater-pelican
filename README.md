@@ -103,3 +103,5 @@ Upgrade only the `arcturus-modpack-manager` plugin. The additive migration prese
 Run `bash scripts/test.sh` for the existing and expanded offline regression suites. See [integration validation](docs/integration.md) for actual Pelican/Filament contracts, disposable node fixtures, API checks and limits. Do not point integration tests at production.
 
 CI checks PHP 8.4/8.5, the Python worker, packaging and official Pelican rc.1/rc.2 lockfiles. Every successful main commit publishes a uniquely versioned install ZIP, native `update.json`, and SHA-256 sums after the required checks pass. Preview builds use the source version; release ZIP metadata and update feed share the computed release version. Local artifacts are not proof of publication.
+
+The repository is currently private: downloading its releases requires GitHub access. Pelican's unauthenticated native update URL cannot read private release assets. Use manual authenticated download/import or configure an operator-controlled public mirror; this plugin does not change repository visibility.

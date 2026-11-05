@@ -47,3 +47,7 @@ APIs were inspected against official sources, without copying cosmii02 implement
 - [CurseForge API](https://docs.curseforge.com/rest-api/): server-pack IDs, hashes, required files and download permissions.
 
 Framework tests are evidence of API compatibility. They are not evidence of live Wings, Minecraft startup, successful world migration or production backup restoration.
+
+## Private GitHub distribution
+
+This repository is currently private. The automatic workflow can publish authenticated GitHub Releases, but Pelican's ordinary unauthenticated `releases/latest/download/update.json` request cannot read private assets. Use an authenticated GitHub download and manual plugin import, or an operator-controlled publicly readable mirror of the ZIP/feed/checksums. A consistent feed is not proof that an unauthenticated Panel can reach it. This change does not alter repository visibility or expose release contents publicly.
