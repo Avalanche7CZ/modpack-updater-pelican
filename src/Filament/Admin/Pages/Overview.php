@@ -6,6 +6,7 @@ namespace Arcturus\ModpackManager\Filament\Admin\Pages;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Models\UpdateEvent;
+use Arcturus\ModpackManager\Services\PreviewService;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Database\Eloquent\Collection;
@@ -56,6 +57,20 @@ final class Overview extends Page
         Notification::make()->title('Release checks queued')
             ->body('Results will appear here after the queue worker processes them.')
             ->success()->send();
+    }
+
+    public function previewOne(int $serverId): void
+    {
+        $server = ManagedServer::findOrFail($serverId);
+        try {
+            $preview = app(PreviewService::class)->generate($server);
+            Notification::make()->title('Dry-run complete')
+                ->body($preview['blocked'] . ' unresolved file conflicts · ' . $preview['total'] . ' files compared')
+                ->color($preview['blocked'] ? 'warning' : 'success')->send();
+        } catch (\Throwable $error) {
+            Notification::make()->title('Cannot build preview')
+                ->body($error->getMessage())->danger()->send();
+        }
     }
 
     public function checkOne(int $serverId): void
