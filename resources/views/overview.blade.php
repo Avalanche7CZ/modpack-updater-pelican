@@ -96,6 +96,17 @@
                                         <button class="mpm-button" type="button" wire:click="previewOne({{ $server->id }})" wire:loading.attr="disabled">
                                             Preview
                                         </button>
+                                        @if($server->hasUpdate())
+                                            <button class="mpm-button" type="button"
+                                                wire:click="prepareOne({{ $server->id }})" wire:confirm="Prepare the release in staging? The live server will not be modified."
+                                                wire:loading.attr="disabled">Prepare</button>
+                                        @endif
+                                        @if($server->deploy_enabled && config('modpack-manager.enable_deploy', false) && $server->prepared_root && $server->target_manifest_path)
+                                            <button class="mpm-button" type="button"
+                                                wire:click="deployOne({{ $server->id }})"
+                                                wire:confirm="This will stop the Minecraft server, update files and restart it. Continue?"
+                                                wire:loading.attr="disabled">Apply</button>
+                                        @endif
                                     </div>
                                 </td>
                             </tr>
