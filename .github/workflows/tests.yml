@@ -23,6 +23,7 @@ jobs:
           php tests/planner.php
           php tests/inventory.php
           php tests/deployment.php
+          php tests/backup_safety.php
       - name: CLI smoke test
         run: |
           set -eu

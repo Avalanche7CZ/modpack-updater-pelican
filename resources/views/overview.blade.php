@@ -87,7 +87,17 @@
                                     </div>
                                     <div class="mpm-muted">{{ $server->last_checked_at?->diffForHumans() ?? 'Never checked' }}</div>
                                 </td>
-                                <td><span class="mpm-tag">{{ ucfirst($server->policy) }}</span></td>
+                                <td>
+                                    <span class="mpm-tag">{{ ucfirst($server->policy) }}</span>
+                                    <div class="mpm-muted" style="margin-top:5px">
+                                        Backup: {{ ($server->backup_mode ?? 'pelican') === 'pelican' ? 'Pelican' : 'Filesystem' }}
+                                    </div>
+                                    @if($server->last_backup_uuid)
+                                        <div class="mpm-muted" title="{{ $server->last_backup_uuid }}">
+                                            {{ substr($server->last_backup_uuid, 0, 8) }}… · pre-update snapshot
+                                        </div>
+                                    @endif
+                                </td>
                                 <td>
                                     <div class="mpm-inline">
                                         <button class="mpm-button" type="button" wire:click="checkOne({{ $server->id }})" wire:loading.attr="disabled">

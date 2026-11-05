@@ -52,7 +52,7 @@ final class UpdateEventResource extends Resource
             ]),
             SelectFilter::make('kind')->options([
                 'release' => 'Release', 'check' => 'Check',
-                'preview' => 'Preview', 'prepared' => 'Prepared',
+                'backup' => 'Backup', 'preview' => 'Preview', 'prepared' => 'Prepared',
                 'prepare' => 'Preparation failed', 'deploy' => 'Deployment',
             ]),
         ])->defaultSort('created_at', 'desc');
