@@ -15,13 +15,15 @@ final class BackupSafetyGate
         bool $locked,
         array $ignored,
         int $bytes,
-        ?string $checksum
+        ?string $checksum,
+        array $expectedIgnored = []
     ): void {
         if (!$completed || !$successful || !$locked || $ignored !== [] ||
+            $ignored !== $expectedIgnored ||
             $bytes <= 0 || $checksum === null ||
             preg_match('/^[a-zA-Z0-9_-]+:[a-fA-F0-9]{32,128}$/D', $checksum) !== 1) {
             throw new RuntimeException(
-                'Pelican backup must be completed, successful, locked, complete, and checksummed'
+                'Pelican backup must be completed, successful, locked, match exclusions, and be checksummed'
             );
         }
     }
