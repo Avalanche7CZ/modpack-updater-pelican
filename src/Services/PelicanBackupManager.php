@@ -1,0 +1,150 @@
+<?php
+declare(strict_types=1);
+
+namespace Arcturus\ModpackManager\Services;
+
+use App\Enums\BackupStatus;
+use App\Enums\ServerState;
+use App\Models\ActivityLog;
+use App\Models\Backup;
+use App\Models\Server;
+use App\Repositories\Daemon\DaemonBackupRepository;
+use App\Services\Backups\DownloadLinkService;
+use App\Services\Backups\InitiateBackupService;
+use Illuminate\Support\Facades\DB;
+use RuntimeException;
+
+/**
+ * Uses Pelican's own backup hosts (Wings or S3), limits, and restore callbacks.
+ * All operations must be performed while the Minecraft server is stopped.
+ */
+final class PelicanBackupManager
+{
+    public function __construct(
+        private readonly InitiateBackupService $initiator,
+        private readonly DownloadLinkService $downloadLinks,
+        private readonly DaemonBackupRepository $daemon,
+        private readonly PelicanPowerController $power,
+    ) {}
+
+    /** Start a locked, complete backup without evicting any existing backup. */
+    public function initiate(Server $server, string $name): Backup
+    {
+        $this->requireStopped($server);
+        if ($server->refresh()->status !== null) {
+            throw new RuntimeException('Pelican server is busy; cannot initiate backup');
+        }
+
+        // Pelican's own BackupController serializes creates on the parent row.
+        // Use the same locking discipline so quota checks remain atomic.
+        return DB::transaction(function () use ($server, $name): Backup {
+            Server::query()->whereKey($server->id)->lockForUpdate()->value('id');
+
+            return $this->initiator
+                ->setIgnoredFiles([]) // Includes world, configs and player data.
+                ->setIsLocked(true)  // Protect pre-update snapshot from pruning.
+                ->setIsScheduled(false)
+                ->handle($server, $name, false); // Never delete another backup to make space.
+        });
+    }
+
+    /** Wait for Wings' completion callback rather than treating HTTP 2xx as a backup. */
+    public function awaitSuccessful(Backup $backup, int $timeoutSeconds = 3600): Backup
+    {
+        $deadline = microtime(true) + $timeoutSeconds;
+        do {
+            $backup->refresh();
+            if ($backup->completed_at !== null) {
+                $this->requireCompleted($backup);
+                return $backup;
+            }
+            sleep(3);
+        } while (microtime(true) < $deadline);
+
+        throw new RuntimeException("Pelican backup {$backup->uuid} did not finish before timeout; deployment cancelled");
+    }
+
+    /**
+     * Request a FULL restore (truncate=true) and wait for the exact Wings
+     * restore-complete / restore-failed callback for this backup.
+     *
+     * A restored Pelican server status of NULL is NOT proof of success:
+     * Pelican clears this flag on both successful and failed restores.
+     */
+    public function restoreAndWait(Server $server, Backup $backup, int $timeoutSeconds = 3600): void
+    {
+        $this->requireStopped($server);
+        if ($backup->server_id !== $server->id) {
+            throw new RuntimeException('Refusing restore: backup belongs to a different server');
+        }
+        $this->requireCompleted($backup->refresh());
+        if ($server->refresh()->status !== null) {
+            throw new RuntimeException('Pelican server already has an active operation');
+        }
+
+        $owner = $server->user;
+        if (!$owner) {
+            throw new RuntimeException('Cannot resolve server owner for Pelican backup download token');
+        }
+        $url = $this->downloadLinks->handle($backup, $owner);
+        // Capture the log watermark BEFORE requesting restore: late callbacks
+        // from previous attempts must never count as success.
+        $eventWatermark = (int) (ActivityLog::query()->max('id') ?? 0);
+        $server->update(['status' => ServerState::RestoringBackup]);
+        // Throws on Wings error. If the status is uncertain, leave Pelican locked
+        // for operator intervention instead of starting Minecraft over the restore.
+        $this->daemon->setServer($server)->restore($backup, $url, true)->throw();
+
+        $deadline = microtime(true) + $timeoutSeconds;
+        do {
+            $event = ActivityLog::query()
+                ->where('id', '>', $eventWatermark)
+                ->whereIn('event', [
+                    'server:backup.restore-complete',
+                    'server.backup.restore-failed', // Current Pelican callback spelling.
+                ])
+                ->whereHas('subjects', fn ($query) => $query
+                    ->where('subject_type', $backup->getMorphClass())
+                    ->where('subject_id', $backup->id))
+                ->orderByDesc('id')
+                ->first();
+
+            if ($event !== null) {
+                if ($event->event !== 'server:backup.restore-complete') {
+                    throw new RuntimeException("Pelican reported restore failure for backup {$backup->uuid}");
+                }
+                // The callback also clears ServerState::RestoringBackup.
+                if ($server->refresh()->status === null) {
+                    return;
+                }
+            }
+            sleep(3);
+        } while (microtime(true) < $deadline);
+
+        throw new RuntimeException(
+            "Pelican did not confirm successful restore of {$backup->uuid}; leave server stopped"
+        );
+    }
+
+    private function requireCompleted(Backup $backup): void
+    {
+        if ($backup->status !== BackupStatus::Successful
+            || $backup->completed_at === null
+            || !$backup->is_successful
+            || !$backup->is_locked
+            || $backup->ignored_files !== []
+            || (int) $backup->bytes <= 0
+            || !is_string($backup->checksum) || trim($backup->checksum) === '') {
+            throw new RuntimeException(
+                "Pelican backup {$backup->uuid} is missing, incomplete, invalid, or unlocked"
+            );
+        }
+    }
+
+    private function requireStopped(Server $server): void
+    {
+        if ($this->power->state($server) !== 'exited') {
+            throw new RuntimeException('Wings must confirm the server is stopped for backup/restore');
+        }
+    }
+}
