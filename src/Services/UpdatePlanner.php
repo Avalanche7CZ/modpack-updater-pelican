@@ -6,46 +6,46 @@ namespace Arcturus\ModpackManager\Services;
 
 use InvalidArgumentException;
 
-/**
- * Deterministic, read-only update planner.
- *
- * Inputs are trusted upstream baseline/target SHA-256 manifests and an independently
- * scanned local inventory. Planning does NOT read, write or remove filesystem data.
- */
+/** A pure manifest diff: it NEVER mutates a server or claims a merge succeeded. */
 final class UpdatePlanner
 {
-    private const IMMUTABLE_PATHS = [
-        'world', 'world/**', 'world_*', 'world_*/**',
-        'logs', 'logs/**', 'crash-reports', 'crash-reports/**',
-        'backups', 'backups/**', 'usercache.json', 'ops.json',
-        'whitelist.json', 'banned-players.json', 'banned-ips.json',
-        'server.properties', 'eula.txt', '.modpack-manager/**',
+    /** Runtime data is never package-owned, including with an explicit replace rule. */
+    private const RUNTIME_DIRS = [
+        'world', 'world_nether', 'world_the_end', 'logs', 'crash-reports',
+        'backups', '.modpack-manager', 'DIM-1', 'DIM1', 'saves',
+    ];
+    private const RUNTIME_FILES = [
+        'server.properties', 'eula.txt', 'ops.json', 'whitelist.json',
+        'banned-players.json', 'banned-ips.json', 'usercache.json',
+        'session.lock',
     ];
 
     /**
-     * @param array<string,string> $base Original upstream manifest
-     * @param array<string,string> $local Local scanned inventory
-     * @param array<string,string> $target Target upstream manifest
+     * @param array<string,string> $base Verified manifest of installed upstream version
+     * @param array<string,string> $local Hashes of existing files from the server
+     * @param array<string,string> $target Verified manifest of target upstream version
      * @param list<array{pattern:string,mode:string}> $rules Last matching rule wins
-     * @return array{changes:list<array<string,mixed>>,counts:array<string,int>,blocked:int}
+     * @return array{changes:list<array<string,mixed>>,counts:array<string,int>,blocked:int,applicable:bool}
      */
     public function plan(array $base, array $local, array $target, array $rules = []): array
     {
         foreach (['base' => $base, 'local' => $local, 'target' => $target] as $label => $manifest) {
             foreach ($manifest as $path => $hash) {
-                $this->assertPath($path);
+                self::assertPath($path);
                 if (!is_string($hash) || preg_match('/^[0-9a-f]{64}$/iD', $hash) !== 1) {
                     throw new InvalidArgumentException("Invalid SHA-256 in {$label}: {$path}");
                 }
             }
         }
-
+        if (count($rules) > 256) {
+            throw new InvalidArgumentException('Too many protection rules');
+        }
         foreach ($rules as $rule) {
-            if (!isset($rule['pattern'], $rule['mode']) ||
+            if (!is_array($rule) || !isset($rule['pattern'], $rule['mode']) ||
                 !in_array($rule['mode'], ['protect', 'disable', 'merge', 'replace'], true)) {
                 throw new InvalidArgumentException('Invalid protection rule');
             }
-            $this->assertPattern($rule['pattern']);
+            self::assertPath($rule['pattern']);
         }
 
         $paths = array_unique(array_merge(array_keys($base), array_keys($local), array_keys($target)));
@@ -58,13 +58,14 @@ final class UpdatePlanner
             $old = $base[$path] ?? null;
             $current = $local[$path] ?? null;
             $new = $target[$path] ?? null;
-            $mode = $this->modeFor($path, $rules);
+            $mode = $this->ruleFor($path, $rules);
 
             if ($mode === 'immutable' || $mode === 'protect') {
                 $action = 'preserve';
             } elseif ($mode === 'disable') {
-                // A deploy worker must also disable/quarantine an already active mod.
-                $action = 'disable_requires_enforcement';
+                // A present old JAR is not silently considered disabled. Explicit
+                // enforcement is required before any deployment may proceed.
+                $action = $current === null ? 'skip_disabled' : 'disable_requires_enforcement';
             } elseif ($old === null && $new === null) {
                 $action = 'preserve_local_extra';
             } elseif ($old === $new) {
@@ -87,10 +88,8 @@ final class UpdatePlanner
                 $action = $new === null ? 'remove_with_override' : 'replace_with_override';
             }
 
-            // Only an explicit override permits replacing a modified local file.
             $isBlocked = in_array($action, ['conflict', 'merge_required', 'disable_requires_enforcement'], true);
             $blocked += (int) $isBlocked;
-
             $changes[] = [
                 'path' => $path,
                 'action' => $action,
@@ -102,39 +101,63 @@ final class UpdatePlanner
             ];
             $counts[$action] = ($counts[$action] ?? 0) + 1;
         }
-
         ksort($counts);
-        return ['changes' => $changes, 'counts' => $counts, 'blocked' => $blocked];
+        return ['changes' => $changes, 'counts' => $counts,
+            'blocked' => $blocked, 'applicable' => $blocked === 0];
     }
 
     /** @param list<array{pattern:string,mode:string}> $rules */
-    private function modeFor(string $path, array $rules): ?string
+    private function ruleFor(string $path, array $rules): ?string
     {
-        foreach (self::IMMUTABLE_PATHS as $pattern) {
-            if (fnmatch($pattern, $path)) {
-                return 'immutable';
-            }
+        $parts = explode('/', $path);
+        if (in_array($parts[0], self::RUNTIME_DIRS, true) ||
+            in_array($path, self::RUNTIME_FILES, true) ||
+            preg_match('/^world_[^\/]+(?:\/|$)/D', $path) === 1) {
+            return 'immutable';
         }
         $mode = null;
         foreach ($rules as $rule) {
-            if (fnmatch($rule['pattern'], $path)) {
+            if (self::matches($rule['pattern'], $path)) {
                 $mode = $rule['mode'];
             }
         }
         return $mode;
     }
 
-    private function assertPath(mixed $path): void
+    /** Glob * and ? stay within one directory; ** supports nested directories. */
+    public static function matches(string $pattern, string $path): bool
     {
-        if (!is_string($path) || $path === '' || str_starts_with($path, '/') ||
-            str_contains($path, '\\') || preg_match('/[\x00-\x1f\x7f]/', $path) ||
-            preg_match('~(^|/)(?:\.{1,2}|)(?:/|$)~', $path)) {
-            throw new InvalidArgumentException('Unsafe relative path');
+        self::assertPath($pattern);
+        self::assertPath($path);
+        $re = '';
+        for ($i = 0, $len = strlen($pattern); $i < $len; ++$i) {
+            $c = $pattern[$i];
+            if ($c === '*' && ($pattern[$i + 1] ?? '') === '*') {
+                ++$i;
+                if (($pattern[$i + 1] ?? '') === '/') {
+                    ++$i;
+                    $re .= '(?:.*/)?';
+                } else {
+                    $re .= '.*';
+                }
+            } elseif ($c === '*') {
+                $re .= '[^/]*';
+            } elseif ($c === '?') {
+                $re .= '[^/]';
+            } else {
+                $re .= preg_quote($c, '~');
+            }
         }
+        return preg_match('~^' . $re . '$~D', $path) === 1;
     }
 
-    private function assertPattern(mixed $pattern): void
+    public static function assertPath(mixed $path): void
     {
-        $this->assertPath($pattern);
+        if (!is_string($path) || $path === '' || strlen($path) > 1024 ||
+            str_starts_with($path, '/') || str_contains($path, '\\') ||
+            str_contains($path, ':') || preg_match('/[\x00-\x1f\x7f]/', $path) === 1 ||
+            preg_match('~(^|/)(?:\.{1,2}|)(?:/|$)~', $path) === 1) {
+            throw new InvalidArgumentException('Unsafe relative path');
+        }
     }
 }
