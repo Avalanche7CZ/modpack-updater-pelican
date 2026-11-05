@@ -91,6 +91,8 @@ final class ManagedServerResource extends Resource
                         ->helperText('Must be within the operator-configured MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.'),
                     TextInput::make('base_manifest_path')->label('Verified installed-release manifest')->maxLength(2048),
                     TextInput::make('target_manifest_path')->label('Verified target-release manifest')->maxLength(2048),
+                    TextInput::make('staging_parent')->label('Staging parent (host)')->maxLength(2048),
+                    TextInput::make('backup_root')->label('Backup parent (outside server)')->maxLength(2048),
                 ]),
             Section::make('File protection')
                 ->description('Rules apply in order. The last matching rule wins. The planner always protects world/runtime data.')
