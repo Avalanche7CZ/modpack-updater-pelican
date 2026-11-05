@@ -28,7 +28,7 @@ final class PelicanBackupManager
     ) {}
 
     /** Start a locked, complete backup without evicting any existing backup. */
-    public function initiate(Server $server, string $name): Backup
+    public function initiate(Server $server, string $name, array $excludedFolders = []): Backup
     {
         $this->requireStopped($server);
         if ($server->refresh()->status !== null) {
@@ -37,11 +37,12 @@ final class PelicanBackupManager
 
         // Pelican's own BackupController serializes creates on the parent row.
         // Use the same locking discipline so quota checks remain atomic.
-        return DB::transaction(function () use ($server, $name): Backup {
+        $patterns = BackupExclusions::patterns($excludedFolders);
+        return DB::transaction(function () use ($server, $name, $patterns): Backup {
             Server::query()->whereKey($server->id)->lockForUpdate()->value('id');
 
             return $this->initiator
-                ->setIgnoredFiles([]) // Includes world, configs and player data.
+                ->setIgnoredFiles($patterns) // Only exact root backup folders, never world/config.
                 ->setIsLocked(true)  // Protect pre-update snapshot from pruning.
                 ->setIsScheduled(false)
                 ->handle($server, $name, false); // Never delete another backup to make space.
@@ -49,13 +50,13 @@ final class PelicanBackupManager
     }
 
     /** Wait for Wings' completion callback rather than treating HTTP 2xx as a backup. */
-    public function awaitSuccessful(Backup $backup, int $timeoutSeconds = 3600): Backup
+    public function awaitSuccessful(Backup $backup, array $excludedFolders = [], int $timeoutSeconds = 3600): Backup
     {
         $deadline = microtime(true) + $timeoutSeconds;
         do {
             $backup->refresh();
             if ($backup->completed_at !== null) {
-                $this->requireCompleted($backup);
+                $this->requireCompleted($backup, BackupExclusions::patterns($excludedFolders));
                 return $backup;
             }
             sleep(3);
@@ -71,13 +72,13 @@ final class PelicanBackupManager
      * A restored Pelican server status of NULL is NOT proof of success:
      * Pelican clears this flag on both successful and failed restores.
      */
-    public function restoreAndWait(Server $server, Backup $backup, int $timeoutSeconds = 3600): void
+    public function restoreAndWait(Server $server, Backup $backup, array $excludedFolders = [], int $timeoutSeconds = 3600): void
     {
         $this->requireStopped($server);
         if ($backup->server_id !== $server->id) {
             throw new RuntimeException('Refusing restore: backup belongs to a different server');
         }
-        $this->requireCompleted($backup->refresh());
+        $this->requireCompleted($backup->refresh(), BackupExclusions::patterns($excludedFolders));
         if ($server->refresh()->status !== null) {
             throw new RuntimeException('Pelican server already has an active operation');
         }
@@ -123,7 +124,7 @@ final class PelicanBackupManager
         );
     }
 
-    private function requireCompleted(Backup $backup): void
+    private function requireCompleted(Backup $backup, array $expectedIgnored): void
     {
         BackupSafetyGate::requireComplete(
             $backup->completed_at !== null,
@@ -131,7 +132,8 @@ final class PelicanBackupManager
             (bool) $backup->is_locked,
             (array) $backup->ignored_files,
             (int) $backup->bytes,
-            is_string($backup->checksum) ? $backup->checksum : null
+            is_string($backup->checksum) ? $backup->checksum : null,
+            $expectedIgnored
         );
     }
 
