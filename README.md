@@ -12,7 +12,7 @@ Pelican plugin for Minecraft modpack release checks, protected config changes, f
 - Release discovery: FTB, GitHub Releases, Modrinth, CurseForge (notification only), local custom manifests.
 - Versioned SHA-256 manifests and three-way comparison: verified original upstream / local server / new upstream.
 - Staging via official FTB Server Installer or unique server ZIP on GitHub/Modrinth.
-- **Pelican Backups by default**: Wings/S3 storage, existing quota/retention, locked full pre-update backup and callback-confirmed restore.
+- **Pelican Backups by default**: Wings/S3 storage, existing quota/retention, locked pre-update backup, selectable directory exclusions and callback-confirmed restore.
 - Optional legacy filesystem snapshot mode (independent CLI always uses filesystem snapshots).
 - Optional Pelican/Wings stop/start integration and Minecraft "Done (seconds)!" startup verification.
 - Native Pelican restore with full truncate and confirmed Wings callback on failed startup; legacy filesystem mode can still swap local snapshots.
@@ -25,7 +25,7 @@ Pelican plugin for Minecraft modpack release checks, protected config changes, f
 - PHP 8.3+, Pelican scheduler, and a configured Laravel queue worker.
 - PHP ZIP extension for ZIP sources and a validated official FTB installer for FTB sources.
 - Managed updates only where the Panel's queue worker can access the Wings volume filesystem.
-- Enough space in the configured Pelican Backup Host (Wings local storage or S3); filesystem mode additionally needs a backup directory outside the live tree.
+- Enough space in the configured Pelican Backup Host (Wings local storage or S3); filesystem mode additionally needs a backup directory outside the live tree. For native Pelican restore with exclusions, the staging parent must be on the **same filesystem** as the Wings server volume.
 
 ## Install
 
@@ -125,16 +125,33 @@ The panel only reads hashes during preview. Remote nodes need a separate worker 
 
 **Manual deployment** requires MODPACK_MANAGER_ENABLE_DEPLOY=true and the per-server deploy toggle. **Automatic deployment** additionally requires MODPACK_MANAGER_AUTOMATIC_DEPLOY=true, policy Auto, no unresolved conflicts, and an upstream artifact digest (or validated FTB installer). Both flags are OFF by default.
 
-For major GTNH upgrades, use Approval policy. A successful boot cannot guarantee world/machine migration correctness. The pre-update backup is **locked** and visible under the server's Pelican Backups. If the backup quota is full, updating stops rather than deleting another backup.
+For major GTNH upgrades, use Approval policy. A successful boot cannot guarantee world/machine migration correctness. The pre-update backup is **locked** and visible under the server's Pelican Backups. If the backup quota is full, updating stops rather than deleting another backup. Excluded directories are not stored in the archive.
 
 ## Backup backend configuration
 
 Use **Modpack Manager → Managed servers → Backup backend**:
 
-- **Pelican Backups (default):** creates a locked full backup under the server's existing Pelican Backup Host (Wings or S3), records its UUID, and waits for the completed callback. No extra `backup_root` path is required.
+- **Pelican Backups (default):** creates a locked pre-update backup under the server's existing Pelican Backup Host (Wings or S3), records its UUID, and waits for the completed callback. No extra `backup_root` path is required. By default the top-level `backup/` and `backups/` directories are excluded.
 - **Legacy filesystem snapshots:** uses the old local directory copy and atomic-swap rollback. Requires `backup_root` outside the server. Intended only as a fallback when Pelican-native backups cannot be used.
 
 If the server has reached its Pelican backup limit, increase the limit or free a backup through Pelican before updating. The updater never silently prunes existing backups. Do not manually unlock or delete a pre-update backup while an update is in progress.
+
+### Exclude large in-server backup directories
+
+In **Modpack Manager → Managed servers → Backup backend → Exclude folders from Pelican backup** you can edit the list (default: `backup`, `backups`). Enter **folder names from the root of the Minecraft server**, not glob patterns. Wings receives anchored gitignore rules:
+
+~~~text
+/backup/
+/backups/
+~~~
+
+Example: `backup/world-2026.zip` and `backups/old.tar.gz` are left out, but `world/`, `mods/`, `config/` and other pack data still go into the Pelican backup. The plugin refuses traversal strings, glob expressions, or critical Minecraft directories. Exclusions are per server and visible in the backup event history. This reduces the archive size considerably if these folders already contain 30–40 GB of older archives.
+
+**Important when rolling back:** Pelican's full `truncate=true` restore would erase excluded live folders even though they aren't in the archive. Before restore, the worker **renames** existing excluded top-level folders to a durable stash under your configured `staging_parent`, outside the live server directory. After Wings confirms successful restore, it moves them back. This normally moves directory entries without copying 30–40 GB, but requires the same filesystem and sufficient permissions. If preservation or restore fails, the worker stops instead of risking the folder contents; the stash path is reported in the failure history for manual recovery. Never clean an `mpm-preserved-*` directory manually while recovery is pending.
+
+A pre-update backup with exclusions is intentionally **not** a complete archive of the server: the ignored backup folders are preserved separately during managed rollback, but are **not available if you restore the Pelican archive manually to an empty server**. Manual Pelican restores will not recover these folders. Keep separate copies if they matter.
+
+When you configure no exclusions, the updater sends an explicit comment-only ignore list so Wings does not silently inherit a different `.pelicanignore` that could omit important data.
 
 **Restore caveat:** Pelican reports both successful and failed restore completion by clearing the server's restoring state. The plugin therefore also verifies the restore callback tied to the exact backup and verifies manifest-managed hashes before considering recovery successful. It cannot prove the world is semantically healthy; major modpack upgrades still warrant an operator review.
 
