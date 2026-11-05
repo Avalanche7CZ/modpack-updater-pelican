@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "pattern": "config/Arcturus/**",
+      "mode": "protect"
+    },
+    {
+      "pattern": "config/ServerUtilities/**",
+      "mode": "protect"
+    },
+    {
+      "pattern": "config/**/*.cfg",
+      "mode": "merge"
+    },
+    {
+      "pattern": "mods/Angelica-*.jar",
+      "mode": "disable"
+    },
+    {
+      "pattern": "mods/ArchaicFix-*.jar",
+      "mode": "disable"
+    }
+  ]
+}
