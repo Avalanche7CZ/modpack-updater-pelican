@@ -44,7 +44,7 @@ php -r '
       "arcturus-modpack-manager/src/ModpackManagerPlugin.php",
       "arcturus-modpack-manager/src/Providers/ModpackManagerServiceProvider.php",
       "arcturus-modpack-manager/resources/views/overview.blade.php",
-      "arcturus-modpack-manager/database/migrations/2026_11_05_000000_create_modpack_manager_tables.php"
+      "arcturus-modpack-manager/database/migrations/2026_11_05_000000_create_arcturus_modpack_tables.php"
   ];
   foreach ($required as $file) {
       if ($archive->locateName($file) === false) {
