@@ -281,6 +281,10 @@ final class LocalDeployment
             if (!@copy($source, $tmp)) {
                 throw new RuntimeException("Copy failed: {$relative}");
             }
+            $mode = @fileperms($source);
+            if ($mode !== false) {
+                @chmod($tmp, $mode & 0777);
+            }
             if (!@rename($tmp, $dest)) {
                 throw new RuntimeException("Atomic move failed: {$relative}");
             }
