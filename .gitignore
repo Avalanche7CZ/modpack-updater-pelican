@@ -1,0 +1,5 @@
+/dist/
+/vendor/
+**/__pycache__/
+*.pyc
+/.phpunit.cache/

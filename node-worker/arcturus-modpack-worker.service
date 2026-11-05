@@ -1,0 +1,25 @@
+[Unit]
+Description=Arcturus Modpack Manager integrity and staging worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arcturus-modpack
+Group=arcturus-modpack
+ExecStart=/usr/bin/python3 /opt/arcturus-modpack-manager/worker.py --config /etc/arcturus-modpack-manager/node.json
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Replace with the exact operator-provisioned staging and volume paths.
+ReadWritePaths=/var/lib/arcturus-modpack-manager
+ReadOnlyPaths=/var/lib/pelican/volumes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 /**
@@ -6,19 +7,19 @@ declare(strict_types=1);
  * The upstream cosmii02/pelican-modpackmanager uses id "modpack-manager";
  * Arcturus MUST NEVER ship that ID or reuse that plugin's directories.
  */
-
 function expect(bool $condition, string $message): void
 {
-    if (!$condition) {
+    if (! $condition) {
         throw new RuntimeException($message);
     }
 }
 function source(string $path): string
 {
-    $data = file_get_contents(__DIR__ . '/../' . $path);
-    if (!is_string($data)) {
-        throw new RuntimeException('Missing source file ' . $path);
+    $data = file_get_contents(__DIR__.'/../'.$path);
+    if (! is_string($data)) {
+        throw new RuntimeException('Missing source file '.$path);
     }
+
     return $data;
 }
 
@@ -28,12 +29,12 @@ expect(($data['id'] ?? null) === $id, 'Plugin must not reuse the cosmii02 modpac
 expect(($data['name'] ?? null) === 'Arcturus Modpack Manager', 'Name must distinguish plugin');
 expect(($data['namespace'] ?? null) === 'Arcturus\\ModpackManager', 'Plugin namespace must be isolated');
 expect(($data['api_version'] ?? null) === 1, 'Pelican API version must be declared');
-expect(($data['panels'] ?? null) === ['admin'], 'Admin-only plugin must not register on server panel');
+expect(($data['panels'] ?? null) === ['admin', 'server'], 'Plugin must expose the isolated server page');
 expect(str_contains(source('src/ModpackManagerPlugin.php'), "return '{$id}';"),
     'Filament plugin getId must match plugin.json');
 
-expect(is_file(__DIR__ . '/../config/' . $id . '.php'), 'Config must match the new plugin ID');
-expect(!file_exists(__DIR__ . '/../config/modpack-manager.php'),
+expect(is_file(__DIR__.'/../config/'.$id.'.php'), 'Config must match the new plugin ID');
+expect(! file_exists(__DIR__.'/../config/modpack-manager.php'),
     'Generic modpack-manager config file must not be present');
 
 $provider = source('src/Providers/ModpackManagerServiceProvider.php');
@@ -57,7 +58,7 @@ foreach ($migrationNames as $path) {
     expect(str_contains($code, 'arcturus_modpack_servers'),
         "Migration does not reference isolated Arcturus table: {$path}");
 }
-expect(!file_exists(__DIR__ . '/../database/migrations/2026_11_05_000000_create_modpack_manager_tables.php'),
+expect(! file_exists(__DIR__.'/../database/migrations/2026_11_05_000000_create_modpack_manager_tables.php'),
     'Generic old migration filename must not ship');
 expect(str_contains(source($migrationNames[0]), "Schema::create('arcturus_modpack_events'"),
     'Audit table should be isolated');
@@ -67,20 +68,20 @@ expect(str_contains(source('src/Models/UpdateEvent.php'), "\$table = 'arcturus_m
     'UpdateEvent model table mismatch');
 
 $files = new RecursiveIteratorIterator(
-    new RecursiveDirectoryIterator(__DIR__ . '/../src', FilesystemIterator::SKIP_DOTS)
+    new RecursiveDirectoryIterator(__DIR__.'/../src', FilesystemIterator::SKIP_DOTS)
 );
 foreach ($files as $file) {
-    if (!$file->isFile() || $file->getExtension() !== 'php') {
+    if (! $file->isFile() || $file->getExtension() !== 'php') {
         continue;
     }
     $code = file_get_contents($file->getPathname());
-    expect(!preg_match("/(?<!ARCTURUS_)MODPACK_MANAGER_/", $code),
-        'Legacy environment variable reference in ' . $file->getPathname());
-    expect(!preg_match("~(?<!arcturus-)modpack-manager[.:]~", $code),
-        'Legacy plugin config or cache namespace in ' . $file->getPathname());
+    expect(! preg_match('/(?<!ARCTURUS_)MODPACK_MANAGER_/', $code),
+        'Legacy environment variable reference in '.$file->getPathname());
+    expect(! preg_match('~(?<!arcturus-)modpack-manager[.:]~', $code),
+        'Legacy plugin config or cache namespace in '.$file->getPathname());
 }
 $builder = source('scripts/build-release.sh');
-expect(str_contains($builder, 'dist/' . $id . '.zip'), 'Release ZIP must use isolated filename');
-expect(str_contains($builder, 'dist/' . $id), 'Release ZIP root must use isolated directory');
+expect(str_contains($builder, 'dist/'.$id.'.zip'), 'Release ZIP must use isolated filename');
+expect(str_contains($builder, 'dist/'.$id), 'Release ZIP root must use isolated directory');
 
 echo "Plugin identity and coexistence checks passed\n";

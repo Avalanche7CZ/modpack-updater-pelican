@@ -1,233 +1,107 @@
 # Arcturus Modpack Manager
 
-Pelican plugin for Minecraft modpack release checks, protected config changes, file-diff previews, staged updates, native Pelican Backups and Discord notifications.
+Native Pelican tooling for adopting customized Minecraft servers, checking releases, preparing verified upstream files on remote nodes and reviewing three-way file changes.
 
-**Status: 0.3.x development / experimental.** Do not deploy to production until tested on the exact Panel and Wings version. The plugin does not modify Pelican core or require new eggs.
+**Read the [capability matrix](docs/capabilities.md) before enabling this plugin. Remote destructive deployment remains disabled.** Adoption, checking, staging and preview do not stop, restart or reinstall the server.
 
-## Features
+Identity is permanently isolated from cosmii02's Modpack Manager:
 
-- Native Filament admin dashboard with server status, release checks, responsive tables and preview details.
-- Managed servers form with actual Pelican server selection, providers, policy, protection rules and worker paths.
-- Searchable and filterable update history, queued background jobs and Discord webhook notifications.
-- Release discovery: FTB, GitHub Releases, Modrinth, CurseForge (notification only), local custom manifests.
-- Versioned SHA-256 manifests and three-way comparison: verified original upstream / local server / new upstream.
-- Staging via official FTB Server Installer or unique server ZIP on GitHub/Modrinth.
-- **Pelican Backups by default**: Wings/S3 storage, existing quota/retention, locked pre-update backup, selectable directory exclusions and callback-confirmed restore.
-- Optional legacy filesystem snapshot mode (independent CLI always uses filesystem snapshots).
-- Optional Pelican/Wings stop/start integration and Minecraft "Done (seconds)!" startup verification.
-- Native Pelican restore with full truncate and confirmed Wings callback on failed startup; legacy filesystem mode can still swap local snapshots.
+- Name: `Arcturus Modpack Manager`
+- Plugin ID / configuration / views: `arcturus-modpack-manager`
+- PHP namespace: `Arcturus\ModpackManager`
+- Tables: `arcturus_modpack_*`
+- Commands: `arcturus-modpack:*`
+- Package: `arcturus-modpack-manager.zip`, rooted at `arcturus-modpack-manager/`
 
-**Not implemented:** semantic configuration merging, mod-ID-aware disabled-mod handling, deployment to a remote Wings node without a shared/local filesystem. CurseForge does not automatically supply server ZIPs. GitHub/Modrinth need a unique server ZIP to stage.
+Both plugins can coexist. Arcturus never reads, migrates or modifies cosmii02's tables, files or configuration.
 
-## Requirements
+## Requirements and installation
 
-- Pelican Panel with plugin API v1 and Filament v4. Compatibility with the owner's 1.0.0-rc.1 build still needs a staging-panel test.
-- PHP 8.3+, Pelican scheduler, and a configured Laravel queue worker.
-- PHP ZIP extension for ZIP sources and a validated official FTB installer for FTB sources.
-- Managed updates only where the Panel's queue worker can access the Wings volume filesystem.
-- Enough space in the configured Pelican Backup Host (Wings local storage or S3); filesystem mode additionally needs a backup directory outside the live tree. For native Pelican restore with exclusions, the staging parent must be on the **same filesystem** as the Wings server volume.
+Target: Pelican Panel **1.0.0-rc.1**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. Keep queue `retry_after` above this plugin's 150-second preparation tick timeout; 180 seconds or more is appropriate for these short ticks. Native legacy deployment jobs have a much longer timeout and are not enabled by this release.
 
-## Install
+1. Download `arcturus-modpack-manager.zip` and `SHA256SUMS.txt` from a successful [GitHub Release](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases).
+2. Verify `sha256sum -c SHA256SUMS.txt`.
+3. Import the ZIP through **Pelican Admin → Plugins**, then install/enable it. Do not unpack it over another plugin.
+4. Open the plugin's native settings action. Set provider credentials, notification preferences, check frequency, backup exclusions and staging limits.
+5. Configure the [node worker](docs/remote-wings.md) on each managed Wings node. Remote inventories fail explicitly when it is absent; the Panel does not need a volume mount.
+6. Keep Pelican's normal scheduler and queue worker running. Restart queue workers after upgrading plugin code/settings. Settings are refreshed before each job; scheduler frequency changes take effect in a fresh scheduler process.
 
-Every successful commit to **main** automatically publishes a GitHub Release with the verified **arcturus-modpack-manager.zip** installer. Download it from [GitHub Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), not the source-code ZIP GitHub generates automatically.
+## Adopt an existing server
 
-The plugin ZIP has one top-level folder named **arcturus-modpack-manager**, matching the `plugin.json` ID. The same release also includes `SHA256SUMS.txt` and `update.json`. The archive's embedded `plugin.json` gets a distinct semantic version for each release; the published checksum matches that exact ZIP. GitHub Actions also builds a preview artifact for PRs, but the release ZIP is the supported installable distribution.
+Open **Arcturus Modpack Manager → Managed servers → Adopt Existing Server**.
 
-Import **arcturus-modpack-manager.zip** in Pelican Admin → Plugins → Import, then Install. For manual installation, copy plugin.json and the src, config, database, resources and bin folders to:
+1. Select the existing Pelican server and inspect runtime/launch evidence.
+2. Enter the actual provider/project and exact installed release ID. FTB uses a numeric version ID; CurseForge a file ID; Modrinth an immutable version ID; GitHub the exact tag. An image tag is a Java hint, not proof of the running runtime.
+3. Set an explicit server asset pattern for GitHub, particularly GTNH's Java/Crucible variants. Set exclusions for backup folders only.
+4. Create the adoption draft. Choose **Prepare installed baseline** on its detail page. Files are fetched into isolated node staging, independently of the live customized server.
+5. Review **File Changes**: modified configs, local-only mods, missing files, renamed/disabled mods and protected paths. Retain baseline stages for later text-merge review.
+6. Finish verified adoption. If the exact upstream release cannot be verified, use **Adopt for monitoring only**. Destructive operations stay restricted.
 
-~~~text
-/var/www/pelican/plugins/arcturus-modpack-manager/
-~~~
+The wizard never fabricates provenance by hashing live files. Existing startup commands, eggs, Docker images and Java choices are preserved. Arcturus stores association/provenance in its own database, not the reference plugin's metadata. Back up the Panel database and APP_KEY as well as server backups.
 
-From the Pelican installation directory:
+## Providers
 
-~~~bash
-php artisan p:plugin:install arcturus-modpack-manager
-~~~
-
-Pelican automatically registers plugin migrations, providers, commands and views. The plugin is limited to the admin panel and its resources are limited to root administrators.
-
-## Automatic GitHub Releases and Pelican updates
-
-- On every push/merge commit to `main`, **Auto Release — Pelican plugin** runs PHP lint, planner, inventory, backup-safety and deployment regression tests plus a CLI smoke test.
-- Only after tests pass, the job packages the correct ZIP and publishes a numbered GitHub Release with `arcturus-modpack-manager.zip`, `update.json` and `SHA256SUMS.txt`.
-- Versions are generated from the major/minor in the repository's `plugin.json` and a monotonically increasing workflow run number (for example, `0.3.1`, `0.3.2`). The ZIP's `plugin.json` uses the actual release version. Tags are `vX.Y.Z`.
-- The repository's `plugin.json` has `update_url` set to the stable URL:
-  `https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/update.json`.
-- The feed tells Pelican which exact tagged ZIP to download and supplies its SHA-256 hash. Pelican's plugin page can then offer **Update** after a new release is published (the panel may cache update checks for a few minutes).
-- **Important:** This update feed requires an anonymously accessible GitHub Release. For private repositories, Pelican cannot fetch the public `releases/latest/download` URL without separate authentication. Source-code ZIP archives are **not** Pelican installation packages.
-- No commit or GitHub Release automatically changes a running Pelican installation or Minecraft server. Installing/updating the plugin remains an admin decision; Minecraft auto-deploy is separately disabled by default.
-
-Latest install ZIP: [arcturus-modpack-manager.zip](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/arcturus-modpack-manager.zip). This URL becomes available once the first automatic Release has been published.
-
-## Installation troubleshooting (MySQL / MariaDB)
-
-If Pelican reports an SQL migration error containing `Row size too large` (MySQL/MariaDB error 1118), you may be installing one of the earlier Arcturus packages under the conflicting `modpack-manager` ID. Those packages created `modpack_manager_servers` with eight `VARCHAR(2048)` fields. With `utf8mb4`, those fields alone can exceed MySQL's 65,535-byte logical row limit.
-
-**Fix:** Download the newest `arcturus-modpack-manager.zip` from [Releases](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest), re-import it in Pelican and retry installation. The corrected migration uses `TEXT` for long URLs and filesystem paths. A failed installation normally remains in the `NotInstalled` state, and can be retried after replacing the plugin's files.
-
-Do **not** run `migrate:fresh` or drop Pelican tables to solve this. If a retry reports `table already exists`, inspect the full error and migration state first: a previous partial installation could have created some tables before failing.
-
-This schema change has an offline regression check, but the exact Pelican/Wings integration should still be verified on the operator's installation.
-
-## Environment
-
-Set these values on the Pelican **panel/queue worker host**, never in GitHub. Restart the queue workers after changes.
-
-~~~dotenv
-ARCTURUS_MODPACK_MANAGER_CHECK_INTERVAL_HOURS=6
-ARCTURUS_MODPACK_MANAGER_DISCORD_WEBHOOK=
-ARCTURUS_MODPACK_MANAGER_CURSEFORGE_API_KEY=
-ARCTURUS_MODPACK_MANAGER_CUSTOM_MANIFEST_DIRECTORY=/srv/modpack-manifests
-ARCTURUS_MODPACK_MANAGER_ALLOWED_LIVE_ROOTS=/var/lib/pelican/volumes
-ARCTURUS_MODPACK_MANAGER_FTB_INSTALLER_BINARY=/usr/local/bin/ftb-server
-
-# Both are intentionally disabled by default.
-ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY=false
-ARCTURUS_MODPACK_MANAGER_AUTOMATIC_DEPLOY=false
-~~~
-
-The standard Laravel queue worker needs to run. Backup, restore and startup checks can require a worker timeout longer than **10800 seconds**; ensure queue supervisor retry_after / timeout settings accommodate the job without duplicate execution. Ensure the Laravel scheduler is active; automatic checks use the modpack:check Artisan command.
-
-For deployment, give the **dedicated queue worker** narrowly scoped access to the exact live server directory, staging parent and external backup parent. Do not run the web server as root.
-
-## Connect a server
-
-Open **Arcturus Modpack Manager → Managed servers → Connect server**. Select an existing Pelican server, release provider, source ID, the verified installed pack version and protection rules.
-
-Provider source formats:
-
-| Provider | Source | Stage support |
+| Provider | Source | Preparation behavior |
 | --- | --- | --- |
-| FTB | Numeric pack ID | Official FTB Server Installer |
-| GitHub | owner/repository | One server ZIP matched by optional asset glob |
-| Modrinth | Project slug / ID | One recognizable server ZIP |
-| CurseForge | Numeric mod ID | Release checks only, API key required |
-| Custom | Absolute path to local manifest JSON in approved directory | Manual |
+| FTB | Numeric pack ID | Official exact server file manifest, supported hashes, targets and permitted dependency downloads; generated loader runtime requires separate qualification |
+| GitHub / GTNH | `owner/repository` | Exact tag and one explicitly selected server ZIP with GitHub SHA-256 digest; otherwise use a pinned custom recipe |
+| Modrinth | Project slug/ID | `.mrpack`, index checksums, server environments and server overrides; optional files require explicit normalization |
+| CurseForge | Numeric project ID | API key required; official server packs and full required-file resolver; client archive staging currently blocked |
+| ATLauncher | Pack safe name | Metadata and permitted checksummed mods; unsigned config archives, browser-only downloads and bot protection fail closed |
+| Custom | Approved HTTPS recipe or operator-owned JSON path | Schema-2 recipes with exact URLs or configured node-local artifact IDs and independent checksums |
 
-**File rules** are ordered; the last matching rule wins. Examples:
+See [provider setup and custom recipes](docs/providers.md). A version being listed does not imply it can be prepared or deployed. No licensing restriction, API distribution opt-out or required-file error is bypassed.
 
-~~~json
-{
-  "rules": [
-    {"pattern": "config/**/*.cfg", "mode": "merge"},
-    {"pattern": "config/Arcturus/**", "mode": "protect"},
-    {"pattern": "mods/Angelica-*.jar", "mode": "disable"},
-    {"pattern": "mods/ArchaicFix-*.jar", "mode": "disable"}
-  ]
-}
-~~~
+## Review an update
 
-Confirm the actual mods before using these example rules. Disabled mods are matched by file path patterns, not by JAR metadata. A "merge" rule marks conflicts for manual review; it does not silently merge configuration files.
+Check releases, select an exact target, prepare its files and compare them with the installed upstream baseline and actual live file inventory:
 
-World folders, runtime identity and server.properties are treated as immutable, even with a replace rule.
+`original upstream → locally installed → target upstream`
 
-## Adopt a trusted baseline
+The planner distinguishes upstream additions/updates/removals, local modifications/extras, missing files, disabled mods, protected files, conflicts and unsafe identity changes. Review individual conflicts using **Keep local** or **Accept upstream**. These actions change the plan; they do not write live files. Editing rules invalidates previous review.
 
-You must have the **unmodified original upstream server pack** corresponding to the installed version. Do not infer a baseline from the customized live server.
+Rules are ordered, with the last matching administrator rule winning. Immutable runtime/world/identity and Arcturus/Paradigm protection has priority. Globs support `*`, `?`, and `**`. Strategies: preserve, accept upstream, manual review, merge review, keep disabled, ignore local-only files. World data is excluded from managed inventories. File count or byte-limit failure never yields a partial-success inventory.
 
-~~~bash
-php bin/modpack.php manifest /srv/upstream/GTNH-2.8.1 2.8.1 > /srv/manifests/gtnh-base.json
-~~~
+Mod identity comes from Fabric/Quilt metadata, Forge/NeoForge TOML or legacy `mcmod.info`. Use explicit path-to-identity mappings when metadata is absent. Missing upstream mods are kept absent across upstream renames where identity is known; unknown/ambiguous identities block new JARs. Additional local mods are preserved. Strict single-line `.properties` merges can be reviewed as text; unsupported syntax or conflicting keys requires manual work through Pelican's file editor. No merge writes live data automatically.
 
-To use the UI's read-only preview, set:
+The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Apply Update is disabled while remote deployment/recovery has not been qualified.** No environment toggle makes a missing capability safe.
 
-- Live root: existing local Wings volume path within ARCTURUS_MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.
-- Baseline manifest path: trusted JSON file for installed upstream release.
-- Target manifest path: versioned JSON manifest of the new server pack.
+## Backups and recovery
 
-The panel only reads hashes during preview. Remote nodes need a separate worker or manual CLI; this plugin does not silently mount volumes or connect by SSH.
+**Pelican Backups remains the default backend.** The retained integration requires a stopped server, respects existing quota without deleting backups, creates a locked backup, waits for a successful completion callback and validates bytes/checksum/lock/exclusions. It records the exact UUID.
 
-## Update flow
+Top-level exclusions default to `backup` and `backups`. Worlds (including the configured `level-name`), mods, configs and runtime directories cannot be excluded. Empty exclusions override `.pelicanignore`, avoiding hidden critical-file omissions.
 
-1. Scheduled release check records latest stable version and optionally notifies Discord.
-2. Prepare downloads a server ZIP to isolated staging or runs the official FTB installer there.
-3. The worker hashes the staged files and builds a target manifest.
-4. Dry-run compares baseline, current server and target, keeping local extras and protected configs.
-5. A confirmed/approved deployment stops the server and requests a **locked full backup via Pelican**, respecting its quota (no overriding/deleting other backups). The update proceeds only when Pelican marks this exact backup successful, with a valid checksum and size.
-6. The updater applies the staged files without creating a second copy of the whole server, and then verifies Minecraft's startup marker.
-7. On failure it requests **Pelican Restore (truncate existing files)** for that backup UUID, waits for the Wings restore-success callback, checks managed file hashes, then attempts to restart the original version. A failed or timed-out restore leaves the server stopped for manual recovery.
+A truncating restore would destroy excluded folders if they remain inside the volume. Standard remote Wings cannot stash them outside that volume, so **automatic remote truncating restore is blocked**. Local preservation retains its recovery journal; it is an explicitly mapped filesystem fallback, not remote-node support. Never delete a retained stash or locked pre-update backup during investigation.
 
-**Manual deployment** requires ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY=true and the per-server deploy toggle. **Automatic deployment** additionally requires ARCTURUS_MODPACK_MANAGER_AUTOMATIC_DEPLOY=true, policy Auto, no unresolved conflicts, and an upstream artifact digest (or validated FTB installer). Both flags are OFF by default.
+A cleared Pelican restore status alone is not success: the native exact-backup `restore-complete` callback and supplementary file checks are required. Failed or uncertain recovery leaves the server stopped and requires manual intervention. A Minecraft `Done` marker does not prove a world migrated correctly.
 
-For major GTNH upgrades, use Approval policy. A successful boot cannot guarantee world/machine migration correctness. The pre-update backup is **locked** and visible under the server's Pelican Backups. If the backup quota is full, updating stops rather than deleting another backup. Excluded directories are not stored in the archive.
+## Permissions and settings
 
-## Backup backend configuration
+Root administrators manage associations, credentials, protection rules and update review. The isolated **Arcturus Modpack** server page is read-only for owners and subusers with Pelican's `file.read` permission on that server. It exposes no provider credentials, worker configuration, host paths or destructive actions.
 
-Use **Arcturus Modpack Manager → Managed servers → Backup backend**:
+Settings use Pelican's `HasPluginSettings` API. Values are stored encrypted using Laravel's APP_KEY in the isolated settings table. Saved secrets are never hydrated back into forms; blank fields keep them, and explicit remove switches clear them. Node endpoint configuration remains operator-controlled. Keep APP_KEY stable during upgrades.
 
-- **Pelican Backups (default):** creates a locked pre-update backup under the server's existing Pelican Backup Host (Wings or S3), records its UUID, and waits for the completed callback. No extra `backup_root` path is required. By default the top-level `backup/` and `backups/` directories are excluded.
-- **Legacy filesystem snapshots:** uses the old local directory copy and atomic-swap rollback. Requires `backup_root` outside the server. Intended only as a fallback when Pelican-native backups cannot be used.
+## Operations and troubleshooting
 
-If the server has reached its Pelican backup limit, increase the limit or free a backup through Pelican before updating. The updater never silently prunes existing backups. Do not manually unlock or delete a pre-update backup while an update is in progress.
+Progress records actual phases and counters rather than percentages. Preparation uses durable operation IDs; queue redelivery reuses the same node ID. Worker restarts mark unfinished node work interrupted and retain partial artifacts. No destructive request is automatically replayed.
 
-### Exclude large in-server backup directories
+- **Node capability unavailable:** install/configure the worker and HTTPS proxy; check the exact server UUID/token mapping.
+- **Unverified baseline:** prepare the exact original release, not a manifest derived from live customized files.
+- **Missing checksum / restricted download:** select the correct official server pack or provide an independently pinned custom recipe. Do not invent digests or mirror prohibited files.
+- **Unknown Java/loader or startup change:** review the real container/runtime and pack migration notes. Image names alone do not establish compatibility.
+- **Stale operation:** use Reconcile preparation or `php artisan arcturus-modpack:recover`. This resumes only non-destructive preparations. An uncertain deployment remains locked for manual recovery.
+- **Queue not running:** checks/staging remain queued. Configure Pelican's normal queue worker and scheduler.
+- **Database/APP_KEY problems:** restore the Panel database/key; retained node stages can support operator investigation, but are not silently adopted as trusted server identity.
 
-In **Arcturus Modpack Manager → Managed servers → Backup backend → Exclude folders from Pelican backup** you can edit the list (default: `backup`, `backups`). Enter **folder names from the root of the Minecraft server**, not glob patterns. Wings receives anchored gitignore rules:
+Use `php artisan arcturus-modpack:check` for checks. The existing [offline CLI](docs/offline-cli.md) remains available on an explicitly controlled local node. It is separate from remote Panel deployment and does not provide Minecraft runtime qualification.
 
-~~~text
-/backup/
-/backups/
-~~~
+## Upgrade, tests and releases
 
-Example: `backup/world-2026.zip` and `backups/old.tar.gz` are left out, but `world/`, `mods/`, `config/` and other pack data still go into the Pelican backup. The plugin refuses traversal strings, glob expressions, or critical Minecraft directories. Exclusions are per server and visible in the backup event history. This reduces the archive size considerably if these folders already contain 30–40 GB of older archives.
+Upgrade only the `arcturus-modpack-manager` plugin. The additive migration preserves existing Arcturus fields/history. Existing associations default to unverified and Wings transport until reviewed; previously supplied local paths do not become trusted remote baselines. No reference-plugin migration is included. Retain a Panel database backup before upgrading.
 
-**Important when rolling back:** Pelican's full `truncate=true` restore would erase excluded live folders even though they aren't in the archive. Before restore, the worker **renames** existing excluded top-level folders to a durable stash under your configured `staging_parent`, outside the live server directory. After Wings confirms successful restore, it moves them back. This normally moves directory entries without copying 30–40 GB, but requires the same filesystem and sufficient permissions. If preservation or restore fails, the worker stops instead of risking the folder contents; the stash path is reported in the failure history for manual recovery. Never clean an `mpm-preserved-*` directory manually while recovery is pending.
+Run `bash scripts/test.sh` for the existing and expanded offline regression suites. See [integration validation](docs/integration.md) for actual Pelican/Filament contracts, disposable node fixtures, API checks and limits. Do not point integration tests at production.
 
-A pre-update backup with exclusions is intentionally **not** a complete archive of the server: the ignored backup folders are preserved separately during managed rollback, but are **not available if you restore the Pelican archive manually to an empty server**. Manual Pelican restores will not recover these folders. Keep separate copies if they matter.
+CI checks PHP 8.4/8.5, the Python worker, packaging and official Pelican rc.1/rc.2 lockfiles. Every successful main commit publishes a uniquely versioned install ZIP, native `update.json`, and SHA-256 sums after the required checks pass. Preview builds use the source version; release ZIP metadata and update feed share the computed release version. Local artifacts are not proof of publication.
 
-When you configure no exclusions, the updater sends an explicit comment-only ignore list so Wings does not silently inherit a different `.pelicanignore` that could omit important data.
-
-**Restore caveat:** Pelican reports both successful and failed restore completion by clearing the server's restoring state. The plugin therefore also verifies the restore callback tied to the exact backup and verifies manifest-managed hashes before considering recovery successful. It cannot prove the world is semantically healthy; major modpack upgrades still warrant an operator review.
-
-## Offline node CLI
-
-The independent PHP CLI can be run on a Wings host without the Panel. It **does not stop Minecraft**. You must stop the server yourself before deploying or rolling back.
-
-~~~bash
-php bin/modpack.php manifest /srv/upstream/old 2.8.1 > base.json
-php bin/modpack.php manifest /srv/upstream/new 2.9.0 > target.json
-
-php bin/modpack.php preview base.json target.json /srv/minecraft/gtnh examples/rules.example.json > preview.json
-
-# Only after stopping Minecraft:
-php bin/modpack.php deploy base.json target.json /srv/minecraft/gtnh /srv/upstream/new /srv/backups examples/rules.example.json --offline-confirmed
-
-# Full backup rollback, also offline:
-php bin/modpack.php rollback /srv/minecraft/gtnh /srv/backups/SNAPSHOT-DIRECTORY --offline-confirmed
-~~~
-
-The "--offline-confirmed" CLI flag is an explicit acknowledgement, not independent proof that the server has stopped. The integrated Pelican queue worker separately verifies the Wings state.
-
-Rollback restores all files including world data from the snapshot, and preserves the failed installation in a sibling directory. Mounted volume roots that cannot be renamed may need a manual restore.
-
-## Validation
-
-~~~bash
-find src bin tests -name '*.php' -print0 | xargs -0 -n1 php -l
-php tests/planner.php
-php tests/inventory.php
-php tests/deployment.php
-~~~
-
-GitHub Actions runs these tests, a CLI smoke test and validates the plugin ZIP before each release. **CI does not test an actual Pelican installation, Wings daemon or Minecraft boot.** Live integration remains required before enabling deployment.
-
-## Safety limitations
-
-- Deploy is globally and individually opt-in; no panel installation triggers a server restart.
-- Symlinks, traversal paths and ZIP entries with unsafe file types are rejected.
-- Changed local configs or untrusted baseline metadata block updates.
-- A verified locked Pelican backup is required before writing files in default mode; the saved Pelican backup UUID is included in update history.
-- The plugin never treats a backup creation request as success and never infers restore success from the server status alone.
-- Modpacks may require manual migrations, Java/runtime changes or config review.
-- No arbitrary URL downloads for custom providers; local JSON manifests only.
-- Backup creation and restore use Pelican's internal InitiateBackupService, Backup model, Wings restore endpoint and callback status. The exact Pelican build must be integration-tested.
-- The legacy filesystem mode remains available as an operator-selected fallback. Full snapshots can be large and may not work if the live volume cannot be renamed.
-
-Development continues in the draft PR. Use a disposable staging server first.
-
-## Compatibility with the cosmii02 Modpack Manager plugin
-
-This is a **separate** plugin with ID `arcturus-modpack-manager`, distinct from [`cosmii02/pelican-modpackmanager`](https://github.com/cosmii02/pelican-modpackmanager), whose ID is `modpack-manager`. Both may be installed together because their plugin IDs, configuration namespaces, admin routes, commands and database tables are different.
-
-**Never import older Arcturus ZIPs named `modpack-manager.zip`:** those were published under the conflicting ID and can overwrite the existing cosmii02 plugin. Install only `arcturus-modpack-manager.zip` from a release created **after** this change. The corrected SQL migration uses `TEXT` columns for long URLs and paths to avoid MariaDB error 1118. If a prior install failed, verify the original cosmii02 plugin's files still show author `cosmii02`, and remove the incorrect Arcturus package through Pelican's normal plugin interface if necessary. Do not delete SQL tables without inspecting migration state.
+The repository is currently private: downloading its releases requires GitHub access. Pelican's unauthenticated native update URL cannot read private release assets. Use manual authenticated download/import or configure an operator-controlled public mirror; this plugin does not change repository visibility.

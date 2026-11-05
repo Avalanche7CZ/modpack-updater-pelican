@@ -16,44 +16,9 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    uses: ./.github/workflows/tests.yml
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.3'
-          extensions: zip
-          coverage: none
-          tools: none
-      - name: PHP lint and offline regression suite
-        shell: bash
-        run: |
-          set -euo pipefail
-          find src bin tests -name '*.php' -print0 | xargs -0 -n1 php -l
-          php tests/planner.php
-          php tests/inventory.php
-          php tests/deployment.php
-          php tests/backup_safety.php
-          php tests/backup_exclusions.php
-          php tests/preserved_folders.php
-          php tests/migration_schema.php
-          php tests/plugin_identity.php
-      - name: CLI dry-run smoke test
-        shell: bash
-        run: |
-          set -euo pipefail
-          TEMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TEMP_DIR"' EXIT
-          mkdir -p "$TEMP_DIR/base/mods" "$TEMP_DIR/target/mods" "$TEMP_DIR/live/mods"
-          printf old > "$TEMP_DIR/base/mods/A.jar"
-          printf new > "$TEMP_DIR/target/mods/A.jar"
-          printf old > "$TEMP_DIR/live/mods/A.jar"
-          php bin/modpack.php manifest "$TEMP_DIR/base" 1.0 > "$TEMP_DIR/base.json"
-          php bin/modpack.php manifest "$TEMP_DIR/target" 2.0 > "$TEMP_DIR/target.json"
-          php bin/modpack.php preview "$TEMP_DIR/base.json" "$TEMP_DIR/target.json" "$TEMP_DIR/live" > "$TEMP_DIR/preview.json"
-          php -r '$p=json_decode(file_get_contents($argv[1]),true); if (($p["counts"]["update"] ?? 0) !== 1 || $p["blocked"] !== 0) exit(1);' "$TEMP_DIR/preview.json"
 
   release:
     runs-on: ubuntu-latest
@@ -65,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: '8.4'
           extensions: zip
           coverage: none
           tools: none
@@ -125,4 +90,4 @@ jobs:
 
           Install: download arcturus-modpack-manager.zip and import in Pelican Admin → Plugins.
           Update feed: update.json is consumed by Pelican's built-in plugin updater.
-          Safety: experimental plugin; Minecraft auto-deploy remains disabled by default."
+          Safety: read docs/capabilities.md. Remote destructive deployment remains disabled pending integration qualification."

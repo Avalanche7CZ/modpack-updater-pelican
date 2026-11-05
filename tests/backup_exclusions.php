@@ -1,8 +1,9 @@
 <?php
+
 declare(strict_types=1);
 
-require_once __DIR__ . '/../src/Services/BackupExclusions.php';
-require_once __DIR__ . '/../src/Services/BackupSafetyGate.php';
+require_once __DIR__.'/../src/Services/BackupExclusions.php';
+require_once __DIR__.'/../src/Services/BackupSafetyGate.php';
 
 use Arcturus\ModpackManager\Services\BackupExclusions;
 use Arcturus\ModpackManager\Services\BackupSafetyGate;
@@ -14,7 +15,7 @@ function expectFailure(callable $check, string $case): void
     } catch (InvalidArgumentException|RuntimeException $error) {
         return;
     }
-    throw new RuntimeException('Expected failure: ' . $case);
+    throw new RuntimeException('Expected failure: '.$case);
 }
 
 $expected = ['/backup/', '/backups/'];
@@ -30,22 +31,28 @@ if (BackupExclusions::patterns([]) !== ['# arcturus-modpack-manager: do not inhe
 foreach (['../world', 'world', 'world_nether', 'mods', 'config',
     'backup/**', '!world', '/backup', '.hidden', 'backups/old',
     "backups\nworld", '  ', 'world_save', 'saves'] as $invalid) {
-    expectFailure(fn() => BackupExclusions::normalize([$invalid]), $invalid);
+    expectFailure(fn () => BackupExclusions::normalize([$invalid]), $invalid);
 }
 
-$digest = 'sha1:' . str_repeat('a', 40);
+$digest = 'sha1:'.str_repeat('a', 40);
 BackupSafetyGate::requireComplete(true, true, true, $expected, 10000, $digest, $expected);
 expectFailure(
-    fn() => BackupSafetyGate::requireComplete(true, true, true, ['/world/'], 10000, $digest, $expected),
+    fn () => BackupSafetyGate::requireComplete(true, true, true, ['/world/'], 10000, $digest, $expected),
     'Backup ignored unexpected world data'
 );
 expectFailure(
-    fn() => BackupSafetyGate::requireComplete(true, true, true, [], 10000, $digest, $expected),
+    fn () => BackupSafetyGate::requireComplete(true, true, true, [], 10000, $digest, $expected),
     'Wings did not honor backup exclusions'
 );
 expectFailure(
-    fn() => BackupSafetyGate::requireComplete(false, true, true, $expected, 10000, $digest, $expected),
+    fn () => BackupSafetyGate::requireComplete(false, true, true, $expected, 10000, $digest, $expected),
     'Incomplete backup'
 );
 
 echo "Backup exclusions tests passed\n";
+BackupExclusions::requireSafeForWorld(['backup'], "level-name=survival\n");
+try {
+    BackupExclusions::requireSafeForWorld(['survival'], "level-name=survival\n");
+    throw new RuntimeException('Custom world was accepted as an excluded backup folder');
+} catch (InvalidArgumentException $expected) {
+}

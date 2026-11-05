@@ -14,7 +14,7 @@ ROOT="dist/arcturus-modpack-manager"
 rm -rf dist
 mkdir -p "$ROOT"
 cp README.md "$ROOT/"
-cp -R src config database resources bin examples "$ROOT/"
+cp -R src config database resources bin examples node-worker docs "$ROOT/"
 
 php -r '
   $file = json_decode(file_get_contents("plugin.json"), true, 512, JSON_THROW_ON_ERROR);
@@ -27,12 +27,25 @@ php -r '
   file_put_contents($argv[3], json_encode($file, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");
 ' "$VERSION" "$REPOSITORY" "$ROOT/plugin.json"
 
+find "$ROOT" -type d -name '__pycache__' -prune -exec rm -rf {} +
 if find "$ROOT" -type l -print -quit | grep -q .; then
   echo "Refusing to package symlinks" >&2
   exit 1
 fi
 
-(cd dist && zip -qr arcturus-modpack-manager.zip arcturus-modpack-manager)
+php -r '
+  $zip = new ZipArchive();
+  if ($zip->open("dist/arcturus-modpack-manager.zip", ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) exit(1);
+  $root = "dist/arcturus-modpack-manager";
+  $zip->addEmptyDir("arcturus-modpack-manager");
+  $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST);
+  foreach ($files as $file) {
+      $name = "arcturus-modpack-manager/" . substr($file->getPathname(), strlen($root) + 1);
+      $ok = $file->isDir() ? $zip->addEmptyDir($name) : $zip->addFile($file->getPathname(), $name);
+      if (!$ok) { fwrite(STDERR, "Cannot add package entry\n"); exit(1); }
+  }
+  if (!$zip->close()) exit(1);
+'
 
 php -r '
   $archive = new ZipArchive();
@@ -44,6 +57,10 @@ php -r '
       "arcturus-modpack-manager/src/ModpackManagerPlugin.php",
       "arcturus-modpack-manager/src/Providers/ModpackManagerServiceProvider.php",
       "arcturus-modpack-manager/resources/views/overview.blade.php",
+      "arcturus-modpack-manager/resources/views/managed-server.blade.php",
+      "arcturus-modpack-manager/src/Filament/Server/Pages/ArcturusModpack.php",
+      "arcturus-modpack-manager/node-worker/worker.py",
+      "arcturus-modpack-manager/docs/capabilities.md",
       "arcturus-modpack-manager/database/migrations/2026_11_05_000000_create_arcturus_modpack_tables.php"
   ];
   foreach ($required as $file) {
@@ -83,5 +100,7 @@ php -r '
       fwrite(STDERR, "Update feed is out of sync with ZIP\n"); exit(1);
   }
 ' "$VERSION"
+
+(cd dist && sha256sum update.json >> SHA256SUMS.txt)
 
 echo "Packaged Pelican plugin v$VERSION — SHA-256 $SHA256"

@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages;
@@ -13,6 +14,6 @@ final class ListManagedServers extends ListRecords
 
     protected function getHeaderActions(): array
     {
-        return [CreateAction::make()->label('Connect server')];
+        return [CreateAction::make()->label('Adopt Existing Server')];
     }
 }

@@ -12,42 +12,93 @@ final class UpdatePlanner
     /** Runtime data is never package-owned, including with an explicit replace rule. */
     private const RUNTIME_DIRS = [
         'world', 'world_nether', 'world_the_end', 'logs', 'crash-reports',
-        'backups', '.arcturus-modpack-manager', 'DIM-1', 'DIM1', 'saves',
+        'backup', 'backups', 'dimensions', 'data', '.arcturus-modpack-manager', 'DIM-1', 'DIM1', 'saves',
     ];
+
     private const RUNTIME_FILES = [
         'server.properties', 'eula.txt', 'ops.json', 'whitelist.json',
         'banned-players.json', 'banned-ips.json', 'usercache.json',
-        'session.lock',
+        'session.lock', 'ops.txt', 'white-list.txt', 'banned-players.txt', 'banned-ips.txt',
+        'start.sh', 'startserver.sh', 'run.sh', 'start.bat', 'run.bat', 'variables.txt',
+        'user_jvm_args.txt', 'unix_args.txt', 'fabric-server-launcher.properties',
+        'quilt-server-launcher.properties',
     ];
 
     /**
-     * @param array<string,string> $base Verified manifest of installed upstream version
-     * @param array<string,string> $local Hashes of existing files from the server
-     * @param array<string,string> $target Verified manifest of target upstream version
-     * @param list<array{pattern:string,mode:string}> $rules Last matching rule wins
+     * @param  array<string,string>  $base  Verified manifest of installed upstream version
+     * @param  array<string,string>  $local  Hashes of existing files from the server
+     * @param  array<string,string>  $target  Verified manifest of target upstream version
+     * @param  list<array{pattern:string,mode:string}>  $rules  Last matching rule wins
      * @return array{changes:list<array<string,mixed>>,counts:array<string,int>,blocked:int,applicable:bool}
      */
-    public function plan(array $base, array $local, array $target, array $rules = []): array
+    public function plan(array $base, array $local, array $target, array $rules = [], array $identities = [], array $disabled = []): array
     {
         foreach (['base' => $base, 'local' => $local, 'target' => $target] as $label => $manifest) {
             foreach ($manifest as $path => $hash) {
                 self::assertPath($path);
-                if (!is_string($hash) || preg_match('/^[0-9a-f]{64}$/iD', $hash) !== 1) {
+                if (! is_string($hash) || preg_match('/^[0-9a-f]{64}$/iD', $hash) !== 1) {
                     throw new InvalidArgumentException("Invalid SHA-256 in {$label}: {$path}");
                 }
             }
         }
+        $base = array_map('strtolower', $base);
+        $local = array_map('strtolower', $local);
+        $target = array_map('strtolower', $target);
         if (count($rules) > 256) {
             throw new InvalidArgumentException('Too many protection rules');
         }
         foreach ($rules as $rule) {
-            if (!is_array($rule) || !isset($rule['pattern'], $rule['mode']) ||
-                !in_array($rule['mode'], ['protect', 'disable', 'merge', 'replace'], true)) {
+            if (! is_array($rule) || ! isset($rule['pattern'], $rule['mode']) ||
+                ! in_array($rule['mode'], ['protect', 'disable', 'merge', 'replace', 'review', 'ignore'], true)) {
                 throw new InvalidArgumentException('Invalid protection rule');
             }
             self::assertPath($rule['pattern']);
         }
 
+        // Mod identity survives upstream renames. Ambiguous/missing identities block new JARs
+        // whenever an upstream mod disappeared locally, including intentionally deleted mods.
+        $baseIds = $identities['base'] ?? [];
+        $targetIds = $identities['target'] ?? [];
+        $localIds = $identities['local'] ?? [];
+        if (count($disabled) > 256) {
+            throw new InvalidArgumentException('Too many disabled mod identities');
+        }
+        foreach ($disabled as $id) {
+            if (! is_string($id) || ! preg_match('/^[A-Za-z0-9_.+-]{1,128}$/D', $id)) {
+                throw new InvalidArgumentException('Invalid disabled mod identity');
+            }
+        }
+        $disabledIds = array_fill_keys(array_map('strtolower', $disabled), true);
+        $missingUnidentified = false;
+        $ambiguousIds = [];
+        foreach ([$baseIds, $targetIds, $localIds] as $mapping) {
+            $seenIds = [];
+            foreach ($mapping as $file => $id) {
+                self::assertPath($file);
+                if (! is_string($id) || $id === '' || strlen($id) > 1024) {
+                    throw new InvalidArgumentException('Invalid mod identity mapping');
+                }
+                if (isset($seenIds[$id])) {
+                    $ambiguousIds[$id] = true;
+                }
+                $seenIds[$id] = true;
+            }
+        }
+        foreach ($base as $file => $hash) {
+            if (self::isMod($file) && ! isset($local[$file])) {
+                $id = $baseIds[$file] ?? null;
+                if ($id) {
+                    $disabledIds[$id] = true;
+                } else {
+                    $missingUnidentified = true;
+                }
+            }
+        }
+        foreach ($localIds as $file => $id) {
+            if (str_ends_with(strtolower($file), '.disabled')) {
+                $disabledIds[$id] = true;
+            }
+        }
         $paths = array_unique(array_merge(array_keys($base), array_keys($local), array_keys($target)));
         sort($paths, SORT_STRING);
         $changes = [];
@@ -60,9 +111,12 @@ final class UpdatePlanner
             $new = $target[$path] ?? null;
             $mode = $this->ruleFor($path, $rules);
 
+            $identity = $targetIds[$path] ?? $baseIds[$path] ?? $localIds[$path] ?? null;
             if ($mode === 'immutable' || $mode === 'protect') {
                 $action = 'preserve';
-            } elseif ($mode === 'disable') {
+            } elseif (self::isMod($path) && $identity && isset($ambiguousIds[$identity])) {
+                $action = 'unsafe_ambiguous_identity';
+            } elseif ($mode === 'disable' || (self::isMod($path) && $identity && isset($disabledIds[$identity]))) {
                 // A present old JAR is not silently considered disabled. Explicit
                 // enforcement is required before any deployment may proceed.
                 $action = $current === null ? 'skip_disabled' : 'disable_requires_enforcement';
@@ -82,6 +136,15 @@ final class UpdatePlanner
                 $action = 'conflict';
             }
 
+            if ($action === 'add' && self::isMod($path) && $missingUnidentified && ! $identity && $identities !== []) {
+                $action = 'unsafe_ambiguous_identity';
+            }
+            if ($mode === 'review' && ! in_array($action, ['unchanged', 'preserve', 'preserve_local_extra'], true)) {
+                $action = 'manual_review';
+            }
+            if ($mode === 'ignore' && $old === null && $new === null) {
+                $action = 'preserve_local_extra';
+            }
             if ($action === 'conflict' && $mode === 'merge') {
                 $action = 'merge_required';
             } elseif ($action === 'conflict' && $mode === 'replace') {
@@ -92,13 +155,15 @@ final class UpdatePlanner
             // for JARs under mods/. It cannot enforce arbitrary file exclusions.
             $safeDisabledMod = $action === 'disable_requires_enforcement' &&
                 preg_match('~^mods/(?:[^/]+/)*[^/]+\\.jar$~iD', $path) === 1;
-            $isBlocked = in_array($action, ['conflict', 'merge_required'], true) ||
-                ($action === 'disable_requires_enforcement' && !$safeDisabledMod);
+            $isBlocked = in_array($action, ['conflict', 'merge_required', 'unsafe_ambiguous_identity', 'manual_review'], true) ||
+                ($action === 'disable_requires_enforcement' && ! $safeDisabledMod);
             $blocked += (int) $isBlocked;
             $changes[] = [
                 'path' => $path,
                 'action' => $action,
                 'rule' => $mode,
+                'identity' => $identity,
+                'classification' => $this->classification($path, $old, $current, $new, $action),
                 'base_sha256' => $old,
                 'local_sha256' => $current,
                 'target_sha256' => $new,
@@ -107,15 +172,56 @@ final class UpdatePlanner
             $counts[$action] = ($counts[$action] ?? 0) + 1;
         }
         ksort($counts);
+
         return ['changes' => $changes, 'counts' => $counts,
             'blocked' => $blocked, 'applicable' => $blocked === 0];
     }
 
     /** @param list<array{pattern:string,mode:string}> $rules */
+    public static function isMod(string $path): bool
+    {
+        return str_starts_with($path, 'mods/') && str_ends_with(strtolower($path), '.jar');
+    }
+
+    private function classification(string $path, ?string $base, ?string $local, ?string $target, string $action): string
+    {
+        if ($action === 'preserve') {
+            return 'protected';
+        }
+        if (in_array($action, ['skip_disabled', 'disable_requires_enforcement'], true) || str_ends_with(strtolower($path), '.disabled')) {
+            return 'disabled_mod';
+        }
+        if (str_starts_with($action, 'unsafe_')) {
+            return 'unsafe_or_ambiguous';
+        }
+        if (in_array($action, ['conflict', 'merge_required', 'manual_review'], true)) {
+            return $local === null && $base !== null ? 'missing_or_removed_locally' : 'merge_conflict';
+        }
+        if ($base === null && $target === null) {
+            return 'local_only';
+        }
+        if ($local === null && $base !== null) {
+            return 'missing_or_removed_locally';
+        }
+        if ($local !== $base && $base !== null && str_starts_with($action, 'preserve')) {
+            return 'locally_modified';
+        }
+        if ($base === null) {
+            return 'new_upstream';
+        }
+        if ($target === null) {
+            return 'removed_upstream';
+        }
+
+        return $base === $target ? 'unchanged_upstream' : 'updated_upstream';
+    }
+
     private function ruleFor(string $path, array $rules): ?string
     {
         $parts = explode('/', $path);
-        if (in_array($parts[0], self::RUNTIME_DIRS, true) ||
+        if (preg_match('~(?:^|/)(?:arcturus|paradigm)[^/]*(?:/|$)~i', $path) ||
+            preg_match('~(?:^|/)(?:crucible|fabric-server-launch|quilt-server-launch)[^/]*\.jar$~i', $path) ||
+            in_array($parts[0], self::RUNTIME_DIRS, true) ||
             in_array($path, self::RUNTIME_FILES, true) ||
             preg_match('/^world_[^\/]+(?:\/|$)/D', $path) === 1) {
             return 'immutable';
@@ -126,6 +232,7 @@ final class UpdatePlanner
                 $mode = $rule['mode'];
             }
         }
+
         return $mode;
     }
 
@@ -135,12 +242,12 @@ final class UpdatePlanner
         self::assertPath($pattern);
         self::assertPath($path);
         $re = '';
-        for ($i = 0, $len = strlen($pattern); $i < $len; ++$i) {
+        for ($i = 0, $len = strlen($pattern); $i < $len; $i++) {
             $c = $pattern[$i];
             if ($c === '*' && ($pattern[$i + 1] ?? '') === '*') {
-                ++$i;
+                $i++;
                 if (($pattern[$i + 1] ?? '') === '/') {
-                    ++$i;
+                    $i++;
                     $re .= '(?:.*/)?';
                 } else {
                     $re .= '.*';
@@ -153,12 +260,13 @@ final class UpdatePlanner
                 $re .= preg_quote($c, '~');
             }
         }
-        return preg_match('~^' . $re . '$~D', $path) === 1;
+
+        return preg_match('~^'.$re.'$~D', $path) === 1;
     }
 
     public static function assertPath(mixed $path): void
     {
-        if (!is_string($path) || $path === '' || strlen($path) > 1024 ||
+        if (! is_string($path) || $path === '' || strlen($path) > 1024 ||
             str_starts_with($path, '/') || str_contains($path, '\\') ||
             str_contains($path, ':') || preg_match('/[\x00-\x1f\x7f]/', $path) === 1 ||
             preg_match('~(^|/)(?:\.{1,2}|)(?:/|$)~', $path) === 1) {
