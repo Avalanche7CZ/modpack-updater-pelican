@@ -2,15 +2,17 @@
   "id": "arcturus-modpack-manager",
   "name": "Arcturus Modpack Manager",
   "author": "Avalanche7CZ",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Arcturus Network: safe modpack release monitoring, backups and managed updates",
   "category": "plugin",
   "namespace": "Arcturus\\ModpackManager",
   "class": "ModpackManagerPlugin",
   "panels": [
-    "admin"
+    "admin",
+    "server"
   ],
   "api_version": 1,
   "url": "https://github.com/Avalanche7CZ/modpack-updater-pelican",
-  "update_url": "https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/update.json"
+  "update_url": "https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/latest/download/update.json",
+  "panel_version": "^1.0.0-rc.1"
 }

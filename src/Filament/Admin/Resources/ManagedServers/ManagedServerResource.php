@@ -1,23 +1,27 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers;
 
+use App\Models\Server;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\CreateManagedServer;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\EditManagedServer;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ListManagedServers;
+use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
 use Arcturus\ModpackManager\Jobs\PrepareUpdate;
-use Arcturus\ModpackManager\Jobs\DeployManagedServer;
-use Arcturus\ModpackManager\Services\PreviewService;
 use Arcturus\ModpackManager\Models\ManagedServer;
+use Arcturus\ModpackManager\Security\Access;
+use Arcturus\ModpackManager\Services\PreviewService;
 use Filament\Actions\Action;
+use Filament\Actions\BulkAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\TagsInput;
+use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
@@ -25,24 +29,64 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
+use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Collection;
 
 final class ManagedServerResource extends Resource
 {
     protected static ?string $model = ManagedServer::class;
+
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-server-stack';
+
     protected static ?int $navigationSort = 2;
+
     protected static ?string $slug = 'arcturus-managed-modpacks';
 
-    public static function getNavigationGroup(): ?string { return 'Arcturus Modpack Manager'; }
-    public static function getNavigationLabel(): string { return 'Managed servers'; }
-    public static function getModelLabel(): string { return 'managed server'; }
-    public static function getPluralModelLabel(): string { return 'managed servers'; }
+    public static function getNavigationGroup(): ?string
+    {
+        return 'Arcturus Modpack Manager';
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return 'Managed servers';
+    }
+
+    public static function getModelLabel(): string
+    {
+        return 'managed server';
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return 'managed servers';
+    }
 
     public static function canViewAny(): bool
     {
-        // Plugin is admin-panel only. No client/subuser permissions are inherited.
-        return auth()->check() && (bool) auth()->user()->isRootAdmin();
+        return Access::admin();
+    }
+
+    public static function canView($record): bool
+    {
+        return Access::admin();
+    }
+
+    public static function canCreate(): bool
+    {
+        return Access::admin();
+    }
+
+    public static function canEdit($record): bool
+    {
+        return Access::admin() && ! $record->active_operation_id;
+    }
+
+    public static function canDelete($record): bool
+    {
+        return Access::admin() && ! $record->active_operation_id && ! $record->operations()->exists();
     }
 
     public static function form(Schema $schema): Schema
@@ -54,28 +98,29 @@ final class ManagedServerResource extends Resource
                     TextInput::make('label')->label('Display name')->required()->maxLength(120),
                     Select::make('pelican_server_uuid')->label('Existing Pelican server')
                         ->required()->searchable()->native(false)
-                        ->options(fn (): array => \App\Models\Server::query()
+                        ->options(fn (): array => Server::query()
                             ->orderBy('name')->get(['uuid', 'name'])
                             ->mapWithKeys(fn ($server) => [
-                                $server->uuid => $server->name . ' · ' . $server->uuid,
+                                $server->uuid => $server->name.' · '.$server->uuid,
                             ])->all())
                         ->helperText('This binds an existing server. It does not create or reinstall it.')
-                        ->unique(ignoreRecord: true),
-                    Select::make('provider')->label('Provider')->required()
+                        ->unique(ignoreRecord: true)->disabled(fn ($record) => $record !== null),
+                    Select::make('provider')->label('Provider')->required()->disabled(fn ($record) => $record !== null)
                         ->options([
                             'ftb' => 'FTB · Feed The Beast',
                             'github' => 'GitHub Releases · GTNH / TFG / custom',
                             'modrinth' => 'Modrinth',
                             'curseforge' => 'CurseForge (API key required)',
-                            'custom' => 'Custom local manifest',
+                            'atlauncher' => 'ATLauncher',
+                            'custom' => 'Custom verified recipe',
                         ])->default('github')->native(false),
-                    TextInput::make('source')->label('Pack ID / owner/repo')
+                    TextInput::make('source')->label('Pack ID / owner/repo')->disabled(fn ($record) => $record !== null)
                         ->helperText('FTB/CurseForge: numeric ID · GitHub: owner/repo · Modrinth: slug · Custom: absolute manifest path')
                         ->maxLength(255)->required(),
                     TextInput::make('asset_pattern')->label('Server ZIP filename pattern')
                         ->helperText('GitHub only. Example: *Server*Java17*.zip — one matching file is required.')
                         ->maxLength(160),
-                    TextInput::make('installed_version')->label('Installed upstream version')
+                    TextInput::make('installed_version')->label('Installed upstream version')->disabled(fn ($record) => $record !== null)
                         ->helperText('Set the version you verified is currently installed.')
                         ->maxLength(120)->required(),
                 ]),
@@ -84,45 +129,40 @@ final class ManagedServerResource extends Resource
                 ->columns(2)->schema([
                     Select::make('policy')->required()->default('notify')->native(false)
                         ->options(['notify' => 'Notify only', 'approve' => 'Require admin approval',
-                            'auto' => 'Auto (requires verified worker)']),
+                            'auto' => 'Legacy automatic policy (deployment remains gated)']),
                     Toggle::make('enabled')->label('Monitor this server')->default(true),
-                    Toggle::make('deploy_enabled')->label('Allow deployment for this server')->default(false)
-                        ->helperText('Also requires ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY=1 and a verified Wings volume mapping.'),
+                    Toggle::make('deploy_enabled')->label('Allow deployment for this server')->default(false)->disabled()
+                        ->helperText('Deployment is gated while remote transactions and restore behavior are not qualified.'),
                 ]),
-            Section::make('Local preview (advanced)')
-                ->description('Optional single-host setup. The panel must have read-only access to the Wings volume. Leave blank for remote nodes.')
-                ->collapsible()->collapsed()->columns(1)->schema([
-                    TextInput::make('local_root')->label('Live server directory')->maxLength(2048)
-                        ->placeholder('/var/lib/pelican/volumes/server-uuid')
-                        ->helperText('Must be within the operator-configured ARCTURUS_MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.'),
-                    TextInput::make('base_manifest_path')->label('Verified installed-release manifest')->maxLength(2048),
-                    TextInput::make('target_manifest_path')->label('Verified target-release manifest')->maxLength(2048),
-                    TextInput::make('staging_parent')->label('Staging parent (host)')->maxLength(2048),
-                    Select::make('backup_mode')->label('Backup backend')->required()->native(false)
-                        ->default('pelican')
-                        ->options([
-                            'pelican' => 'Pelican Backups (recommended)',
-                            'filesystem' => 'Legacy filesystem snapshots',
-                        ])->helperText('Pelican uses the existing Wings/S3 backup host and locks the pre-update backup.'),
-                    TagsInput::make('backup_excluded_directories')
-                        ->label('Exclude folders from Pelican backup')
-                        ->placeholder('Add folder, press Enter')
-                        ->helperText('Top-level folder names only, e.g. backup and backups. No globs or paths. Excluded folders are preserved separately during full restore.')
-                        ->default(['backup', 'backups'])
-                        ->afterStateHydrated(function (TagsInput $component, $state): void {
-                            if ($state === null) {
-                                $component->state(['backup', 'backups']);
-                            }
-                        })
-                        ->rules(['array', 'max:16'])
-                        ->columnSpanFull(),
-                    TextInput::make('backup_root')->label('Legacy snapshot directory (filesystem mode only)')
-                        ->helperText('Optional with Pelican Backups. Required for filesystem mode; must be outside the live server.')
-                        ->maxLength(2048),
-                ]),
+            Section::make('Backups')->columns(1)->schema([
+                Select::make('backup_mode')->label('Backup backend')->required()->native(false)
+                    ->default('pelican')
+                    ->options([
+                        'pelican' => 'Pelican Backups (recommended)',
+                        'filesystem' => 'Legacy filesystem snapshots',
+                    ])->helperText('Pelican uses the existing Wings/S3 backup host and locks the pre-update backup.'),
+                TagsInput::make('backup_excluded_directories')
+                    ->label('Exclude folders from Pelican backup')
+                    ->placeholder('Add folder, press Enter')
+                    ->helperText('Top-level folder names only, e.g. backup and backups. No globs or paths. Excluded folders are preserved separately during full restore.')
+                    ->default(['backup', 'backups'])
+                    ->afterStateHydrated(function (TagsInput $component, $state): void {
+                        if ($state === null) {
+                            $component->state(['backup', 'backups']);
+                        }
+                    })
+                    ->rules(['array', 'max:16'])
+                    ->columnSpanFull(),
+            ]),
             Section::make('File protection')
                 ->description('Rules apply in order. The last matching rule wins. The planner always protects world/runtime data.')
                 ->schema([
+                    TagsInput::make('disabled_mods')->label('Disabled mod identities')->helperText('Stable metadata IDs to keep disabled across release versions.'),
+                    Repeater::make('mod_identity_mappings')->label('Administrator identity mappings')->default([])->columns(3)->schema([
+                        Select::make('scope')->options(['base' => 'Installed upstream', 'target' => 'Target upstream', 'local' => 'Installed local file'])->required(),
+                        TextInput::make('path')->required()->maxLength(1024),
+                        TextInput::make('identity')->required()->maxLength(128),
+                    ])->helperText('Map renamed or metadata-less JARs to the same stable mod identity. Mappings are checked against the actual file inventories.'),
                     Repeater::make('file_rules')->label('Rules')->default([])
                         ->columns(2)->schema([
                             TextInput::make('pattern')->label('Path / glob')
@@ -130,7 +170,9 @@ final class ManagedServerResource extends Resource
                             Select::make('mode')->label('Strategy')->required()->native(false)
                                 ->options([
                                     'protect' => 'Keep local file',
-                                    'merge' => 'Needs manual merge',
+                                    'merge' => 'Review a supported text merge',
+                                    'review' => 'Require manual review',
+                                    'ignore' => 'Ignore local-only files',
                                     'disable' => 'Keep matching mod disabled',
                                     'replace' => 'Explicitly replace local changes',
                                 ]),
@@ -143,11 +185,15 @@ final class ManagedServerResource extends Resource
     {
         return $table->columns([
             TextColumn::make('label')->label('Server')->searchable()->sortable()
-                ->description(fn (ManagedServer $record) => strtoupper($record->provider) . ' · ' . $record->source),
+                ->description(fn (ManagedServer $record) => strtoupper($record->provider).' · '.$record->source),
+            TextColumn::make('runtime_report.state')->label('Last observed state')->badge()->placeholder('Unknown'),
+            TextColumn::make('baseline_status')->label('Baseline')->badge()->color(fn ($state) => $state === 'verified' ? 'success' : 'warning'),
             TextColumn::make('installed_version')->label('Installed')->badge()->color('gray'),
             TextColumn::make('available_version')->label('Latest')
                 ->placeholder('Not checked')->badge()
                 ->color(fn (ManagedServer $record) => $record->hasUpdate() ? 'warning' : 'success'),
+            TextColumn::make('active_operation_id')->label('Operation')->formatStateUsing(fn ($state) => $state ? 'In progress' : 'Idle')->placeholder('Idle'),
+            TextColumn::make('last_error')->label('Blocked / failed')->wrap()->limit(100)->placeholder('—'),
             TextColumn::make('backup_mode')->label('Backup')->badge()->color('gray'),
             TextColumn::make('last_backup_uuid')->label('Latest backup UUID')->placeholder('—')->copyable()->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('policy')->badge()->color(fn ($state) => match ($state) {
@@ -155,18 +201,36 @@ final class ManagedServerResource extends Resource
             }),
             IconColumn::make('enabled')->boolean(),
             TextColumn::make('last_checked_at')->label('Checked')->since()->placeholder('Never'),
-        ])->defaultSort('label')->recordActions([
+        ])->filters([
+            SelectFilter::make('provider')->options(['github' => 'GitHub', 'ftb' => 'FTB', 'modrinth' => 'Modrinth',
+                'curseforge' => 'CurseForge', 'atlauncher' => 'ATLauncher', 'custom' => 'Custom']),
+            SelectFilter::make('baseline_status')->options(['verified' => 'Verified', 'unverified' => 'Unverified']),
+            TernaryFilter::make('enabled'),
+        ])->toolbarActions([
+            BulkAction::make('checkSelected')->label('Check selected releases')->action(function (Collection $records): void {
+                Access::requireAdmin();
+                foreach ($records as $record) {
+                    if ($record->enabled) {
+                        CheckRelease::dispatch($record->id);
+                    }
+                }
+                Notification::make()->title('Release checks queued')->success()->send();
+            })->deselectRecordsAfterCompletion(),
+        ])->defaultSort('label')->recordUrl(fn (ManagedServer $record) => self::getUrl('view', ['record' => $record]))->recordActions([
+            Action::make('details')->icon('heroicon-o-eye')->label('Details')->url(fn (ManagedServer $record) => self::getUrl('view', ['record' => $record])),
             Action::make('checkNow')->label('Check now')->icon('heroicon-o-arrow-path')
                 ->action(function (ManagedServer $record): void {
+                    Access::requireAdmin();
                     CheckRelease::dispatch($record->id);
                     Notification::make()->title('Update check queued')->success()->send();
                 }),
             Action::make('preview')->label('Preview changes')->icon('heroicon-o-document-magnifying-glass')
                 ->action(function (ManagedServer $record): void {
+                    Access::requireAdmin();
                     try {
                         $result = app(PreviewService::class)->generate($record);
                         Notification::make()->title('Dry-run complete')
-                            ->body($result['blocked'] . ' unresolved changes · ' . $result['total'] . ' files compared')
+                            ->body($result['blocked'].' unresolved changes · '.$result['total'].' files compared')
                             ->color($result['blocked'] ? 'warning' : 'success')->send();
                     } catch (\Throwable $e) {
                         Notification::make()->title('Preview unavailable')
@@ -178,27 +242,15 @@ final class ManagedServerResource extends Resource
                 ->requiresConfirmation()
                 ->modalDescription('Download the new server pack into staging. This does not restart the server.')
                 ->action(function (ManagedServer $record): void {
+                    Access::requireAdmin();
                     PrepareUpdate::dispatch($record->id);
                     Notification::make()->title('Preparation queued')->success()->send();
-                }),
-            Action::make('deploy')->label('Apply update')->icon('heroicon-o-arrow-up-on-square')
-                ->color('danger')->requiresConfirmation()
-                ->modalHeading('Stop, update and restart this server?')
-                ->modalDescription('Requires a verified backup path and local Wings mount. A failed start triggers rollback.')
-                ->visible(fn (ManagedServer $record) => $record->prepared_root &&
-                    $record->target_manifest_path && $record->deploy_enabled &&
-                    config('arcturus-modpack-manager.enable_deploy', false))
-                ->action(function (ManagedServer $record): void {
-                    DeployManagedServer::dispatch($record->id, false);
-                    Notification::make()->title('Managed deployment queued')
-                        ->body('Follow history and the server console. A background worker is required.')
-                        ->warning()->send();
                 }),
             EditAction::make(),
             DeleteAction::make()->requiresConfirmation(),
         ])->emptyStateHeading('No modpacks connected')
-          ->emptyStateDescription('Add an existing Pelican server to begin checking releases.')
-          ->emptyStateIcon('heroicon-o-server-stack');
+            ->emptyStateDescription('Add an existing Pelican server to begin checking releases.')
+            ->emptyStateIcon('heroicon-o-server-stack');
     }
 
     public static function getPages(): array
@@ -206,6 +258,7 @@ final class ManagedServerResource extends Resource
         return [
             'index' => ListManagedServers::route('/'),
             'create' => CreateManagedServer::route('/create'),
+            'view' => ViewManagedServer::route('/{record}'),
             'edit' => EditManagedServer::route('/{record}/edit'),
         ];
     }
