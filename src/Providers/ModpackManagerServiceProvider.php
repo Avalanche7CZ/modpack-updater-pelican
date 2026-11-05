@@ -8,8 +8,14 @@ use Illuminate\Support\ServiceProvider;
 
 final class ModpackManagerServiceProvider extends ServiceProvider
 {
+    public function register(): void
+    {
+        $this->mergeConfigFrom(plugin_path('modpack-manager', 'config/modpack-manager.php'), 'modpack-manager');
+    }
+
     public function boot(): void
     {
+        $this->loadViewsFrom(plugin_path('modpack-manager', 'resources/views'), 'modpack-manager');
         // Registered by Pelican's plugin auto-discovery, no panel-core patches.
         $this->app->booted(function (): void {
             if (!$this->app->runningInConsole()) {
