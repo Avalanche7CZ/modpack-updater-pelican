@@ -31,8 +31,8 @@ final class ReleaseDiscoverer
     {
         $response = Http::withHeaders([
             'Accept' => 'application/json',
-            'User-Agent' => config('modpack-manager.user_agent', 'Pelican-Modpack-Manager/0.2'),
-        ])->timeout((int) config('modpack-manager.release_timeout_seconds', 20))
+            'User-Agent' => config('arcturus-modpack-manager.user_agent', 'Arcturus-Modpack-Manager/0.3'),
+        ])->timeout((int) config('arcturus-modpack-manager.release_timeout_seconds', 20))
             ->get($url)->throw();
         $json = $response->json();
         if (!is_array($json)) {
@@ -138,14 +138,14 @@ final class ReleaseDiscoverer
         if (!preg_match('/^[1-9][0-9]{0,10}$/D', $id)) {
             throw new InvalidArgumentException('CurseForge source must be a numeric mod ID');
         }
-        $apiKey = config('modpack-manager.curseforge_api_key');
+        $apiKey = config('arcturus-modpack-manager.curseforge_api_key');
         if (!$apiKey) {
             throw new RuntimeException('CURSEFORGE_API_KEY is not configured');
         }
         $response = Http::withHeaders([
             'x-api-key' => $apiKey,
             'Accept' => 'application/json',
-            'User-Agent' => config('modpack-manager.user_agent'),
+            'User-Agent' => config('arcturus-modpack-manager.user_agent'),
         ])->timeout(20)->get("https://api.curseforge.com/v1/mods/{$id}/files", [
             'pageSize' => 50,
             'index' => 0,
@@ -178,7 +178,7 @@ final class ReleaseDiscoverer
     {
         // Offline custom modpacks use a local manifest within the operator-owned
         // manifest directory. No arbitrary URL fetches or SSRF risk.
-        $root = (string) config('modpack-manager.custom_manifest_directory', '');
+        $root = (string) config('arcturus-modpack-manager.custom_manifest_directory', '');
         $realRoot = $root !== '' ? realpath($root) : false;
         $path = realpath($source);
         if (!$realRoot || !$path || !is_file($path) ||
