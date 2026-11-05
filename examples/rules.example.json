@@ -1,16 +1,16 @@
 {
   "rules": [
     {
+      "pattern": "config/**/*.cfg",
+      "mode": "merge"
+    },
+    {
       "pattern": "config/Arcturus/**",
       "mode": "protect"
     },
     {
       "pattern": "config/ServerUtilities/**",
       "mode": "protect"
-    },
-    {
-      "pattern": "config/**/*.cfg",
-      "mode": "merge"
     },
     {
       "pattern": "mods/Angelica-*.jar",
