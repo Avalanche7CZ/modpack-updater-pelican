@@ -24,7 +24,7 @@ if (BackupExclusions::patterns(BackupExclusions::DEFAULT_FOLDERS) !== $expected)
 if (BackupExclusions::normalize(['backup', 'backups', 'backup']) !== ['backup', 'backups']) {
     throw new RuntimeException('Folder names were not deduplicated');
 }
-if (BackupExclusions::patterns([]) !== ['# modpack-manager: do not inherit .pelicanignore']) {
+if (BackupExclusions::patterns([]) !== ['# arcturus-modpack-manager: do not inherit .pelicanignore']) {
     throw new RuntimeException('No exclusions should never inherit .pelicanignore');
 }
 foreach (['../world', 'world', 'world_nether', 'mods', 'config',
