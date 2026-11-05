@@ -169,6 +169,60 @@ final class LocalDeployment
         }
     }
 
+    /**
+     * Restore the entire saved server state after a failed boot.
+     * Requires server to be STOPPED. Keeps the failed installation as a sibling
+     * directory rather than destroying it. Mounted volume roots may not be
+     * renameable; in that case nothing is changed.
+     *
+     * @return string Path to the displaced failed installation
+     */
+    public function restore(string $liveRoot, string $backupDirectory, bool $offlineConfirmed = false): string
+    {
+        if (!$offlineConfirmed) {
+            throw new RuntimeException('Offline confirmation required before rollback');
+        }
+        $live = $this->root($liveRoot);
+        $backup = $this->root($backupDirectory);
+        if ($backup === $live || str_starts_with($backup, $live . '/')) {
+            throw new RuntimeException('Backup cannot be within live server');
+        }
+        $metadataFile = $backup . '/.modpack-manager-backup.json';
+        if (!is_file($metadataFile) || is_link($metadataFile)) {
+            throw new RuntimeException('Backup provenance metadata missing');
+        }
+        $data = json_decode((string) file_get_contents($metadataFile), true);
+        if (!is_array($data) || ($data['schema'] ?? null) !== 1 ||
+            ($data['original_root'] ?? null) !== $live ||
+            ($data['status'] ?? null) !== 'completed') {
+            throw new RuntimeException('Backup metadata mismatch or incomplete backup');
+        }
+        $parent = dirname($live);
+        $suffix = bin2hex(random_bytes(6));
+        $restored = $parent . '/.mpm-restored-' . $suffix;
+        $failed = $parent . '/.mpm-failed-' . $suffix;
+        if (!@mkdir($restored, 0700)) {
+            throw new RuntimeException('Could not create restore staging directory');
+        }
+        try {
+            $this->copyTree($backup, $restored);
+            @unlink($restored . '/.modpack-manager-backup.json');
+            if (!@rename($live, $failed)) {
+                throw new RuntimeException('Cannot rename live root (mounted volume?). No rollback applied');
+            }
+            if (!@rename($restored, $live)) {
+                if (!@rename($failed, $live)) {
+                    throw new RuntimeException("CRITICAL: Restore swap failed. Original live root: {$failed}");
+                }
+                throw new RuntimeException('Could not atomically activate restored snapshot; original root restored');
+            }
+            return $failed;
+        } catch (Throwable $error) {
+            // Partial restore staging is intentionally kept for forensic recovery.
+            throw new RuntimeException('Restore failed: ' . $error->getMessage(), previous: $error);
+        }
+    }
+
     /** Copy files only; refuse links/special nodes, and never remove the original. */
     private function copyTree(string $source, string $destination): void
     {
