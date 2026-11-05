@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Filament\Admin\Pages;
 
 use Arcturus\ModpackManager\Jobs\CheckRelease;
+use Arcturus\ModpackManager\Jobs\PrepareUpdate;
+use Arcturus\ModpackManager\Jobs\DeployManagedServer;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Models\UpdateEvent;
 use Arcturus\ModpackManager\Services\PreviewService;
@@ -57,6 +59,31 @@ final class Overview extends Page
         Notification::make()->title('Release checks queued')
             ->body('Results will appear here after the queue worker processes them.')
             ->success()->send();
+    }
+
+    public function prepareOne(int $serverId): void
+    {
+        $server = ManagedServer::findOrFail($serverId);
+        if (!$server->enabled || !$server->hasUpdate()) {
+            Notification::make()->title('No update to prepare')->warning()->send();
+            return;
+        }
+        PrepareUpdate::dispatch($server->id);
+        Notification::make()->title('Release preparation queued')->success()->send();
+    }
+
+    public function deployOne(int $serverId): void
+    {
+        $server = ManagedServer::findOrFail($serverId);
+        if (!$server->deploy_enabled || !config('modpack-manager.enable_deploy', false) ||
+            !$server->prepared_root || !$server->target_manifest_path) {
+            Notification::make()->title('Deployment is not configured')->danger()->send();
+            return;
+        }
+        DeployManagedServer::dispatch($server->id, false);
+        Notification::make()->title('Deployment queued')
+            ->body('Pelican will stop the server and require startup verification before reporting success.')
+            ->warning()->send();
     }
 
     public function previewOne(int $serverId): void
