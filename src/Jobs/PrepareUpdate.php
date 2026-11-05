@@ -50,8 +50,8 @@ final class PrepareUpdate implements ShouldQueue
             ]);
             $preview = $previewer->generate($server);
             if ($server->policy === 'auto' &&
-                config('modpack-manager.automatic_deploy', false) &&
-                config('modpack-manager.enable_deploy', false) &&
+                config('arcturus-modpack-manager.automatic_deploy', false) &&
+                config('arcturus-modpack-manager.enable_deploy', false) &&
                 $server->deploy_enabled && $preview['blocked'] === 0 &&
                 ($server->provider === 'ftb' || $server->available_asset_sha256 !== null)) {
                 DeployManagedServer::dispatch($server->id, true);
