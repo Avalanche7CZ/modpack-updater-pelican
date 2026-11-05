@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 final class UpdateEvent extends Model
 {
-    protected $table = 'modpack_manager_events';
+    protected $table = 'arcturus_modpack_events';
     protected $guarded = ['id'];
 
     protected function casts(): array
