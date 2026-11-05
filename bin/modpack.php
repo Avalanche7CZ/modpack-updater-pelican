@@ -26,6 +26,9 @@ try {
     } elseif ($action === 'preview' && ($argc === 5 || $argc === 6)) {
         $base = $manifest->load($argv[2]);
         $target = $manifest->load($argv[3]);
+        if ($base['files'] === [] || $target['files'] === []) {
+            throw new InvalidArgumentException('Empty upstream manifest; refusing to build a destructive preview');
+        }
         $paths = array_values(array_unique(array_merge(
             array_keys($base['files']), array_keys($target['files'])
         )));
