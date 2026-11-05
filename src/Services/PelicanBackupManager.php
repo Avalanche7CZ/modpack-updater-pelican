@@ -109,14 +109,11 @@ final class PelicanBackupManager
                 ->orderByDesc('id')
                 ->first();
 
-            if ($event !== null) {
-                if ($event->event !== 'server:backup.restore-complete') {
-                    throw new RuntimeException("Pelican reported restore failure for backup {$backup->uuid}");
-                }
-                // The callback also clears ServerState::RestoringBackup.
-                if ($server->refresh()->status === null) {
-                    return;
-                }
+            if (BackupSafetyGate::restoreFinished(
+                $event?->event,
+                $event !== null && $server->refresh()->status === null
+            )) {
+                return;
             }
             sleep(3);
         } while (microtime(true) < $deadline);
@@ -128,17 +125,14 @@ final class PelicanBackupManager
 
     private function requireCompleted(Backup $backup): void
     {
-        if ($backup->status !== BackupStatus::Successful
-            || $backup->completed_at === null
-            || !$backup->is_successful
-            || !$backup->is_locked
-            || $backup->ignored_files !== []
-            || (int) $backup->bytes <= 0
-            || !is_string($backup->checksum) || trim($backup->checksum) === '') {
-            throw new RuntimeException(
-                "Pelican backup {$backup->uuid} is missing, incomplete, invalid, or unlocked"
-            );
-        }
+        BackupSafetyGate::requireComplete(
+            $backup->completed_at !== null,
+            $backup->status === BackupStatus::Successful && (bool) $backup->is_successful,
+            (bool) $backup->is_locked,
+            (array) $backup->ignored_files,
+            (int) $backup->bytes,
+            is_string($backup->checksum) ? $backup->checksum : null
+        );
     }
 
     private function requireStopped(Server $server): void
