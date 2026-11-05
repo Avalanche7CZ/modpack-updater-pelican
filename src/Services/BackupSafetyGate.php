@@ -8,7 +8,7 @@ use RuntimeException;
 /** Pure safety rules shared by Pelican-backed workflows; independently unit tested. */
 final class BackupSafetyGate
 {
-    /** Reject a pending, failed, unlocked, excluded or unverifiable backup. */
+    /** Reject pending, failed, unlocked, mismatched or unverifiable backup. */
     public static function requireComplete(
         bool $completed,
         bool $successful,
@@ -18,7 +18,7 @@ final class BackupSafetyGate
         ?string $checksum,
         array $expectedIgnored = []
     ): void {
-        if (!$completed || !$successful || !$locked || $ignored !== [] ||
+        if (!$completed || !$successful || !$locked ||
             $ignored !== $expectedIgnored ||
             $bytes <= 0 || $checksum === null ||
             preg_match('/^[a-zA-Z0-9_-]+:[a-fA-F0-9]{32,128}$/D', $checksum) !== 1) {
