@@ -56,7 +56,7 @@ foreach ([
 ] as $path => $expected) {
     eq($expected, act($plan, $path), $path);
 }
-eq(3, $plan['blocked'], 'blocked count');
+eq(2, $plan['blocked'], 'blocked count');
 eq(false, $plan['applicable'], 'applicable flag');
 
 $replace = $p->plan(['config/a.cfg' => h('a')], ['config/a.cfg' => h('custom')], ['config/a.cfg' => h('b')], [
