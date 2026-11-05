@@ -21,7 +21,18 @@ final class ModpackManagerPlugin implements Plugin
 
     public function register(Panel $panel): void
     {
-        // No navigation or server actions until a compatible admin UI is implemented.
+        if ($panel->getId() !== 'admin') {
+            return;
+        }
+        $id = str($panel->getId())->title();
+        $panel->discoverPages(
+            plugin_path($this->getId(), "src/Filament/$id/Pages"),
+            "Arcturus\\ModpackManager\\Filament\\$id\\Pages"
+        );
+        $panel->discoverResources(
+            plugin_path($this->getId(), "src/Filament/$id/Resources"),
+            "Arcturus\\ModpackManager\\Filament\\$id\\Resources"
+        );
     }
 
     public function boot(Panel $panel): void
