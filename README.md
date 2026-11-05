@@ -1,99 +1,151 @@
 # Pelican Modpack Manager
 
-Universal, safety-first modpack update planning for [Pelican Panel](https://pelican.dev/).
+Pelican plugin for Minecraft modpack release checks, protected config changes, file-diff previews, staged updates and Discord notifications.
 
-> **Status: early development / read-only prototype.** This repository does not yet install or update running servers. Do not deploy it as an automatic updater.
+**Status: 0.2.0 development / experimental.** Do not deploy to production until tested on the exact Panel and Wings version. The plugin does not modify Pelican core or require new eggs.
 
-## Goals
+## Features
 
-- A Pelican admin plugin (Filament) with per-server update policies.
-- Provider adapters for FTB, GTNH/GitHub releases, CurseForge, Modrinth, and custom sources.
-- A common manifest-based engine with SHA-256 hashes and a three-way comparison (installed upstream / local filesystem / target upstream).
-- Explicit preservation rules for customized configs, extra files, and deliberately disabled mods.
-- Dry-run previews before backup, stop, staging, deploy, verification, rollback and Discord notifications.
+- Native Filament admin dashboard with server status, release checks, responsive tables and preview details.
+- Managed servers form with actual Pelican server selection, providers, policy, protection rules and worker paths.
+- Searchable and filterable update history, queued background jobs and Discord webhook notifications.
+- Release discovery: FTB, GitHub Releases, Modrinth, CurseForge (notification only), local custom manifests.
+- Versioned SHA-256 manifests and three-way comparison: verified original upstream / local server / new upstream.
+- Staging via official FTB Server Installer or unique server ZIP on GitHub/Modrinth.
+- Offline deployment with full backup, checksums and file-level rollback on failure.
+- Optional Pelican/Wings stop/start integration and Minecraft "Done (seconds)!" startup verification.
+- Full snapshot restore after failed startup, if the live root can be atomically renamed.
 
-## Initial implementation
+**Not implemented:** semantic configuration merging, mod-ID-aware disabled-mod handling, deployment to a remote Wings node without a shared/local filesystem. CurseForge does not automatically supply server ZIPs. GitHub/Modrinth need a unique server ZIP to stage.
 
-The current implementation contains a **read-only manifest planner and filesystem inventory scanner**. It reads package and live-server files to compute hashes but does not alter server files, invoke Pelican APIs or download modpacks.
+## Requirements
 
-Repository layout:
+- Pelican Panel with plugin API v1 and Filament v4. Compatibility with the owner's 1.0.0-rc.1 build still needs a staging-panel test.
+- PHP 8.3+, Pelican scheduler, and a configured Laravel queue worker.
+- PHP ZIP extension for ZIP sources and a validated official FTB installer for FTB sources.
+- Managed updates only where the Panel's queue worker can access the Wings volume filesystem.
+- Enough disk space for a full server backup outside the live tree.
 
-- `plugin.json` — Pelican plugin metadata (API v1).
-- `src/ModpackManagerPlugin.php` — Filament plugin entry point.
-- `src/Services/UpdatePlanner.php` — deterministic update planning.
-- `src/Services/DirectoryInventory.php` — SHA-256 scans with symlink checks and bounded release inventory.
-- `src/Services/ManifestJson.php` — strict versioned manifest format.
-- `bin/modpack.php` — read-only command line preview.
-- `examples/rules.example.json` — illustrative protected configuration and disabled mod rules.
-- `tests/` — standalone PHP tests (run with `php tests/planner.php && php tests/inventory.php`).
+## Install
 
-## Planner inputs
+GitHub Actions uploads **pelican-modpack-manager-plugin** as a ZIP artifact. The ZIP has a root folder named **modpack-manager**, matching the plugin ID.
 
-Three relative-path => SHA-256 maps:
+Import that ZIP in Pelican Admin → Plugins → Import, then Install. For manual installation, copy plugin.json and the src, config, database, resources and bin folders to:
 
-1. `base`: immutable manifest for the originally installed upstream release.
-2. `local`: inventory of the live installation (hashes only).
-3. `target`: immutable manifest of the proposed upstream release.
-
-Rules are ordered by **last match wins**. Supported modes:
-
-- `protect`: keep existing local content.
-- `disable`: block installation of a matching upstream file (the worker must separately enforce the disabled-mod policy).
-- `replace`: allow replacement of locally changed content explicitly.
-- `merge`: mark text content for a later conflict-aware three-way merge; the planner never claims a merge succeeded.
-
-Default classification deliberately **blocks** local conflicts, missing base provenance and unknown upstream removals from being applied automatically. Local-only files are never targeted for deletion. In the CLI preview, only paths owned by the old/new manifests are scanned; all other live files remain untouched and are not listed. Known runtime/world paths are immutable, even if a replacement rule is configured.
-
-## Safety constraints
-
-- Never infer a trusted baseline from the current live directory alone.
-- No writes/deletions during planning; no auto-updates until staging and verified backup are implemented.
-- Fail closed on ambiguous changes, unsafe paths, symlinks and archive extraction.
-- All runtime/world/user data must remain outside modpack-managed ownership.
-- A successful server startup is not sufficient proof that an update is safe.
-
-## Roadmap
-
-1. Read-only manifest engine + tests.
-2. Provider adapters, package verification, release metadata and safe baseline adoption.
-3. Admin UI: bind servers, protection rules, dry-run/history, permissions.
-4. Out-of-process deployment worker with durable jobs, verified backups and recovery.
-5. Maintenance windows, health checks, approvals, notifications and staged rollout.
-
-**Compatibility note:** Pelican's plugin API evolves. The Filament entry point follows the documented API v1 structure; actual plugin installation and UI compatibility with panel 1.0.0-rc.1 have not yet been tested.
-
-## Run a local dry-run (PHP 8.3+)
-
-Use **trusted, already unpacked server packs**. A live server must never be substituted for an upstream release. Confirm the actual installed release version before creating the baseline.
-
-1. Build the original and target upstream manifests:
-
-~~~bash
-php bin/modpack.php manifest /path/to/original-serverpack 2.8.1 > base.json
-php bin/modpack.php manifest /path/to/new-serverpack 2.9.0 > target.json
+~~~text
+/var/www/pelican/plugins/modpack-manager/
 ~~~
 
-2. Inspect the live installation without changing it:
+From the Pelican installation directory:
 
 ~~~bash
-php bin/modpack.php preview base.json target.json /path/to/live-server examples/rules.example.json > preview.json
+php artisan p:plugin:install modpack-manager
 ~~~
 
-Output includes per-file actions (`update`, `add`, `remove`, `preserve`, `conflict`, `merge_required`, `skip_disabled`, etc.) and `blocked`/`applicable` indicators. **`applicable=true` is not deployment approval**; it only means no unresolved planner conflicts. There is no deploy command.
+Pelican automatically registers plugin migrations, providers, commands and views. The plugin is limited to the admin panel and its resources are limited to root administrators.
 
-Rule format: `{"rules": [{"pattern": "config/**/*.cfg", "mode": "merge"}, {"pattern": "config/Arcturus/**", "mode": "protect"}]}`. Last rule wins; `*` stays inside one directory, `**` matches nested paths. Example disabled-mod globs are illustrative and must be verified against real JAR filenames. There is no mod-ID-aware resolver yet.
+## Environment
 
-**Security and limitations:**
+Set these values on the Pelican **panel/queue worker host**, never in GitHub. Restart the queue workers after changes.
 
-- Scanning refuses symlinks, unsafe relative paths and oversized release inventories. It does not validate signatures or safely extract downloaded archives; release provenance must be established separately.
-- Source manifests must describe the **exact upstream releases**. A manually modified or wrong baseline makes three-way comparisons unreliable.
-- No automatic merging: `merge_required` is a stop condition, not a completed merge.
-- No automatic enforcement of disabled mods or binary file replacement. Already-present disabled mods cause a stop condition.
-- No Pelican dashboard or update execution yet. A successful local PHP test is not equivalent to integration testing with Pelican 1.0.0-rc.1.
+~~~dotenv
+MODPACK_MANAGER_CHECK_INTERVAL_HOURS=6
+MODPACK_MANAGER_DISCORD_WEBHOOK=
+MODPACK_MANAGER_CURSEFORGE_API_KEY=
+MODPACK_MANAGER_CUSTOM_MANIFEST_DIRECTORY=/srv/modpack-manifests
+MODPACK_MANAGER_ALLOWED_LIVE_ROOTS=/var/lib/pelican/volumes
+MODPACK_MANAGER_FTB_INSTALLER_BINARY=/usr/local/bin/ftb-server
 
-## Plugin packaging
+# Both are intentionally disabled by default.
+MODPACK_MANAGER_ENABLE_DEPLOY=false
+MODPACK_MANAGER_AUTOMATIC_DEPLOY=false
+~~~
 
-Pelican requires the plugin directory name to match `plugin.json`'s ID. This repo is named `modpack-updater-pelican`, but the installed plugin folder must be **`modpack-manager`**, with `plugin.json` at its root. The plugin entry point currently registers no admin pages or actions, so installing it is not useful yet. Keep it on a test instance until the UI is implemented and verified.
+The standard Laravel queue worker needs to run. Long-running FTB staging and Minecraft startup may need a 3600-second worker timeout. Ensure the Laravel scheduler is active; automatic checks use the modpack:check Artisan command.
+
+For deployment, give the **dedicated queue worker** narrowly scoped access to the exact live server directory, staging parent and external backup parent. Do not run the web server as root.
+
+## Connect a server
+
+Open **Modpack Manager → Managed servers → Connect server**. Select an existing Pelican server, release provider, source ID, the verified installed pack version and protection rules.
+
+Provider source formats:
+
+| Provider | Source | Stage support |
+| --- | --- | --- |
+| FTB | Numeric pack ID | Official FTB Server Installer |
+| GitHub | owner/repository | One server ZIP matched by optional asset glob |
+| Modrinth | Project slug / ID | One recognizable server ZIP |
+| CurseForge | Numeric mod ID | Release checks only, API key required |
+| Custom | Absolute path to local manifest JSON in approved directory | Manual |
+
+**File rules** are ordered; the last matching rule wins. Examples:
+
+~~~json
+{
+  "rules": [
+    {"pattern": "config/**/*.cfg", "mode": "merge"},
+    {"pattern": "config/Arcturus/**", "mode": "protect"},
+    {"pattern": "mods/Angelica-*.jar", "mode": "disable"},
+    {"pattern": "mods/ArchaicFix-*.jar", "mode": "disable"}
+  ]
+}
+~~~
+
+Confirm the actual mods before using these example rules. Disabled mods are matched by file path patterns, not by JAR metadata. A "merge" rule marks conflicts for manual review; it does not silently merge configuration files.
+
+World folders, runtime identity and server.properties are treated as immutable, even with a replace rule.
+
+## Adopt a trusted baseline
+
+You must have the **unmodified original upstream server pack** corresponding to the installed version. Do not infer a baseline from the customized live server.
+
+~~~bash
+php bin/modpack.php manifest /srv/upstream/GTNH-2.8.1 2.8.1 > /srv/manifests/gtnh-base.json
+~~~
+
+To use the UI's read-only preview, set:
+
+- Live root: existing local Wings volume path within MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.
+- Baseline manifest path: trusted JSON file for installed upstream release.
+- Target manifest path: versioned JSON manifest of the new server pack.
+
+The panel only reads hashes during preview. Remote nodes need a separate worker or manual CLI; this plugin does not silently mount volumes or connect by SSH.
+
+## Update flow
+
+1. Scheduled release check records latest stable version and optionally notifies Discord.
+2. Prepare downloads a server ZIP to isolated staging or runs the official FTB installer there.
+3. The worker hashes the staged files and builds a target manifest.
+4. Dry-run compares baseline, current server and target, keeping local extras and protected configs.
+5. A confirmed/approved deployment stops the Pelican server, copies a full snapshot outside the live tree, applies updates and starts Minecraft.
+6. Success requires the new Minecraft startup marker (not merely a running container).
+7. On failure it attempts to restore the full snapshot, then restart the original version.
+
+**Manual deployment** requires MODPACK_MANAGER_ENABLE_DEPLOY=true and the per-server deploy toggle. **Automatic deployment** additionally requires MODPACK_MANAGER_AUTOMATIC_DEPLOY=true, policy Auto, no unresolved conflicts, and an upstream artifact digest (or validated FTB installer). Both flags are OFF by default.
+
+For major GTNH upgrades, use Approval policy. A successful boot cannot guarantee world/machine migration correctness. Backups are not pruned automatically.
+
+## Offline node CLI
+
+The independent PHP CLI can be run on a Wings host without the Panel. It **does not stop Minecraft**. You must stop the server yourself before deploying or rolling back.
+
+~~~bash
+php bin/modpack.php manifest /srv/upstream/old 2.8.1 > base.json
+php bin/modpack.php manifest /srv/upstream/new 2.9.0 > target.json
+
+php bin/modpack.php preview base.json target.json /srv/minecraft/gtnh examples/rules.example.json > preview.json
+
+# Only after stopping Minecraft:
+php bin/modpack.php deploy base.json target.json /srv/minecraft/gtnh /srv/upstream/new /srv/backups examples/rules.example.json --offline-confirmed
+
+# Full backup rollback, also offline:
+php bin/modpack.php rollback /srv/minecraft/gtnh /srv/backups/SNAPSHOT-DIRECTORY --offline-confirmed
+~~~
+
+The "--offline-confirmed" CLI flag is an explicit acknowledgement, not independent proof that the server has stopped. The integrated Pelican queue worker separately verifies the Wings state.
+
+Rollback restores all files including world data from the snapshot, and preserves the failed installation in a sibling directory. Mounted volume roots that cannot be renamed may need a manual restore.
 
 ## Validation
 
@@ -101,6 +153,19 @@ Pelican requires the plugin directory name to match `plugin.json`'s ID. This rep
 find src bin tests -name '*.php' -print0 | xargs -0 -n1 php -l
 php tests/planner.php
 php tests/inventory.php
+php tests/deployment.php
 ~~~
 
-GitHub Actions also runs these tests and an end-to-end CLI smoke test. It does not access a production Minecraft server.
+GitHub Actions runs these tests, a CLI smoke test and builds the plugin ZIP. **CI does not test an actual Pelican installation, Wings daemon or Minecraft boot.** Live integration remains required before enabling deployment.
+
+## Safety limitations
+
+- Deploy is globally and individually opt-in; no panel installation triggers a server restart.
+- Symlinks, traversal paths and ZIP entries with unsafe file types are rejected.
+- Changed local configs or untrusted baseline metadata block updates.
+- Full local backups happen before writing files; on a failed boot, full restore is attempted.
+- Modpacks may require manual migrations, Java/runtime changes or config review.
+- No arbitrary URL downloads for custom providers; local JSON manifests only.
+- This plugin relies on internal Pelican daemon APIs, which may change across panel releases.
+
+Development continues in the draft PR. Use a disposable staging server first.

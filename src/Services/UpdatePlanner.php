@@ -88,7 +88,12 @@ final class UpdatePlanner
                 $action = $new === null ? 'remove_with_override' : 'replace_with_override';
             }
 
-            $isBlocked = in_array($action, ['conflict', 'merge_required', 'disable_requires_enforcement'], true);
+            // A node worker can safely enforce an explicit disabled-mod rule
+            // for JARs under mods/. It cannot enforce arbitrary file exclusions.
+            $safeDisabledMod = $action === 'disable_requires_enforcement' &&
+                preg_match('~^mods/(?:[^/]+/)*[^/]+\\.jar$~iD', $path) === 1;
+            $isBlocked = in_array($action, ['conflict', 'merge_required'], true) ||
+                ($action === 'disable_requires_enforcement' && !$safeDisabledMod);
             $blocked += (int) $isBlocked;
             $changes[] = [
                 'path' => $path,
