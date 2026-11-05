@@ -66,7 +66,7 @@ final class LocalDeployment
         } else {
             $this->checkSeparate($live, $stage, $backups);
         }
-        $lockPath = dirname($live) . '/.' . basename($live) . '.modpack-manager.lock';
+        $lockPath = dirname($live) . '/.' . basename($live) . '.arcturus-modpack-manager.lock';
         if (is_link($lockPath)) {
             throw new RuntimeException('Unsafe lock file');
         }
@@ -153,7 +153,7 @@ final class LocalDeployment
                         'changed_paths' => $modified,
                         'status' => 'completed',
                     ];
-                    $written = @file_put_contents($backup . '/.modpack-manager-backup.json',
+                    $written = @file_put_contents($backup . '/.arcturus-modpack-manager-backup.json',
                         json_encode($metadata, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
                     if ($written === false) {
                         throw new RuntimeException('Could not save backup metadata');
@@ -220,7 +220,7 @@ final class LocalDeployment
         if ($backup === $live || str_starts_with($backup, $live . '/')) {
             throw new RuntimeException('Backup cannot be within live server');
         }
-        $metadataFile = $backup . '/.modpack-manager-backup.json';
+        $metadataFile = $backup . '/.arcturus-modpack-manager-backup.json';
         if (!is_file($metadataFile) || is_link($metadataFile)) {
             throw new RuntimeException('Backup provenance metadata missing');
         }
@@ -239,7 +239,7 @@ final class LocalDeployment
         }
         try {
             $this->copyTree($backup, $restored);
-            @unlink($restored . '/.modpack-manager-backup.json');
+            @unlink($restored . '/.arcturus-modpack-manager-backup.json');
             if (!@rename($live, $failed)) {
                 throw new RuntimeException('Cannot rename live root (mounted volume?). No rollback applied');
             }
@@ -309,7 +309,7 @@ final class LocalDeployment
         if (is_link($dest)) {
             throw new RuntimeException("Symlink destination: {$relative}");
         }
-        $tmp = $dest . '.modpack-manager-' . bin2hex(random_bytes(8)) . '.tmp';
+        $tmp = $dest . '.arcturus-modpack-manager-' . bin2hex(random_bytes(8)) . '.tmp';
         try {
             if (!@copy($source, $tmp)) {
                 throw new RuntimeException("Copy failed: {$relative}");
