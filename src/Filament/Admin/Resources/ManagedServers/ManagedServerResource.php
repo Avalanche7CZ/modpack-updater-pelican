@@ -7,6 +7,7 @@ use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\Create
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\EditManagedServer;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ListManagedServers;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
+use Arcturus\ModpackManager\Services\PreviewService;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -75,6 +76,15 @@ final class ManagedServerResource extends Resource
                             'auto' => 'Auto (requires verified worker)']),
                     Toggle::make('enabled')->label('Monitor this server')->default(true),
                 ]),
+            Section::make('Local preview (advanced)')
+                ->description('Optional single-host setup. The panel must have read-only access to the Wings volume. Leave blank for remote nodes.')
+                ->collapsible()->collapsed()->columns(1)->schema([
+                    TextInput::make('local_root')->label('Live server directory')->maxLength(2048)
+                        ->placeholder('/var/lib/pelican/volumes/server-uuid')
+                        ->helperText('Must be within the operator-configured MODPACK_MANAGER_ALLOWED_LIVE_ROOTS.'),
+                    TextInput::make('base_manifest_path')->label('Verified installed-release manifest')->maxLength(2048),
+                    TextInput::make('target_manifest_path')->label('Verified target-release manifest')->maxLength(2048),
+                ]),
             Section::make('File protection')
                 ->description('Rules apply in order. The last matching rule wins. The planner always protects world/runtime data.')
                 ->schema([
@@ -113,6 +123,18 @@ final class ManagedServerResource extends Resource
                 ->action(function (ManagedServer $record): void {
                     CheckRelease::dispatch($record->id);
                     Notification::make()->title('Update check queued')->success()->send();
+                }),
+            Action::make('preview')->label('Preview changes')->icon('heroicon-o-document-magnifying-glass')
+                ->action(function (ManagedServer $record): void {
+                    try {
+                        $result = app(PreviewService::class)->generate($record);
+                        Notification::make()->title('Dry-run complete')
+                            ->body($result['blocked'] . ' unresolved changes · ' . $result['total'] . ' files compared')
+                            ->color($result['blocked'] ? 'warning' : 'success')->send();
+                    } catch (\Throwable $e) {
+                        Notification::make()->title('Preview unavailable')
+                            ->body($e->getMessage())->danger()->send();
+                    }
                 }),
             EditAction::make(),
             DeleteAction::make()->requiresConfirmation(),
