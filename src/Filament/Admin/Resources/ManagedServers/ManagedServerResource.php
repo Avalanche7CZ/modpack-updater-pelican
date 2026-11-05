@@ -7,6 +7,8 @@ use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\Create
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\EditManagedServer;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ListManagedServers;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
+use Arcturus\ModpackManager\Jobs\PrepareUpdate;
+use Arcturus\ModpackManager\Jobs\DeployManagedServer;
 use Arcturus\ModpackManager\Services\PreviewService;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Filament\Actions\Action;
@@ -146,6 +148,27 @@ final class ManagedServerResource extends Resource
                         Notification::make()->title('Preview unavailable')
                             ->body($e->getMessage())->danger()->send();
                     }
+                }),
+            Action::make('prepare')->label('Prepare release')->icon('heroicon-o-arrow-down-tray')
+                ->visible(fn (ManagedServer $record) => $record->hasUpdate())
+                ->requiresConfirmation()
+                ->modalDescription('Download the new server pack into staging. This does not restart the server.')
+                ->action(function (ManagedServer $record): void {
+                    PrepareUpdate::dispatch($record->id);
+                    Notification::make()->title('Preparation queued')->success()->send();
+                }),
+            Action::make('deploy')->label('Apply update')->icon('heroicon-o-arrow-up-on-square')
+                ->color('danger')->requiresConfirmation()
+                ->modalHeading('Stop, update and restart this server?')
+                ->modalDescription('Requires a verified backup path and local Wings mount. A failed start triggers rollback.')
+                ->visible(fn (ManagedServer $record) => $record->prepared_root &&
+                    $record->target_manifest_path && $record->deploy_enabled &&
+                    config('modpack-manager.enable_deploy', false))
+                ->action(function (ManagedServer $record): void {
+                    DeployManagedServer::dispatch($record->id, false);
+                    Notification::make()->title('Managed deployment queued')
+                        ->body('Follow history and the server console. A background worker is required.')
+                        ->warning()->send();
                 }),
             EditAction::make(),
             DeleteAction::make()->requiresConfirmation(),
