@@ -53,7 +53,12 @@ final class BackupExclusions
     /** @param array<mixed> $folders @return list<string> */
     public static function patterns(array $folders): array
     {
-        return array_map(static fn(string $name): string => '/' . $name . '/',
-            self::normalize($folders));
+        $names = self::normalize($folders);
+        if ($names === []) {
+            // Wings otherwise silently falls back to .pelicanignore, which
+            // might exclude world data from a supposed full recovery backup.
+            return ['# modpack-manager: do not inherit .pelicanignore'];
+        }
+        return array_map(static fn(string $name): string => '/' . $name . '/', $names);
     }
 }
