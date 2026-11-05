@@ -56,10 +56,11 @@ final class ManagedServerResource extends Resource
                             'ftb' => 'FTB · Feed The Beast',
                             'github' => 'GitHub Releases · GTNH / TFG / custom',
                             'modrinth' => 'Modrinth',
-                            'custom' => 'Custom manifest (reserved)',
+                            'curseforge' => 'CurseForge (API key required)',
+                            'custom' => 'Custom local manifest',
                         ])->default('github')->native(false),
                     TextInput::make('source')->label('Pack ID / owner/repo')
-                        ->helperText('FTB: numeric pack ID · GitHub: owner/repo · Modrinth: project slug')
+                        ->helperText('FTB/CurseForge: numeric ID · GitHub: owner/repo · Modrinth: slug · Custom: absolute manifest path')
                         ->maxLength(255)->required(),
                     TextInput::make('asset_pattern')->label('Server ZIP filename pattern')
                         ->helperText('GitHub only. Example: *Server*Java17*.zip — one matching file is required.')
