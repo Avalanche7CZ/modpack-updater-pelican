@@ -70,7 +70,7 @@ $files = new RecursiveIteratorIterator(
     new RecursiveDirectoryIterator(__DIR__ . '/../src', FilesystemIterator::SKIP_DOTS)
 );
 foreach ($files as $file) {
-    if (!$file->isFile() || !$file->getExtension() === 'php') {
+    if (!$file->isFile() || $file->getExtension() !== 'php') {
         continue;
     }
     $code = file_get_contents($file->getPathname());
