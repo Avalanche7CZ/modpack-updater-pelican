@@ -17,6 +17,7 @@ use Filament\Actions\EditAction;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\TagsInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
@@ -102,6 +103,18 @@ final class ManagedServerResource extends Resource
                             'pelican' => 'Pelican Backups (recommended)',
                             'filesystem' => 'Legacy filesystem snapshots',
                         ])->helperText('Pelican uses the existing Wings/S3 backup host and locks the pre-update backup.'),
+                    TagsInput::make('backup_excluded_directories')
+                        ->label('Exclude folders from Pelican backup')
+                        ->placeholder('Add folder, press Enter')
+                        ->helperText('Top-level folder names only, e.g. backup and backups. No globs or paths. Excluded folders are preserved separately during full restore.')
+                        ->default(['backup', 'backups'])
+                        ->afterStateHydrated(function (TagsInput $component, $state): void {
+                            if ($state === null) {
+                                $component->state(['backup', 'backups']);
+                            }
+                        })
+                        ->rules(['array', 'max:16'])
+                        ->columnSpanFull(),
                     TextInput::make('backup_root')->label('Legacy snapshot directory (filesystem mode only)')
                         ->helperText('Optional with Pelican Backups. Required for filesystem mode; must be outside the live server.')
                         ->maxLength(2048),
