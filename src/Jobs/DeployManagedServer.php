@@ -7,6 +7,8 @@ use App\Models\Backup;
 use App\Models\Server;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Services\DirectoryInventory;
+use Arcturus\ModpackManager\Services\BackupExclusions;
+use Arcturus\ModpackManager\Services\ExcludedFolderPreserver;
 use Arcturus\ModpackManager\Services\DiscordNotifier;
 use Arcturus\ModpackManager\Services\LocalDeployment;
 use Arcturus\ModpackManager\Services\ManifestJson;
@@ -43,6 +45,7 @@ final class DeployManagedServer implements ShouldQueue
         PelicanPowerController $power,
         PelicanBackupManager $backups,
         DirectoryInventory $inventory,
+        ExcludedFolderPreserver $preserver,
         DiscordNotifier $discord
     ): void {
         if (!config('modpack-manager.enable_deploy', false)) {
@@ -75,6 +78,9 @@ final class DeployManagedServer implements ShouldQueue
                 throw new RuntimeException('Missing live path, release manifests, staging, or snapshot directory');
             }
 
+            $excludedFolders = $backupMode === 'pelican'
+                ? BackupExclusions::normalize($managed->backup_excluded_directories ?? BackupExclusions::DEFAULT_FOLDERS)
+                : [];
             $pelican = Server::query()->where('uuid', $managed->pelican_server_uuid)->firstOrFail();
             $original = $power->state($pelican);
             if (!in_array($original, ['running', 'exited'], true)) {
@@ -108,12 +114,22 @@ final class DeployManagedServer implements ShouldQueue
             // Manifest-managed hashes are a supplementary post-restore check.
             // Pelican's backup callback verifies the full archive/restore outcome.
             $trackedPaths = array_unique(array_merge(array_keys($base['files']), array_keys($target['files'])));
+            foreach ($trackedPaths as $path) {
+                foreach ($excludedFolders as $excluded) {
+                    if (str_starts_with($path, $excluded . '/')) {
+                        throw new RuntimeException(
+                            'Cannot omit backup folder owned by modpack manifest: ' . $excluded
+                        );
+                    }
+                }
+            }
             $beforeHashes = $backupMode === 'pelican'
                 ? $inventory->hashPaths($managed->local_root, $trackedPaths)
                 : [];
 
             $pelicanBackup = null;
             $filesystemBackup = null;
+            $preservedStash = null;
             $backupInitiated = false;
             $backupCompleted = false;
             $deploymentStarted = false;
@@ -127,7 +143,7 @@ final class DeployManagedServer implements ShouldQueue
                     // of deleting someone's existing backup.
                     $name = 'Pre-update ' . mb_substr($managed->label, 0, 70) .
                         ' ' . $base['version'] . ' -> ' . $target['version'];
-                    $pelicanBackup = $backups->initiate($pelican, $name);
+                    $pelicanBackup = $backups->initiate($pelican, $name, $excludedFolders);
                     $backupInitiated = true;
                     $managed->forceFill(['last_backup_uuid' => $pelicanBackup->uuid])->save();
                     $managed->events()->create([
@@ -136,7 +152,7 @@ final class DeployManagedServer implements ShouldQueue
                         'message' => 'Pelican locked backup started',
                         'details' => ['backup_uuid' => $pelicanBackup->uuid, 'backend' => 'pelican'],
                     ]);
-                    $backups->awaitSuccessful($pelicanBackup);
+                    $backups->awaitSuccessful($pelicanBackup, $excludedFolders);
                     $backupCompleted = true;
                     $managed->events()->create([
                         'kind' => 'backup', 'status' => 'success',
@@ -145,6 +161,7 @@ final class DeployManagedServer implements ShouldQueue
                             'backup_uuid' => $pelicanBackup->uuid,
                             'bytes' => (int) $pelicanBackup->bytes,
                             'host' => $pelicanBackup->backupHost?->schema,
+                            'excluded_directories' => $excludedFolders,
                         ],
                     ]);
                 }
@@ -199,7 +216,18 @@ final class DeployManagedServer implements ShouldQueue
                     if ($deploymentStarted) {
                         $power->stop($pelican);
                         if ($backupMode === 'pelican' && $pelicanBackup && $backupCompleted) {
-                            $backups->restoreAndWait($pelican, $pelicanBackup);
+                            // Pelican truncate=true deletes *everything* in the
+                            // live directory, including folders intentionally
+                            // omitted from its backup. Move those folders to a
+                            // sibling staging directory using rename first.
+                            $preservedStash = $preserver->moveOut(
+                                $managed->local_root, $managed->staging_parent, $excludedFolders
+                            );
+                            $backups->restoreAndWait($pelican, $pelicanBackup, $excludedFolders);
+                            if ($preservedStash !== null) {
+                                $preserver->moveBack($managed->local_root, $preservedStash);
+                                $preservedStash = null;
+                            }
                             $actual = $inventory->hashPaths($managed->local_root, $trackedPaths);
                             if ($actual !== $beforeHashes) {
                                 throw new RuntimeException('Wings reported restore success, but managed files differ');
@@ -229,7 +257,10 @@ final class DeployManagedServer implements ShouldQueue
                         $power->startAndVerify($pelican, $managed->local_root);
                     }
                 } catch (Throwable $rollbackError) {
-                    $recovery = 'RECOVERY FAILED: ' . $rollbackError->getMessage();
+                    $recovery = 'RECOVERY FAILED: ' . $rollbackError->getMessage() .
+                        ($preservedStash !== null
+                            ? ' | Excluded folders preserved at: ' . $preservedStash
+                            : '');
                     report($rollbackError);
                 }
                 $message = mb_substr($error->getMessage() . ' | ' . $recovery, 0, 1800);
@@ -243,6 +274,7 @@ final class DeployManagedServer implements ShouldQueue
                         'backup_uuid' => $pelicanBackup?->uuid,
                         'filesystem_backup' => $filesystemBackup,
                         'recovery' => $recovery,
+                        'excluded_directories' => $excludedFolders,
                     ],
                 ]);
                 try {
