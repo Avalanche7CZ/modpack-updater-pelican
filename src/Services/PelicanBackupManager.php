@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Arcturus\ModpackManager\Services;
@@ -11,6 +12,7 @@ use App\Models\Server;
 use App\Repositories\Daemon\DaemonBackupRepository;
 use App\Services\Backups\DownloadLinkService;
 use App\Services\Backups\InitiateBackupService;
+use Arcturus\ModpackManager\Remote\ServerFilesFactory;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -37,7 +39,12 @@ final class PelicanBackupManager
 
         // Pelican's own BackupController serializes creates on the parent row.
         // Use the same locking discipline so quota checks remain atomic.
+        if ($excludedFolders !== []) {
+            $files = app(ServerFilesFactory::class)->wings($server);
+            BackupExclusions::requireSafeForWorld($excludedFolders, $files->read('server.properties'));
+        }
         $patterns = BackupExclusions::patterns($excludedFolders);
+
         return DB::transaction(function () use ($server, $name, $patterns): Backup {
             Server::query()->whereKey($server->id)->lockForUpdate()->value('id');
 
@@ -57,6 +64,7 @@ final class PelicanBackupManager
             $backup->refresh();
             if ($backup->completed_at !== null) {
                 $this->requireCompleted($backup, BackupExclusions::patterns($excludedFolders));
+
                 return $backup;
             }
             sleep(3);
@@ -72,11 +80,33 @@ final class PelicanBackupManager
      * A restored Pelican server status of NULL is NOT proof of success:
      * Pelican clears this flag on both successful and failed restores.
      */
-    public function restoreAndWait(Server $server, Backup $backup, array $excludedFolders = [], int $timeoutSeconds = 3600): void
+    public function restoreAndWait(Server $server, Backup $backup, array $excludedFolders = [], int $timeoutSeconds = 3600, ?string $preservedStash = null): void
     {
         $this->requireStopped($server);
         if ($backup->server_id !== $server->id) {
             throw new RuntimeException('Refusing restore: backup belongs to a different server');
+        }
+        if ($excludedFolders !== []) {
+            $root = config('arcturus-modpack-manager.local_server_roots.'.$server->uuid);
+            if (! $root) {
+                throw new RuntimeException('Automatic truncating restore is blocked: excluded directories cannot be preserved outside this remote Wings volume');
+            }
+            foreach (BackupExclusions::normalize($excludedFolders) as $folder) {
+                if (file_exists($root.'/'.$folder) || is_link($root.'/'.$folder)) {
+                    throw new RuntimeException('Excluded folders must be safely stashed before a truncating restore');
+                }
+            }
+            if ($preservedStash !== null) {
+                $journal = $preservedStash.'/.mpm-preserved.json';
+                if (is_link($preservedStash) || is_link($journal) || ! is_file($journal)) {
+                    throw new RuntimeException('Missing exclusion preservation receipt');
+                }
+                $proof = json_decode(file_get_contents($journal), true, flags: JSON_THROW_ON_ERROR);
+                if (($proof['live_root'] ?? null) !== realpath($root) ||
+                    realpath($preservedStash) === realpath($root) || str_starts_with(realpath($preservedStash), realpath($root).'/')) {
+                    throw new RuntimeException('Exclusion preservation receipt does not match this server');
+                }
+            }
         }
         $this->requireCompleted($backup->refresh(), BackupExclusions::patterns($excludedFolders));
         if ($server->refresh()->status !== null) {
@@ -84,7 +114,7 @@ final class PelicanBackupManager
         }
 
         $owner = $server->user;
-        if (!$owner) {
+        if (! $owner) {
             throw new RuntimeException('Cannot resolve server owner for Pelican backup download token');
         }
         $url = $this->downloadLinks->handle($backup, $owner);

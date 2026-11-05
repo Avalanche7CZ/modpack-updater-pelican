@@ -21,17 +21,19 @@ final class DirectoryInventory
                 continue;
             }
             $file = $this->safePath($base, $path);
-            if (!file_exists($file)) {
+            if (! file_exists($file)) {
                 continue;
             }
-            if (!is_file($file)) {
+            if (! is_file($file)) {
                 throw new RuntimeException("Not a regular file: {$path}");
             }
+            clearstatcache(true, $file);
             $before = @stat($file);
             if ($before === false) {
                 throw new RuntimeException("Cannot stat: {$path}");
             }
             $hash = @hash_file('sha256', $file);
+            clearstatcache(true, $file);
             $after = @stat($file);
             if ($hash === false || $after === false ||
                 $before['ino'] !== $after['ino'] || $before['size'] !== $after['size'] ||
@@ -41,11 +43,13 @@ final class DirectoryInventory
             $result[$path] = $hash;
         }
         ksort($result);
+
         return $result;
     }
 
     /**
      * Scan a trusted unpacked upstream release (never a live world) into a manifest.
+     *
      * @return array<string,string>
      */
     public function hashTree(string $root, int $maxFiles = 100000, int $maxBytes = 8589934592): array
@@ -60,7 +64,7 @@ final class DirectoryInventory
         $todo = [''];
         while ($todo !== []) {
             $relative = array_pop($todo);
-            $dir = $base . ($relative === '' ? '' : '/' . $relative);
+            $dir = $base.($relative === '' ? '' : '/'.$relative);
             $children = @scandir($dir);
             if ($children === false) {
                 throw new RuntimeException("Cannot list directory: {$relative}");
@@ -69,13 +73,13 @@ final class DirectoryInventory
                 if ($child === '.' || $child === '..') {
                     continue;
                 }
-                $path = ltrim($relative . '/' . $child, '/');
+                $path = ltrim($relative.'/'.$child, '/');
                 UpdatePlanner::assertPath($path);
                 $full = $this->safePath($base, $path);
                 if (is_dir($full)) {
                     $todo[] = $path;
                 } elseif (is_file($full)) {
-                    ++$count;
+                    $count++;
                     if ($count > $maxFiles) {
                         throw new RuntimeException('File count limit exceeded');
                     }
@@ -90,6 +94,7 @@ final class DirectoryInventory
                 }
             }
         }
+
         return $this->hashPaths($base, $paths);
     }
 
@@ -99,9 +104,10 @@ final class DirectoryInventory
             throw new RuntimeException('Root must not be a symlink');
         }
         $real = realpath($root);
-        if ($real === false || !is_dir($real) || !is_readable($real)) {
+        if ($real === false || ! is_dir($real) || ! is_readable($real)) {
             throw new RuntimeException('Root must be an accessible directory');
         }
+
         return rtrim($real, '/') ?: '/';
     }
 
@@ -109,11 +115,12 @@ final class DirectoryInventory
     {
         $full = $root;
         foreach (explode('/', $relative) as $segment) {
-            $full .= '/' . $segment;
+            $full .= '/'.$segment;
             if (is_link($full)) {
                 throw new RuntimeException("Symlink rejected: {$relative}");
             }
         }
+
         return $full;
     }
 }
