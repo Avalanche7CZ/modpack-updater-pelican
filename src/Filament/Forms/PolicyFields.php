@@ -20,7 +20,7 @@ final class PolicyFields
     {
         return [
             Select::make('policy_template')->label('Start from a template')->options(ProtectionPolicy::templates())
-                ->default($new ? 'conservative' : null)->placeholder('Keep current rules')->dehydrated(false)->live()
+                ->default($new ? 'arcturus' : null)->placeholder('Keep current rules')->dehydrated(false)->live()
                 ->helperText('Selecting a template replaces the unsaved rule list below. Every rule remains editable.')
                 ->afterStateUpdated(function ($state, $set): void {
                     if ($state) {
@@ -28,7 +28,7 @@ final class PolicyFields
                     }
                 }),
             TagsInput::make('disabled_mods')->label('Disabled mod IDs')->helperText('Stable metadata IDs. Existing disabled/deleted mods also remain disabled across renamed releases.'),
-            Repeater::make('file_rules')->label('Advanced rules')->default($new ? (new ProtectionPolicy)->template('conservative') : [])->columns(3)->cloneable()->reorderableWithButtons()->collapsible()->collapsed()
+            Repeater::make('file_rules')->label('Advanced rules')->default($new ? (new ProtectionPolicy)->template('arcturus') : [])->columns(3)->cloneable()->reorderableWithButtons()->collapsible()->collapsed()
                 ->itemLabel(fn (array $state) => ($state['pattern'] ?? 'New rule').' · '.(ProtectionPolicy::ACTIONS[$state['mode'] ?? ''] ?? 'Choose action'))
                 ->helperText('Exact path > mod ID > mod filename > directory (deepest first) > glob > loader > extension. Then priority, then later row. Test rule shows matching files and overlaps.')
                 ->schema([
