@@ -41,6 +41,14 @@ After an independently performed manual update, use **Record a manual update** o
 
 The wizard never fabricates provenance by hashing live files. Existing startup commands, eggs, Docker images and Java choices are preserved. Arcturus stores association/provenance in its own database, not the reference plugin's metadata. Back up the Panel database and APP_KEY as well as server backups.
 
+## Arcturus protection presets
+
+The **Adopt Existing Server** wizard now defaults to the editable **Arcturus Network — custom mods** preset. For TerraFirmaGreg Modern, select **TFG Modern + Arcturus Network** instead. Both include the conservative protections for `server.properties`, access-control files, changed configs and review of launcher changes.
+
+The Arcturus presets add **Keep local** for the common `Paradigm`/`paradigm` and `ArcturusTokens` JAR filename variants, the `config/paradigm/`, `config/Paradigm/`, `config/paradigminsights/`, `config/paradigmvote/` and `config/arcturustokens/` directories, and the exact file `config/arcturustokens.properties`. The TFG + Arcturus preset also keeps `kubejs/` changes under manual review.
+
+These are **starting templates**, not immutable rules in the update planner. The filename globs are case-sensitive; check exact installed JAR names after baseline comparison. Matching by verified mod ID is stronger when JARs are renamed between releases. New template defaults do **not** automatically change policies already saved on adopted servers. Selecting a template in the wizard replaces the *unsaved* rule list; inspect your edits first.
+
 ## Providers
 
 | Provider | Source | Preparation behavior |

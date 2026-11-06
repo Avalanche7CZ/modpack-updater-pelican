@@ -94,7 +94,8 @@ final class ProtectionPolicy
     public static function templates(): array
     {
         return ['empty' => 'Empty', 'conservative' => 'Conservative', 'upstream' => 'Mostly upstream-managed',
-            'custom' => 'Custom mod-heavy', 'gtnh' => 'GTNH / Crucible', 'tfg' => 'TFG Modern'];
+            'custom' => 'Custom mod-heavy', 'gtnh' => 'GTNH / Crucible', 'tfg' => 'TFG Modern',
+            'arcturus' => 'Arcturus Network — custom mods', 'tfg_arcturus' => 'TFG Modern + Arcturus Network'];
     }
 
     public function template(string $name): array
@@ -126,8 +127,30 @@ final class ProtectionPolicy
         if ($name === 'gtnh') {
             $rules[] = ['scope' => 'glob', 'pattern' => '*Crucible*.jar', 'mode' => 'review'];
         }
-        if ($name === 'tfg') {
+        if (in_array($name, ['tfg', 'tfg_arcturus'], true)) {
             $rules[] = ['scope' => 'directory', 'pattern' => 'kubejs', 'mode' => 'review'];
+        }
+        if (in_array($name, ['arcturus', 'tfg_arcturus'], true)) {
+            // Editable presets only: none of these names are global invariant
+            // protections. Do not put these in the core update planner.
+            // Glob matching is case-sensitive; preserve both common jar cases.
+            foreach ([
+                'mods/*paradigm*.jar', 'mods/*Paradigm*.jar',
+                'mods/*arcturustoken*.jar', 'mods/*ArcturusToken*.jar',
+            ] as $pattern) {
+                $rules[] = ['scope' => 'glob', 'pattern' => $pattern,
+                    'mode' => 'protect', 'comment' => 'Arcturus custom mod; keep installed local version'];
+            }
+            foreach ([
+                'config/paradigm', 'config/Paradigm',
+                'config/paradigminsights', 'config/paradigmvote',
+                'config/arcturustokens', 'config/ArcturusTokens',
+            ] as $directory) {
+                $rules[] = ['scope' => 'directory', 'pattern' => $directory,
+                    'mode' => 'protect', 'comment' => 'Arcturus custom configuration'];
+            }
+            $rules[] = ['scope' => 'exact', 'pattern' => 'config/arcturustokens.properties',
+                'mode' => 'protect', 'comment' => 'ArcturusTokens server configuration'];
         }
 
         return $this->normalize($rules);

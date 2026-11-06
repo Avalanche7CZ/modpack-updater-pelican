@@ -61,6 +61,43 @@ foreach (['config/Paradigm/x.toml', 'config/arcturus.cfg', 'Crucible.jar', 'run.
 foreach (['../escape', '/world', 'C:/data', 'config//x'] as $unsafe) {
     rejects(fn () => $policy->normalize([['pattern' => $unsafe, 'mode' => 'replace']]), 'Unsafe rule accepted');
 }
+// Optional Arcturus presets must retain real network mods and directories
+// without reintroducing any hardcoded protection into UpdatePlanner.
+$arcturus = $policy->template('arcturus');
+$tfgArcturus = $policy->template('tfg_arcturus');
+foreach ([
+    'mods/paradigm-2.3.jar',
+    'mods/ParadigmVote-1.0.jar',
+    'mods/paradigminsights-1.jar',
+    'mods/ArcturusTokens-1.0.jar',
+    'mods/arcturustokens-2.0.jar',
+    'config/paradigm/essentials.toml',
+    'config/Paradigm/options.json',
+    'config/paradigminsights/analytics.toml',
+    'config/paradigmvote/vote.toml',
+    'config/arcturustokens/example.toml',
+    'config/arcturustokens.properties',
+] as $customPath) {
+    foreach (['arcturus' => $arcturus, 'tfg_arcturus' => $tfgArcturus] as $preset => $rules) {
+        check($policy->effective($customPath, $rules)['mode'] === 'protect',
+            $preset.' failed to protect Arcturus mod/config: '.$customPath);
+        $diff = $p->plan([$customPath => $hash('old')], [$customPath => $hash('old')],
+            [$customPath => $hash('new')], $rules);
+        check($diff['changes'][0]['action'] === 'preserve',
+            $preset.' would overwrite protected custom data: '.$customPath);
+    }
+}
+check($policy->effective('kubejs/server_scripts/test.js', $tfgArcturus)['mode'] === 'review',
+    'TFG + Arcturus preset lost TFG KubeJS review rule');
+check($policy->effective('mods/unrelated-upstream.jar', $arcturus)['mode'] === null,
+    'Arcturus preset must not freeze unrelated upstream mod files');
+check($policy->effective('config/paradigmvote/config.toml', $policy->template('tfg'))['mode'] === null,
+    'Generic TFG template must not hardcode Arcturus-specific protections');
+// Presets only initialize new records; explicit per-server choices are not global.
+check($p->plan(['mods/ParadigmVote-1.0.jar' => $hash('old')],
+    ['mods/ParadigmVote-1.0.jar' => $hash('old')],
+    ['mods/ParadigmVote-1.0.jar' => $hash('new')])['changes'][0]['action'] === 'update',
+    'Template changes leaked into the no-rules update planner');
 check($policy->template('empty') === [], 'Empty template not supported');
 foreach (ProtectionPolicy::templates() as $id => $label) {
     $policy->normalize($policy->template($id));
