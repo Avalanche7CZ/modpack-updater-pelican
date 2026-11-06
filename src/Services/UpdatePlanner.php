@@ -100,6 +100,8 @@ final class UpdatePlanner
             $invariant = SafetyPaths::reason($path, $safetyRoots);
             if ($invariant !== null || $mode === 'protect') {
                 $action = 'preserve';
+            } elseif ($current !== null && str_starts_with($path, 'mods/') && str_ends_with(strtolower($path), '.jar.disabled') && $mode !== 'remove') {
+                $action = 'preserve_disabled';
             } elseif (self::isMod($path) && $identity && isset($ambiguousIds[$identity])) {
                 $action = 'unsafe_ambiguous_identity';
             } elseif ($mode === 'disable' || (self::isMod($path) && $identity && array_intersect(explode('+', strtolower($identity)), array_keys($disabledIds)) !== [])) {
@@ -128,10 +130,10 @@ final class UpdatePlanner
             if ($invariant === null && $mode === 'remove' && ! in_array($action, ['unsafe_ambiguous_identity', 'skip_disabled'], true)) {
                 $action = $current === null ? 'already_absent' : 'remove_with_override';
             }
-            if ($invariant === null && $mode === 'replace' && ! in_array($action, ['unsafe_ambiguous_identity', 'skip_disabled', 'disable_requires_enforcement'], true)) {
+            if ($invariant === null && $mode === 'replace' && ! in_array($action, ['unsafe_ambiguous_identity', 'skip_disabled', 'disable_requires_enforcement', 'preserve_disabled'], true)) {
                 $action = $new === null ? ($current === null ? 'already_absent' : 'remove_with_override') : ($current === $new ? 'unchanged' : 'replace_with_override');
             }
-            if ($mode === 'review' && ! in_array($action, ['unchanged', 'preserve', 'preserve_local_extra'], true)) {
+            if ($mode === 'review' && ! in_array($action, ['unchanged', 'preserve', 'preserve_local_extra', 'preserve_disabled'], true)) {
                 $action = 'manual_review';
             }
             if ($mode === 'ignore' && $old === null && $new === null) {

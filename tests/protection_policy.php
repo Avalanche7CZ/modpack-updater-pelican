@@ -46,6 +46,10 @@ check($plan['blocked'] === 1 && array_column($plan['changes'], 'action', 'path')
 $plan = $p->plan(['mods/old.jar' => $hash('old')], ['mods/old.jar.disabled' => $hash('old')], ['mods/new.jar' => $hash('new')], [],
     ['base' => ['mods/old.jar' => 'core+bundled'], 'local' => ['mods/old.jar.disabled' => 'core+bundled'], 'target' => ['mods/new.jar' => 'core+different']]);
 check(array_column($plan['changes'], 'action', 'path')['mods/new.jar'] === 'skip_disabled', 'Bundled metadata change reactivated a disabled mod');
+$plan = $p->plan(['mods/old.jar' => $hash('old')], ['mods/old.jar.disabled' => $hash('old')], ['mods/new.jar' => $hash('new')],
+    [['scope' => 'mod_id', 'pattern' => 'example', 'mode' => 'disable']],
+    ['base' => ['mods/old.jar' => 'example'], 'local' => ['mods/old.jar.disabled' => 'example'], 'target' => ['mods/new.jar' => 'example']]);
+check($plan['blocked'] === 0 && array_column($plan['changes'], 'action', 'path')['mods/old.jar.disabled'] === 'preserve_disabled', 'Keep disabled tried to disable an already-disabled file or blocked it');
 $roots = SafetyPaths::roots("level-name=custom/maps\n");
 foreach (['custom/maps/level.dat', 'custom/maps_nether/DIM-1/data/x', 'world/region/a.mca', 'unusual/DIM42/data/x', '.arcturus-modpack-manager/checkpoint'] as $file) {
     $plan = $p->plan([$file => $hash('old')], [$file => $hash('old')], [$file => $hash('new')], [['pattern' => '**', 'mode' => 'replace']], [], [], $roots);
