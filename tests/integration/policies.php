@@ -251,7 +251,8 @@ foreach ($formRows as &$row) {
 }
 unset($row);
 $beforeRevision = $record->policy_revision;
-$directoryView->set('mountedActions.0.data.directories', $formRows)->call('callMountedAction')->assertHasNoErrors();
+$directoryView->set('mountedActions.0.data.directories', $formRows)->call('callMountedAction');
+check($directoryView->instance()->getErrorBag()->isEmpty(), 'Directory decision form failed validation');
 $record->refresh();
 check($record->policy_revision === $beforeRevision + 1 && ! $record->approved_plan_sha256, 'Directory review did not invalidate approval');
 check($directoryPolicy->pending($record) === [] && in_array('tacz', $directoryPolicy->scope($record)['exclude'], true), 'Keep-local decision was not persisted');

@@ -128,7 +128,8 @@ class TfgManagedPaths(unittest.TestCase):
     def test_retained_archive_reused_and_reverified(self):
         self.assertEqual(self.prepare()['state'], 'completed')
         recipe = self.recipe(self.root / 'pack.zip')
-        # archive() fixtures use an operator artifact; remove the source to prove no fetch/copy from upstream.
+        # Removing the source proves reuse of retained bytes, including local artifact recipes.
+        (self.root / 'pack.zip').unlink()
         with patch.object(w, 'fetch', side_effect=AssertionError('Unexpected network download')):
             self.worker.prepare(self.server, recipe, 'd' * 32)
             self.worker.threads[(self.server, 'd' * 32)].join(10)
