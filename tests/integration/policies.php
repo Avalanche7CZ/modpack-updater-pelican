@@ -77,6 +77,33 @@ DB::table('servers')->insert(['uuid' => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 
 Http::preventStrayRequests();
 $test = Livewire\Livewire::test(CreateManagedServer::class);
 $html = $test->html();
+// Regression for a real production exception (2026-11-06):
+// the catch branch returns partial inspection without loader/minecraft keys.
+// Filament Text callbacks must render rather than throw Undefined array key.
+$partialResults = [
+    ['state' => 'unavailable', 'inspection_complete' => false,
+        'warnings' => ['Wings file inspection failed']],
+    ['state' => 'unavailable', 'inspection_complete' => false,
+        'diagnostic' => ['stage' => 'wings_root_listing', 'code' => 'HTTP_403'],
+        'warnings' => ['Wings file listing failed']],
+    ['state' => 'unavailable', 'inspection_complete' => false,
+        'diagnostic' => ['stage' => 'wings_root_listing'],
+        'warnings' => []],
+];
+foreach ($partialResults as $partial) {
+    $test->instance()->inspection = $partial;
+    $rendered = $test->html();
+    check(str_contains($rendered, 'Loader not verified') &&
+        str_contains($rendered, 'Minecraft version not verified'),
+        'Adoption wizard crashed or concealed a partially failed inspection');
+    if (isset($partial['diagnostic']['code'])) {
+        check(str_contains($rendered, 'HTTP_403'),
+            'Adoption wizard hid a sanitized Wings diagnostic');
+    }
+}
+// Preserve the initial-state form assertions below.
+$test->instance()->inspection = [];
+
 $dom = new DOMDocument;
 @$dom->loadHTML('<meta charset="utf-8">'.$html);
 $xpath = new DOMXPath($dom);
