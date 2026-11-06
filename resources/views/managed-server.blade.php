@@ -16,6 +16,26 @@
                     <x-filament::button color="warning" wire:click="cancelPreparation">Cancel preparation</x-filament::button>
                 </div>
             @endif
+            @if($record->file_inventory['unreadable_paths'] ?? [])
+                @php($inventorySummary = \Arcturus\ModpackManager\Services\InventoryWarnings::summary($record->file_inventory))
+                <x-filament::section heading="Protected unreadable content">
+                    <p class="text-sm">{{ number_format($inventorySummary['files_hashed']) }} readable files hashed;
+                        {{ number_format($inventorySummary['unreadable_files_skipped']) }} known files skipped,
+                        {{ number_format($inventorySummary['unreadable_directories']) }} unreadable directories,
+                        {{ number_format($inventorySummary['unreadable_entries_unknown']) }} other inaccessible entries.
+                        Unreadable directory contents were not enumerated; their total file count is unknown.</p>
+                    <p class="mt-2 text-sm">These paths and their descendants are protected from all update rules. Excluded content is not verified. No permissions were changed. Keep the exclusions, or ask the host operator to review access if you want these paths managed, then retry comparison using the existing baseline.</p>
+                    @if($record->file_inventory['world_path_unreadable'] ?? false)
+                        <p class="mt-2 text-sm">World path settings were unreadable. Every directory is protected because the custom world location cannot be determined.</p>
+                    @endif
+                    <ul class="mt-2 list-inside list-disc text-sm">
+                        @foreach(\Arcturus\ModpackManager\Services\InventoryWarnings::unreadable($record->file_inventory) as $warning)
+                            <li class="break-all">{{ $warning }}</li>
+                        @endforeach
+                    </ul>
+                    @if(count($record->file_inventory['unreadable_paths']) > 250)<p class="mt-2 text-sm">Showing the first 250 protected paths.</p>@endif
+                </x-filament::section>
+            @endif
             @if($record->file_inventory['skipped_symlinks'] ?? [])
                 <x-filament::section heading="Preserved symlinks">
                     <p class="text-sm">These links and their descendants are excluded from updates. Their targets were not read. Comparison can complete without changing them.</p>

@@ -46,13 +46,23 @@ foreach (['config/backups/private.zip', 'scripts/playerdata/uuid.dat', 'kubejs/s
 check(ManagedPaths::allowed('kubejs/data/pack/recipes/item.json'), 'Pack datapack content was mistaken for runtime data');
 
 // Skipped links are immutable even when upstream contains the link path or descendants.
-$links = ['unix_args.txt', 'config/linked'];
-$upstream = array_fill_keys(['unix_args.txt', 'config/linked', 'config/linked/args.txt'], $hash);
+$links = ['unix_args.txt', 'config/linked', 'config/paradigm/dashboard.json', 'config/private'];
+$upstream = array_fill_keys(['unix_args.txt', 'config/linked', 'config/linked/args.txt', 'config/paradigm/dashboard.json', 'config/private', 'config/private/new.json'], $hash);
 foreach (['replace', 'remove', 'disable', 'follow'] as $mode) {
     $plan = (new UpdatePlanner)->plan($upstream, [], $upstream, [['pattern' => '**', 'mode' => $mode]], [], [], $links);
     foreach ($plan['changes'] as $change) {
-        check($change['action'] === 'preserve' && $change['rule'] === 'immutable', 'Policy bypassed a skipped symlink');
+        check($change['action'] === 'preserve' && $change['rule'] === 'immutable' && $change['file_state'] === 'protected', 'Policy bypassed a protected exclusion');
     }
 }
 $warnings = \Arcturus\ModpackManager\Services\InventoryWarnings::symlinks(['skipped_symlinks' => ['unix_args.txt', '/etc/private?token=secret']]);
 check(str_contains($warnings[0], 'unix_args.txt') && ! str_contains(implode(' ', $warnings), '/etc') && ! str_contains(implode(' ', $warnings), 'token=secret'), 'Symlink information leaked unsafe worker text');
+
+$warnings = \Arcturus\ModpackManager\Services\InventoryWarnings::unreadable(['unreadable_paths' => [
+    ['path' => 'config/paradigm/dashboard.json', 'phase' => 'hashing', 'errno' => 13],
+    ['path' => '/etc/private?token=secret', 'phase' => 'metadata', 'errno' => 1],
+]]);
+check(str_contains($warnings[0], 'config/paradigm/dashboard.json') && str_contains($warnings[0], 'EACCES') && str_contains($warnings[1], 'EPERM'), 'Unreadable warnings lost path or reason');
+check(! str_contains(implode(' ', $warnings), '/etc') && ! str_contains(implode(' ', $warnings), 'token=secret'), 'Unreadable warning exposed unsafe paths or credentials');
+
+$missing = (new UpdatePlanner)->plan(['config/missing.cfg' => $hash], [], ['config/missing.cfg' => $hash]);
+check($missing['changes'][0]['file_state'] === 'missing_or_removed_locally', 'Genuinely missing files were treated as protected exclusions');

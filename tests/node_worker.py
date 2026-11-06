@@ -142,6 +142,86 @@ class WorkerTests(unittest.TestCase):
             self.worker.inventory(self.server)
         self.assertEqual(failure.exception.code, 'SYMLINK_PATH')
 
+    def test_unreadable_file_is_not_missing_or_verified(self):
+        import errno
+        self.put('config/paradigm/dashboard.json', b'private config')
+        self.put('config/readable.cfg', b'keep')
+        original = w.os.open
+        def deny(path, *args, **kwargs):
+            if path == 'dashboard.json':
+                raise PermissionError(errno.EACCES, '/absolute/private?token=secret')
+            return original(path, *args, **kwargs)
+        with patch.object(w.os, 'open', side_effect=deny):
+            inventory = self.worker.inventory(self.server, 'a' * 32)
+            with self.assertRaises(w.PreparationFailure) as failure:
+                self.worker.hashes(self.server, ['config/paradigm/dashboard.json'])
+        self.assertEqual(failure.exception.code, 'PERMISSION_DENIED')
+        self.assertTrue(inventory['complete'])
+        self.assertEqual(set(inventory['files']), {'config/readable.cfg'})
+        self.assertEqual(inventory['unreadable_paths'], [{'path': 'config/paradigm/dashboard.json', 'kind': 'file', 'phase': 'hashing', 'errno': 13}])
+        self.assertIn('config/paradigm/dashboard.json', inventory['excluded_roots'])
+        self.assertEqual(inventory['inventory_summary']['files_hashed'], 1)
+        self.assertEqual(inventory['inventory_summary']['unreadable_files_skipped'], 1)
+        self.assertNotIn('/absolute', json.dumps(inventory))
+        state = json.loads((self.stage / ('a' * 32) / 'comparison.json').read_text())
+        self.assertEqual(state['progress']['files_done'], 1)
+        self.assertEqual(state['progress']['bytes_done'], 4)
+
+    def test_permission_denial_during_traversal_and_ancestor_open_protects_directory(self):
+        import errno
+        self.put('config/paradigm/one.json')
+        self.put('config/paradigm/two.json')
+        self.put('config/readable.cfg')
+        original_scan, original_open = w.os.scandir, w.os.open
+        for phase in ['enumeration', 'hashing']:
+            denied = []
+            def scan(path):
+                if phase == 'enumeration' and Path(path) == self.live / 'config/paradigm':
+                    denied.append('directory')
+                    raise PermissionError(errno.EACCES, 'private', str(path))
+                return original_scan(path)
+            def opened(path, *args, **kwargs):
+                if phase == 'hashing' and path == 'paradigm':
+                    denied.append('directory')
+                    raise PermissionError(errno.EPERM, 'private')
+                return original_open(path, *args, **kwargs)
+            with self.subTest(phase=phase), patch.object(w.os, 'scandir', side_effect=scan), patch.object(w.os, 'open', side_effect=opened):
+                inventory = self.worker.inventory(self.server)
+            self.assertEqual(denied, ['directory'])
+            self.assertEqual(set(inventory['files']), {'config/readable.cfg'})
+            self.assertIn('config/paradigm', inventory['excluded_roots'])
+            self.assertEqual(inventory['unreadable_paths'][0]['kind'], 'directory')
+            self.assertEqual(inventory['inventory_summary']['unreadable_directories'], 1)
+            self.assertEqual(inventory['inventory_summary']['unreadable_files_skipped'], 0 if phase == 'enumeration' else 2)
+
+    def test_metadata_access_failure_removes_hashes_and_unknown_world_settings_protect_all_directories(self):
+        import errno
+        self.put('mods/restricted.jar', b'jar')
+        self.put('config/readable.cfg', b'keep')
+        original = w.mod_metadata
+        def metadata(root, path):
+            if path == 'mods/restricted.jar':
+                raise PermissionError(errno.EPERM, '/absolute/private?token=secret')
+            return original(root, path)
+        with patch.object(w, 'mod_metadata', side_effect=metadata):
+            inventory = self.worker.inventory(self.server)
+        self.assertEqual(set(inventory['files']), {'config/readable.cfg'})
+        self.assertNotIn('mods/restricted.jar', inventory['metadata'])
+        self.assertEqual(inventory['inventory_summary']['bytes_hashed'], 4)
+        self.assertEqual(inventory['unreadable_paths'][0]['phase'], 'metadata')
+        self.assertIn('mods/restricted.jar', inventory['excluded_roots'])
+        self.put('server.properties', b'level-name=config')
+        original_open = w.os.open
+        def denied(path, *args, **kwargs):
+            if path == 'server.properties':
+                raise PermissionError(errno.EACCES, 'private')
+            return original_open(path, *args, **kwargs)
+        with patch.object(w.os, 'open', side_effect=denied):
+            inventory = self.worker.inventory(self.server)
+        self.assertTrue(inventory['world_path_unreadable'])
+        self.assertEqual(inventory['files'], {})
+        self.assertTrue({'config', 'mods', 'server.properties'} <= set(inventory['excluded_roots']))
+
     def test_world_hash_request_is_rejected(self):
         self.put('world/level.dat')
         with self.assertRaises(ValueError):
