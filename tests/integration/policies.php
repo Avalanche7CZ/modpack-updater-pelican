@@ -248,6 +248,30 @@ Http::fake(function ($request) use ($record, $hash) {
 rejects(fn () => $previewer->generate($record), 'Stale comparison overwrote a concurrent policy edit');
 $record->refresh();
 check(! $record->approved_plan_sha256 && ! $record->preview_summary, 'Concurrent policy change restored a stale plan/approval');
+// Edit the actual native form and submit its visible header Save action.
+$record->update(['provider' => 'github', 'source' => 'fixture/original', 'installed_version' => '1.0',
+    'baseline_status' => 'verified', 'base_manifest_path' => '/fixture/old-manifest',
+    'selected_version' => '2.0', 'target_manifest_path' => '/fixture/old-target']);
+$priorRules = $record->file_rules;
+$edit = Livewire\Livewire::test(\Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\EditManagedServer::class, ['record' => $record->id]);
+check(str_contains($edit->html(), 'Save changes'), 'Edit form has no visible header Save action');
+check($edit->instance()->areFormActionsSticky(), 'Bottom save actions are not sticky');
+foreach (['provider', 'source', 'installed_version', 'pelican_server_uuid'] as $field) {
+    check(! $edit->instance()->getSchema('form')->getComponent($field)->isDisabled(), 'Edit field is still locked: '.$field);
+}
+$edit->set('data.provider', 'modrinth')->set('data.source', 'reviewed-pack')->set('data.installed_version', '0.13.5')->set('data.label', 'Edited fixture')
+    ->call('mountAction', 'saveChanges')->call('callMountedAction');
+check($edit->instance()->getErrorBag()->isEmpty(), 'Native Save action returned validation errors: '.json_encode($edit->instance()->getErrorBag()->toArray()));
+$record->refresh();
+check($record->provider === 'modrinth' && $record->source === 'reviewed-pack' && $record->installed_version === '0.13.5' && $record->label === 'Edited fixture', 'Editable release association did not persist');
+check($record->baseline_status === 'unverified' && ! $record->base_manifest_path && ! $record->target_manifest_path && ! $record->selected_version && ! $record->preview_summary && ! $record->deploy_enabled, 'Changed source retained stale evidence or enabled deployment');
+check($record->file_rules === $priorRules, 'Source edit changed protection policies');
+rejects(fn () => app(ServerPolicyService::class)->save($record, $priorRules, [], $record->policy_revision, ['pelican_server_uuid' => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc']), 'Unknown Pelican server binding accepted');
+DB::table('servers')->insert(['uuid' => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'name' => 'New binding fixture']);
+$record->update(['local_root' => '/fixture/old-live', 'staging_parent' => '/fixture/old-stage', 'last_backup_uuid' => 'old-backup', 'runtime_report' => ['state' => 'running']]);
+app(ServerPolicyService::class)->save($record, $priorRules, [], $record->policy_revision, ['pelican_server_uuid' => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc']);
+$record->refresh();
+check(! $record->local_root && ! $record->staging_parent && ! $record->last_backup_uuid && ! $record->runtime_report, 'Rebinding inherited another server filesystem/runtime/backup state');
 $revision = $record->policy_revision;
 $record->update(['active_operation_id' => 'fixture-active']);
 rejects(fn () => app(ServerPolicyService::class)->save($record, [], [], $revision), 'Active operation allowed policy edit');

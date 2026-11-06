@@ -12,6 +12,7 @@ use Arcturus\ModpackManager\Services\ModIdentityMappings;
 use Arcturus\ModpackManager\Services\ProtectionPolicy;
 use Arcturus\ModpackManager\Services\ServerPolicyService;
 use Arcturus\ModpackManager\Services\UpdatePlanner;
+use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
 use Illuminate\Database\Eloquent\Model;
@@ -20,6 +21,8 @@ use Livewire\Attributes\Locked;
 final class EditManagedServer extends EditRecord
 {
     protected static string $resource = ManagedServerResource::class;
+
+    public static bool $formActionsAreSticky = true;
 
     #[Locked]
     public int $policyRevision = 0;
@@ -36,9 +39,13 @@ final class EditManagedServer extends EditRecord
 
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
-        $attributes = array_intersect_key($data, array_flip(['label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings']));
+        $attributes = array_intersect_key($data, array_flip(['label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport']));
         $attributes += array_intersect_key($data, array_flip(DiscordSettings::FIELDS));
-        app(ServerPolicyService::class)->save($record, $data['file_rules'] ?? [], $data['disabled_mods'] ?? [], $this->policyRevision, $attributes);
+        try {
+            app(ServerPolicyService::class)->save($record, $data['file_rules'] ?? [], $data['disabled_mods'] ?? [], $this->policyRevision, $attributes);
+        } catch (\RuntimeException $error) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['data.transport' => $error->getMessage()]);
+        }
         $record->refresh();
         $this->policyRevision = $record->policy_revision;
 
@@ -67,6 +74,11 @@ final class EditManagedServer extends EditRecord
 
     protected function getHeaderActions(): array
     {
-        return [DeleteAction::make()];
+        return [
+            Action::make('saveChanges')->label('Save changes')->icon('heroicon-o-check')
+                ->action(fn () => $this->save())->keyBindings(['mod+s']),
+            $this->getCancelFormAction()->label('Cancel'),
+            DeleteAction::make(),
+        ];
     }
 }
