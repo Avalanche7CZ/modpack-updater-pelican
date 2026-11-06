@@ -116,6 +116,15 @@ class TfgManagedPaths(unittest.TestCase):
                 'customcontent/assets/example.json', 'libraries/bootstrap.jar'})
             self.assertIn({'path': 'customcontent', 'classification': 'review', 'default': 'review'}, manifest['directory_discovery'])
 
+    def test_unknown_safe_names_need_no_ascii_name_allowlist(self):
+        name = 'Custom Content'
+        self.assertEqual(self.prepare(entries=[(name + '/assets/item.json', b'{}')])['state'], 'completed')
+        self.put(name + '/assets/local.json', b'{}')
+        result = self.worker.handle(self.server, 'inventory', {'directory_scope': {'manage': [name], 'exclude': []}})
+        self.assertIn(name + '/assets/local.json', result['files'])
+        self.put('config/.private/credentials.txt', b'secret')
+        self.assertNotIn('config/.private/credentials.txt', self.worker.inventory(self.server)['files'])
+
     def test_retained_archive_reused_and_reverified(self):
         self.assertEqual(self.prepare()['state'], 'completed')
         recipe = self.recipe(self.root / 'pack.zip')

@@ -145,7 +145,7 @@ def provision_volume(fd, uid, additional=None):
                 count += 1
                 if count > 100000:
                     raise ValueError('Managed entry count exceeds provisioning limit')
-                if (name.lower() in {v.lower() for v in PROTECTED} or name.startswith('.env.') or name.endswith(('.pem', '.key', '.p12', '.keystore')) or (top and name in excluded) or name in WORLD_MARKERS or name.startswith('.arcturus-modpack-manager') or
+                if (name.startswith('.') or name.lower() in {v.lower() for v in PROTECTED} or name.startswith('.env.') or name.endswith(('.pem', '.key', '.p12', '.keystore')) or (top and name in excluded) or name in WORLD_MARKERS or name.startswith('.arcturus-modpack-manager') or
                         (custom and name.lower() in ('logs', 'crash-reports', 'backups', 'backup')) or
                         re.fullmatch(r'DIM-?[0-9]+', name)):
                     continue

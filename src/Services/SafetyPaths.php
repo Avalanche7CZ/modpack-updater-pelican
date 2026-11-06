@@ -41,7 +41,7 @@ final class SafetyPaths
 
     public static function reason(string $path, array $roots = []): ?string
     {
-        if (preg_match('~(?:^|/)(?:world|world_nether|world_the_end|saves|dimensions|logs|crash-reports|backups?|data|\.env(?:\.[^/]*)?|\.ssh|\.aws|\.git|secrets|credentials|tokens|passwords)(?:/|$)|(?:\.pem|\.key|\.p12|\.keystore)$~i', $path)) {
+        if (preg_match('~(?:^|/)(?:\.[^/]+|world|world_nether|world_the_end|saves|dimensions|logs|crash-reports|backups?|data|\.env(?:\.[^/]*)?|\.ssh|\.aws|\.git|secrets|credentials|tokens|passwords)(?:/|$)|(?:\.pem|\.key|\.p12|\.keystore)$~i', $path)) {
             return 'Protected runtime data or secrets';
         }
         foreach (self::roots('', $roots) as $root) {

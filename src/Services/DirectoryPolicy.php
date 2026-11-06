@@ -20,7 +20,11 @@ final class DirectoryPolicy
         foreach ($decisions as $row) {
             $name = $row['path'] ?? '';
             $mode = $row['mode'] ?? '';
-            ManagedPaths::reviewedAdditions([$name]);
+            if (! is_string($name)) { throw new InvalidArgumentException('Invalid directory name'); }
+            UpdatePlanner::assertPath($name);
+            if (str_contains($name, '/') || strlen($name) > 255 || SafetyPaths::reason($name) !== null) {
+                throw new InvalidArgumentException('Directory is unsafe or reserved for runtime data');
+            }
             if (! in_array($mode, ['manage', 'keep', 'exclude'], true) || isset($result[$name])) {
                 throw new InvalidArgumentException('Choose one decision per directory');
             }

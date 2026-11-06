@@ -195,7 +195,8 @@ check(! isset($record->file_inventory['files']['tacz/local.json']), 'Unreviewed 
 check(file_get_contents($dir.'/approval.json') === json_encode($unapproved), 'Preparation edited privileged node approvals');
 $reviewScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
 $reviewScreen->call('mountAction', 'directoryDecisions');
-check(str_contains($reviewScreen->html(), 'tacz') && str_contains($reviewScreen->html(), 'Keep local'), 'Native adoption UI omitted discovered directory decisions');
+$reviewModal = $reviewScreen->effects['partials']['action-modals'] ?? $reviewScreen->html();
+check(str_contains($reviewModal, 'tacz') && str_contains($reviewModal, 'Keep local'), 'Native adoption UI omitted discovered directory decisions');
 file_put_contents($dir.'/approval.json', $approvedContents);
 $remote = $local->adoptionAttributes($other, 'default');
 check($remote === ['transport' => 'wings'], 'Local default changed remote-node selection');

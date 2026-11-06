@@ -46,9 +46,19 @@ def protected_path(path):
     reserved = {v.lower() for v in RUNTIME | DEFAULT_EXCLUDED} | {
         'region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock',
         '.env', '.ssh', '.aws', '.git', 'secrets', 'credentials', 'tokens', 'passwords'}
-    return any(part in reserved or part.startswith('.arcturus-') or part.startswith('.env.')
+    return any(part.startswith('.') or part in reserved or part.startswith('.arcturus-') or part.startswith('.env.')
                or re.fullmatch(r'dim-?[0-9]+', part) or part.endswith(('.pem', '.key', '.p12', '.keystore'))
                for part in parts)
+
+
+def reviewed_scope(values):
+    if not isinstance(values, list) or len(values) > 128:
+        raise ValueError('Managed scope must be a bounded list')
+    for value in values:
+        relative(value)
+        if '/' in value or len(value) > 255 or protected_path(value):
+            raise ValueError('Unsafe managed scope')
+    return sorted(set(values))
 
 
 class ManagedPathFailure(ValueError):
@@ -623,7 +633,7 @@ class Worker:
 
     def managed_directories(self, server):
         entry = self.entry(server)
-        return set(entry.get('managed_directories', MANAGED_DIRS)) | set(additional_directories(entry.get('additional_managed_directories', [])))
+        return set(entry.get('managed_directories', MANAGED_DIRS)) | set(additional_directories(entry.get('additional_managed_directories', []))) | set(reviewed_scope(entry.get('reviewed_scope', [])))
 
     def inventory(self, server, operation_id=None):
         if operation_id is None:
@@ -1091,7 +1101,7 @@ class Worker:
             scope = payload['directory_scope']
             if not isinstance(scope, dict) or set(scope) != {'manage', 'exclude'}:
                 raise ValueError('Invalid directory scope')
-            manage = additional_directories(scope['manage'])
+            manage = reviewed_scope(scope['manage'])
             exclude = scope['exclude']
             if not isinstance(exclude, list) or len(exclude) > 256:
                 raise ValueError('Invalid excluded scope')
@@ -1100,7 +1110,7 @@ class Worker:
                 if '/' in name:
                     raise ValueError('Invalid excluded root')
             scoped = copy.copy(self)
-            entry = {**self.entry(server), 'additional_managed_directories': manage,
+            entry = {**self.entry(server), 'additional_managed_directories': [], 'reviewed_scope': manage,
                      'managed_directories': sorted(set(MANAGED_DIRS) - set(exclude)),
                      'excluded_directories': sorted(set(self.entry(server).get('excluded_directories', DEFAULT_EXCLUDED)) | set(exclude))}
             scoped.settings = {**self.settings, 'servers': {**self.settings['servers'], server: entry}}
