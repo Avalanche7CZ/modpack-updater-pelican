@@ -98,6 +98,20 @@ final class DirectoryInventory
         return $this->hashPaths($base, $paths);
     }
 
+    public function safetyRoots(string $root): array
+    {
+        $base = $this->requireRoot($root);
+        $file = $this->safePath($base, 'server.properties');
+        if (! file_exists($file)) {
+            return SafetyPaths::roots();
+        }
+        if (! is_file($file) || filesize($file) > 1048576) {
+            throw new RuntimeException('Cannot safely inspect level-name');
+        }
+
+        return SafetyPaths::roots(file_get_contents($file));
+    }
+
     private function requireRoot(string $root): string
     {
         if (is_link($root)) {

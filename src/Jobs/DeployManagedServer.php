@@ -180,7 +180,9 @@ final class DeployManagedServer implements ShouldQueue
                     $backupMode === 'filesystem' ? $managed->backup_root : '',
                     $base['files'], $target['files'], $managed->file_rules ?? [],
                     true,
-                    $pelicanBackup?->uuid
+                    $pelicanBackup?->uuid,
+                    $preview['policy_context'] ?? [],
+                    $preview['changes']
                 );
                 $filesystemBackup = $result['backup'];
                 $power->startAndVerify($pelican, $managed->local_root);

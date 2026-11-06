@@ -39,10 +39,18 @@ Schema::create('modpack_installs', fn (Blueprint $t) => $t->string('sentinel'));
 DB::table('modpack_installs')->insert(['sentinel' => 'reference-plugin-data']);
 $migrations = [];
 foreach (glob(dirname(__DIR__, 2).'/database/migrations/*.php') as $path) {
+    if (str_ends_with($path, '2026_11_06_000000_add_server_policy_inventory.php')) {
+        DB::table('arcturus_modpack_servers')->insert(['label' => 'Upgrade sentinel', 'pelican_server_uuid' => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'provider' => 'ftb', 'source' => '129', 'installed_version' => '1',
+            'file_rules' => json_encode([['pattern' => 'config/**', 'mode' => 'protect']]), 'disabled_mods' => json_encode(['legacy_disabled']), 'approved_plan_sha256' => str_repeat('a', 64)]);
+    }
     $migration = require $path;
     $migration->up();
     $migrations[] = $migration;
 }
+check(DB::table('arcturus_modpack_servers')->where('label', 'Upgrade sentinel')->value('file_rules') === json_encode([['pattern' => 'config/**', 'mode' => 'protect']]), 'Upgrade overwrote saved rules');
+check(DB::table('arcturus_modpack_servers')->where('label', 'Upgrade sentinel')->value('disabled_mods') === json_encode(['legacy_disabled']), 'Upgrade overwrote disabled mods');
+check(DB::table('arcturus_modpack_servers')->where('label', 'Upgrade sentinel')->value('approved_plan_sha256') === null, 'Upgrade retained obsolete plan approval');
+DB::table('arcturus_modpack_servers')->where('label', 'Upgrade sentinel')->delete();
 check(DB::table('modpack_installs')->value('sentinel') === 'reference-plugin-data', 'Another plugin table was modified');
 $managed = ManagedServer::create(['label' => 'Customized GTNH', 'pelican_server_uuid' => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     'provider' => 'github', 'source' => 'GTNewHorizons/GT-New-Horizons-Modpack', 'installed_version' => '2.8.0',

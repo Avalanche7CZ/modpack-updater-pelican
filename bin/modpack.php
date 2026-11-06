@@ -7,7 +7,7 @@ use Arcturus\ModpackManager\Services\LocalDeployment;
 use Arcturus\ModpackManager\Services\ManifestJson;
 use Arcturus\ModpackManager\Services\UpdatePlanner;
 
-foreach (['UpdatePlanner', 'DirectoryInventory', 'ManifestJson', 'LocalDeployment'] as $service) {
+foreach (['SafetyPaths', 'ProtectionPolicy', 'UpdatePlanner', 'DirectoryInventory', 'ManifestJson', 'LocalDeployment'] as $service) {
     require_once __DIR__ . '/../src/Services/' . $service . '.php';
 }
 
@@ -60,9 +60,11 @@ try {
             throw new InvalidArgumentException('Empty upstream manifest');
         }
         $paths = array_unique(array_merge(array_keys($base['files']), array_keys($target['files'])));
+        $safetyRoots = $scanner->safetyRoots($argv[4]);
+        $paths = array_values(array_filter($paths, fn ($p) => \Arcturus\ModpackManager\Services\SafetyPaths::reason($p, $safetyRoots) === null));
         $local = $scanner->hashPaths($argv[4], $paths);
         $plan = (new UpdatePlanner())->plan($base['files'], $local, $target['files'],
-            loadRules($argv[5] ?? null));
+            loadRules($argv[5] ?? null), [], [], $safetyRoots);
         echo json_encode([
             'base_version' => $base['version'], 'target_version' => $target['version'],
             'notice' => 'DRY RUN ONLY — NO FILES CHANGED', ...$plan,

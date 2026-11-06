@@ -56,3 +56,7 @@ try {
     throw new RuntimeException('Custom world was accepted as an excluded backup folder');
 } catch (InvalidArgumentException $expected) {
 }
+
+foreach (['custom', 'custom_nether', 'custom_the_end'] as $folder) {
+    expectFailure(fn () => BackupExclusions::requireSafeForWorld([$folder], 'level-name custom'), 'Custom world variant excluded');
+}

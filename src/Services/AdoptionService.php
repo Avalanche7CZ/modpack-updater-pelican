@@ -23,6 +23,7 @@ final class AdoptionService
         $files = $this->files->wings($server);
         $evidence = (new RuntimeEvidenceCollector)->collect($files);
         $report = $this->runtime->inspect($evidence['paths'], $evidence['texts'], $server->startup, $server->image, $server->egg?->name);
+        $report['protected_roots'] = SafetyPaths::roots($evidence['texts']['server.properties'] ?? '');
         $report['state'] = app(PelicanPowerController::class)->state($server);
         $report['observed_at'] = now()->toIso8601String();
 
@@ -39,20 +40,26 @@ final class AdoptionService
         $observed['upstream_runtime'] = $base['runtime'];
         $observed['observed_at'] = now()->toIso8601String();
         $rules = $server->file_rules ?? [];
-        foreach ($inventory['excluded_roots'] ?? [] as $root) {
-            UpdatePlanner::assertPath($root);
-            $rules[] = ['pattern' => $root.'/**', 'mode' => 'protect'];
-        }
+        $safetyRoots = array_merge($observed['protected_roots'] ?? [], $inventory['excluded_roots'] ?? []);
         $identities = (new ModIdentityMappings)->apply(
             ['base' => $base['identities'] ?? [], 'local' => $inventory['identities'] ?? [], 'target' => $base['identities'] ?? []],
             $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $inventory['files'], 'target' => $base['files']]);
         $plan = $this->planner->plan($base['files'], $inventory['files'], $base['files'], $rules, $identities,
-            $server->disabled_mods ?? []);
-        $report = ['verified_baseline' => true, 'version' => $base['version'], 'counts' => $plan['counts'],
-            'changes' => array_values(array_filter($plan['changes'], fn ($c) => $c['action'] !== 'unchanged')),
+            $server->disabled_mods ?? [], $safetyRoots, $inventory['metadata'] ?? []);
+        $report = ['policy_revision' => $server->policy_revision, 'verified_baseline' => true, 'version' => $base['version'], 'counts' => $plan['counts'],
+            'changes' => $plan['changes'],
             'scope' => $inventory['scope'], 'excluded_roots' => $inventory['excluded_roots'],
             'observed_at' => now()->toIso8601String(), 'notice' => $inventory['notice']];
-        $server->update(['adoption_report' => $report, 'runtime_report' => $observed]);
+        $saved = DB::transaction(function () use ($server, $report, $observed, $inventory): ManagedServer {
+            $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
+            if ($fresh->policy_revision !== $server->policy_revision || $fresh->base_manifest_path !== $server->base_manifest_path) {
+                throw new RuntimeException('Server policy changed during adoption comparison; compare again');
+            }
+            $fresh->update(['adoption_report' => $report, 'runtime_report' => $observed, 'file_inventory' => [...$inventory, 'observed_at' => now()->toIso8601String()]]);
+
+            return $fresh;
+        });
+        $server->setRawAttributes($saved->getAttributes(), true);
 
         return $report;
     }

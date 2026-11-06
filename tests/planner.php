@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../src/Services/UpdatePlanner.php';
+require_once __DIR__.'/bootstrap.php';
 
 use Arcturus\ModpackManager\Services\UpdatePlanner;
 
@@ -44,15 +44,15 @@ $rules = [
     ['pattern' => 'mods/Angelica-*.jar', 'mode' => 'disable'],
     ['pattern' => 'server.properties', 'mode' => 'replace'],
 ];
-$plan = $p->plan($base, $local, $target, $rules);
+$plan = $p->plan($base, $local, $target, $rules, ['base' => ['mods/old.jar' => 'old'], 'target' => ['mods/add.jar' => 'added']]);
 foreach ([
     'mods/update.jar' => 'update', 'mods/conflict.jar' => 'conflict',
-    'mods/old.jar' => 'already_absent', 'mods/add.jar' => 'add',
+    'mods/old.jar' => 'skip_disabled', 'mods/add.jar' => 'add',
     'config/protected.cfg' => 'preserve', 'config/merge.cfg' => 'merge_required',
     'mods/Angelica-1.jar' => 'disable_requires_enforcement',
     'mods/Angelica-2.jar' => 'skip_disabled',
     'mods/custom.jar' => 'preserve_local_extra',
-    'world/level.dat' => 'preserve', 'server.properties' => 'preserve',
+    'world/level.dat' => 'preserve', 'server.properties' => 'replace_with_override',
 ] as $path => $expected) {
     eq($expected, act($plan, $path), $path);
 }

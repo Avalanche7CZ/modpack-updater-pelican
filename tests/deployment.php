@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-foreach (['UpdatePlanner', 'DirectoryInventory', 'ManifestJson', 'LocalDeployment'] as $name) {
+foreach (['SafetyPaths', 'ProtectionPolicy', 'UpdatePlanner', 'DirectoryInventory', 'ManifestJson', 'LocalDeployment'] as $name) {
     require_once __DIR__ . '/../src/Services/' . $name . '.php';
 }
 

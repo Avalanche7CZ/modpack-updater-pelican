@@ -43,7 +43,9 @@ final class LocalDeployment
         array $target,
         array $rules,
         bool $offlineConfirmed = false,
-        ?string $verifiedPelicanBackupUuid = null
+        ?string $verifiedPelicanBackupUuid = null,
+        array $policyContext = [],
+        ?array $expectedDecisions = null
     ): array {
         if (!$offlineConfirmed) {
             throw new RuntimeException('Server stop must be explicitly confirmed before deployment');
@@ -76,6 +78,8 @@ final class LocalDeployment
         }
         try {
             $paths = array_unique(array_merge(array_keys($base), array_keys($target)));
+            $safetyRoots = array_values(array_unique(array_merge($this->inventory->safetyRoots($live), $policyContext['safety_roots'] ?? [])));
+            $paths = array_values(array_filter($paths, fn ($p) => SafetyPaths::reason($p, $safetyRoots) === null));
             $local = $this->inventory->hashPaths($live, $paths);
             $verified = $this->inventory->hashPaths($stage, array_keys($target));
             if (count($verified) !== count($target)) {
@@ -86,7 +90,10 @@ final class LocalDeployment
                     throw new RuntimeException("Staged hash mismatch: {$path}");
                 }
             }
-            $plan = $this->planner->plan($base, $local, $target, $rules);
+            $plan = $this->planner->plan($base, $local, $target, $rules, $policyContext['identities'] ?? [], $policyContext['disabled'] ?? [], $safetyRoots, $policyContext['metadata'] ?? []);
+            if ($expectedDecisions !== null && $plan['changes'] !== $expectedDecisions) {
+                throw new RuntimeException('Deployment decisions differ from the approved preview');
+            }
             $mutations = [];
             foreach ($plan['changes'] as $entry) {
                 $action = $entry['action'];
