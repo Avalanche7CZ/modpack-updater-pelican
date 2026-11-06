@@ -7,6 +7,7 @@ namespace Arcturus\ModpackManager\Filament\Server\Pages;
 use App\Models\Server;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Security\Access;
+use Arcturus\ModpackManager\Services\ProtectionPolicy;
 use Filament\Facades\Filament;
 use Filament\Pages\Page;
 
@@ -44,6 +45,8 @@ final class ArcturusModpack extends Page
             'checked' => $record->last_checked_at?->diffForHumans(), 'policy' => $record->policy,
             'operation' => $record->operations()->latest()->value('phase'),
             'blocked' => $record->preview_summary['blocked'] ?? null,
+            'rules' => (new ProtectionPolicy)->normalize($record->file_rules ?? []),
+            'disabled_mods' => $record->disabled_mods ?? [],
             'adopted' => $record->adopted_at !== null];
     }
 }

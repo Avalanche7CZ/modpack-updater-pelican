@@ -9,6 +9,10 @@
                     <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd class="break-all">{{ $state[$field] ?? 'Unavailable' }}</dd></div>
                 @endforeach
             </dl>
+            <details class="mt-4"><summary class="cursor-pointer">Protection rules (read only)</summary>
+                @foreach($state['rules'] as $rule)<p class="break-all text-sm">{{ $rule['enabled'] ? 'Enabled' : 'Disabled' }} · {{ $rule['scope'] }}: {{ $rule['pattern'] }} · {{ \Arcturus\ModpackManager\Services\ProtectionPolicy::ACTIONS[$rule['mode']] }}</p>@endforeach
+                <p class="text-sm">Disabled mods: {{ implode(', ', $state['disabled_mods']) ?: 'None specified' }}</p>
+            </details>
             <p class="mt-4 text-sm text-gray-500 dark:text-gray-400">Updates and runtime changes require administrator review.</p>
         @endif
     </x-filament::section>
