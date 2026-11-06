@@ -50,8 +50,11 @@ final class CreateManagedServer extends CreateRecord
                     ->action(fn ($get) => $this->inspectSelection((string) $get('pelican_server_uuid')))]),
                 Text::make(fn () => $this->inspection ? implode(' · ', array_filter([
                     'Wings: '.($this->inspection['state'] ?? 'unavailable'),
-                    $this->inspection['loader'] ? 'Observed loader: '.$this->inspection['loader'] : 'Loader not verified',
+                    $this->inspection['loader']
+                        ? (($this->inspection['loader_confidence'] ?? '') === 'installer_config' ? 'Starter config loader: ' : 'Observed loader: ').$this->inspection['loader']
+                        : 'Loader not verified',
                     $this->inspection['minecraft'] ? 'Minecraft: '.$this->inspection['minecraft'] : 'Minecraft version not verified',
+                    $this->inspection['loader_version'] ? 'Loader version: '.$this->inspection['loader_version'] : null,
                     ! empty($this->inspection['warnings']) ? 'Warnings: '.count($this->inspection['warnings']) : null,
                 ])) : 'Inspection reads configuration through Wings. Adoption never stops or restarts the server.'),
                 Text::make(fn () => $this->inspection ? implode(' · ', array_filter([
