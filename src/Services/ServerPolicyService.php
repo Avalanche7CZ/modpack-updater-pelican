@@ -16,9 +16,13 @@ final class ServerPolicyService
     public function save(ManagedServer $server, array $rules, array $disabled, int $revision, array $attributes = []): void
     {
         Access::requireAdmin();
-        $allowed = ['label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings'];
+        $allowed = ['label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', ...DiscordSettings::FIELDS];
         if (array_diff(array_keys($attributes), $allowed)) {
             throw new RuntimeException('Invalid policy settings');
+        }
+        $discord = array_intersect_key($attributes, array_flip(DiscordSettings::FIELDS));
+        if ($discord) {
+            $attributes = array_diff_key($attributes, array_flip(DiscordSettings::FIELDS)) + (new DiscordSettings)->attributes($server, $discord);
         }
         $rules = (new ProtectionPolicy)->normalize($rules);
         (new UpdatePlanner)->plan([], [], [], $rules, [], $disabled);

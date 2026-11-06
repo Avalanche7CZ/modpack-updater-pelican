@@ -9,6 +9,7 @@ use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\Create
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\EditManagedServer;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ListManagedServers;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer;
+use Arcturus\ModpackManager\Filament\Forms\DiscordFields;
 use Arcturus\ModpackManager\Filament\Forms\PolicyFields;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
 use Arcturus\ModpackManager\Jobs\PrepareUpdate;
@@ -135,6 +136,7 @@ final class ManagedServerResource extends Resource
                     Toggle::make('deploy_enabled')->label('Allow deployment for this server')->default(false)->disabled()
                         ->helperText('Deployment is gated while remote transactions and restore behavior are not qualified.'),
                 ]),
+            DiscordFields::section(),
             Section::make('Backups')->columns(1)->schema([
                 Select::make('backup_mode')->label('Backup backend')->required()->native(false)
                     ->default('pelican')

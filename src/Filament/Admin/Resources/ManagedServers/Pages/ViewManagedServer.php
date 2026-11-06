@@ -167,7 +167,7 @@ final class ViewManagedServer extends ViewRecord
                     $fresh = ManagedServer::lockForUpdate()->findOrFail($r->id);
                     abort_if((bool) $fresh->active_operation_id, 409);
                     $fresh->update(['selected_version' => $release->version, 'target_metadata' => ['name' => $release->name,
-                        'notes' => $release->notes, 'runtime' => $release->runtime, 'blockers' => $release->blockers,
+                        'notes' => $release->notes, 'release_url' => $release->url, 'runtime' => $release->runtime, 'blockers' => $release->blockers,
                         'preparation_supported' => $release->canPrepare(), 'download_bytes' => $release->bytes()],
                         'target_manifest_path' => null, 'prepared_root' => null, 'preview_summary' => null, 'approved_plan_sha256' => null]);
                 });

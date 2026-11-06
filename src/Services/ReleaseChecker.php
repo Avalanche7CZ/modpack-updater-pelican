@@ -61,19 +61,14 @@ final class ReleaseChecker
                 }
 
                 if ($new) {
-                    $server->events()->create([
+                    $event = $server->events()->create([
                         'kind' => 'release', 'status' => 'success',
                         'from_version' => $server->installed_version,
                         'to_version' => $version,
                         'message' => 'New upstream release detected',
-                        'details' => ['artifact_available' => $release['asset_url'] !== null],
+                        'details' => ['artifact_available' => $release['asset_url'] !== null, 'release_url' => $release['release_url'], 'discord_notification_pending' => true],
                     ]);
-                    try {
-                        $this->notifier->announce($server, 'update_available',
-                            "Version **{$version}** is available. Approval or a separate deployment worker is required.");
-                    } catch (Throwable $error) {
-                        report($error);
-                    }
+                    $this->notifier->forEvent($event);
                     if ($server->policy === 'auto' && $server->deploy_enabled &&
                         config('arcturus-modpack-manager.automatic_deploy', false) &&
                         config('arcturus-modpack-manager.enable_deploy', false)) {

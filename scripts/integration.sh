@@ -14,3 +14,5 @@ PELICAN_SOURCE="$TEST_PANEL" php tests/integration/adoption.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/curseforge.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/runtime.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/policies.php
+PELICAN_SOURCE="$TEST_PANEL" php tests/integration/discord.php
+PELICAN_SOURCE="$TEST_PANEL" php tests/integration/discord_deployment.php

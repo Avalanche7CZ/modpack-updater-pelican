@@ -6,6 +6,7 @@ namespace Arcturus\ModpackManager\Console\Commands;
 
 use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 use Arcturus\ModpackManager\Models\Operation;
+use Arcturus\ModpackManager\Services\DiscordNotifier;
 use Illuminate\Console\Command;
 
 final class RecoverOperations extends Command
@@ -24,6 +25,8 @@ final class RecoverOperations extends Command
                 $this->warn('Manual intervention required; destructive operation will not be replayed: '.$op->id);
             }
         }
+
+        app(DiscordNotifier::class)->recover();
 
         return self::SUCCESS;
     }
