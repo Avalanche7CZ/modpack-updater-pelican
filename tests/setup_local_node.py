@@ -66,7 +66,7 @@ class SetupTests(unittest.TestCase):
         volume = self.root / 'volume'; volume.mkdir(mode=0o700)
         for directory in ['mods', 'config', 'world', 'private', 'saves']:
             (volume / directory).mkdir(mode=0o700)
-            (volume / directory / 'data').write_bytes(b'preserve')
+            (volume / directory / 'fixture.bin').write_bytes(b'preserve')
         (volume / 'server.properties').write_text('level-name=config\n')
         outside = self.root / 'outside'; outside.write_bytes(b'secret')
         (volume / 'mods/link').symlink_to(outside)
@@ -76,8 +76,8 @@ class SetupTests(unittest.TestCase):
             setup.provision_volume(fd, self.uid)
         finally:
             os.close(fd)
-        self.assertIn('user:%s:r--' % self.uid, self.acl(volume / 'mods/data'))
-        for path in [volume / 'world/data', volume / 'config/data', volume / 'private/data', outside]:
+        self.assertIn('user:%s:r--' % self.uid, self.acl(volume / 'mods/fixture.bin'))
+        for path in [volume / 'world/fixture.bin', volume / 'config/fixture.bin', volume / 'private/fixture.bin', outside]:
             self.assertNotIn('user:%s:' % self.uid, self.acl(path))
             self.assertIn(path.read_bytes(), [b'preserve', b'secret'])
 

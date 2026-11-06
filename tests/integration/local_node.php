@@ -166,26 +166,36 @@ $record = ManagedServer::findOrFail($record->id);
 check($record->baseline_status === 'verified' && $record->baseline_provenance['transport'] === 'local', 'Automatically provisioned baseline was not verified');
 $manifest = app(Arcturus\ModpackManager\Services\ReleaseStore::class)->load($record->base_manifest_path);
 check($manifest['files']['config/example.cfg'] === hash('sha256', 'verified upstream'), 'Automatically provisioned baseline lost upstream checksum verification');
-check(isset($manifest['files']['tacz/guns.json'], $manifest['files']['DiscordIntegration-Data/locale.json'], $record->file_inventory['files']['tacz/local.json']), 'Approved directories were omitted from manifests or inventory');
+check(isset($manifest['files']['tacz/guns.json'], $manifest['files']['DiscordIntegration-Data/locale.json']), 'Discovered directories were omitted from the upstream manifest');
+check(! isset($record->file_inventory['files']['tacz/local.json']), 'Legacy node-wide approval bypassed server review');
+app(Arcturus\ModpackManager\Services\ServerPolicyService::class)->save($record, $record->file_rules, [], $record->policy_revision,
+    ['directory_decisions' => [['path' => 'tacz', 'mode' => 'manage'], ['path' => 'DiscordIntegration-Data', 'mode' => 'keep']]]);
+$record->refresh();
+app(Arcturus\ModpackManager\Services\AdoptionService::class)->compare($record);
+check(isset($record->file_inventory['files']['tacz/local.json']), 'Per-server Manage decision did not enable inventory');
 check(file_get_contents($dir.'/volumes/'.$uuid.'/tacz/local.json') === 'preserved local data', 'Baseline modified live additional-directory content');
 check(! $record->deploy_enabled && count($record->file_rules) === 1, 'Baseline changed deployment restrictions or saved policies');
 
-// Reproduce the rejected pack through the real queue handler and native failure UI.
+// New packs no longer require privileged node approval or a failed preparation.
 $approvedContents = file_get_contents($dir.'/approval.json');
 $unapproved = json_decode($approvedContents, true);
 $unapproved['additional_managed_directories'] = [];
 file_put_contents($dir.'/approval.json', json_encode($unapproved));
-$failed = app(Arcturus\ModpackManager\Services\OperationTracker::class)->create($record, 'baseline',
+app(Arcturus\ModpackManager\Services\ServerPolicyService::class)->save($record, $record->file_rules, [], $record->policy_revision, ['directory_decisions' => []]);
+$record->refresh();
+$discovered = app(Arcturus\ModpackManager\Services\OperationTracker::class)->create($record, 'baseline',
     ['provider' => $record->provider, 'source' => $record->source, 'version' => $record->installed_version]);
-$job = new Arcturus\ModpackManager\Jobs\PrepareUpdate($record->id, true, $failed->id);
-rejects(fn () => $job->handle(app(Arcturus\ModpackManager\Services\PrepareRelease::class), app(Arcturus\ModpackManager\Services\OperationTracker::class)), 'Unreviewed directories did not fail queue preparation');
-$failed->refresh();
-check($failed->phase === 'failed' && $failed->context['diagnostic']['directories'] === ['DiscordIntegration-Data', 'tacz'], 'Queue failure lost structured managed-directory evidence');
-check(is_file($record->staging_parent.'/'.$failed->node_operation_id.'/download-0') && ! is_file($record->staging_parent.'/'.$failed->node_operation_id.'/manifest.json'), 'Failed preparation evidence was deleted or a manifest was accepted');
-$event = $record->events()->where('status', 'failed')->latest()->firstOrFail();
-check($event->details['diagnostic']['code'] === 'UNAPPROVED_MANAGED_DIRECTORY', 'History did not retain an actionable error code');
-$failureScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
-check(str_contains($failureScreen->html(), 'Unapproved managed directories: DiscordIntegration-Data, tacz') && str_contains($failureScreen->html(), '--additional-managed-directory'), 'Native failed-operation UI did not explain the required administrator action');
+$job = new Arcturus\ModpackManager\Jobs\PrepareUpdate($record->id, true, $discovered->id);
+$job->handle(app(Arcturus\ModpackManager\Services\PrepareRelease::class), app(Arcturus\ModpackManager\Services\OperationTracker::class));
+$discovered->refresh();
+$record->refresh();
+check($discovered->phase === 'completed' && is_file($record->staging_parent.'/'.$discovered->node_operation_id.'/manifest.json'), 'Unknown directory discovery failed baseline preparation');
+check((new Arcturus\ModpackManager\Services\DirectoryPolicy)->pending($record) === ['DiscordIntegration-Data', 'tacz'], 'Unfamiliar roots did not require server review');
+check(! isset($record->file_inventory['files']['tacz/local.json']), 'Unreviewed live content was inventoried');
+check(file_get_contents($dir.'/approval.json') === json_encode($unapproved), 'Preparation edited privileged node approvals');
+$reviewScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
+$reviewScreen->call('mountAction', 'directoryDecisions');
+check(str_contains($reviewScreen->html(), 'tacz') && str_contains($reviewScreen->html(), 'Keep local'), 'Native adoption UI omitted discovered directory decisions');
 file_put_contents($dir.'/approval.json', $approvedContents);
 $remote = $local->adoptionAttributes($other, 'default');
 check($remote === ['transport' => 'wings'], 'Local default changed remote-node selection');
