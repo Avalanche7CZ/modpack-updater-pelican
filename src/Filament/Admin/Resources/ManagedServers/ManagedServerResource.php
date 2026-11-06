@@ -178,17 +178,19 @@ final class ManagedServerResource extends Resource
 
     public static function table(Table $table): Table
     {
-        return $table->columns([
+        return $table->modifyQueryUsing(fn ($query) => $query->with('latestOperationEvent'))->columns([
             TextColumn::make('label')->label('Server')->searchable()->sortable()
                 ->description(fn (ManagedServer $record) => strtoupper($record->provider).' · '.$record->source),
             TextColumn::make('runtime_report.state')->label('Last observed state')->badge()->placeholder('Unknown'),
-            TextColumn::make('baseline_status')->label('Baseline')->badge()->color(fn ($state) => $state === 'verified' ? 'success' : 'warning'),
+            TextColumn::make('baseline_status')->label('Upstream baseline')->badge()->color(fn ($state) => $state === 'verified' ? 'success' : 'warning'),
+            TextColumn::make('comparison_status')->label('Installation comparison')->badge()->formatStateUsing(fn (ManagedServer $record) => $record->comparisonLabel())
+                ->color(fn ($state) => match ($state) { 'complete' => 'success', 'failed' => 'danger', default => 'warning' }),
             TextColumn::make('installed_version')->label('Installed')->badge()->color('gray'),
             TextColumn::make('available_version')->label('Latest')
                 ->placeholder('Not checked')->badge()
                 ->color(fn (ManagedServer $record) => $record->hasUpdate() ? 'warning' : 'success'),
-            TextColumn::make('active_operation_id')->label('Operation')->formatStateUsing(fn ($state) => $state ? 'In progress' : 'Idle')->placeholder('Idle'),
-            TextColumn::make('last_error')->label('Blocked / failed')->wrap()->limit(100)->placeholder('—'),
+            TextColumn::make('operation_status')->label('Operation')->badge()->color(fn ($state) => in_array($state, ['Failed', 'Comparison failed'], true) ? 'danger' : 'gray'),
+            TextColumn::make('failure_summary')->label('Blocked / failed')->wrap()->limit(100)->placeholder('—'),
             TextColumn::make('backup_mode')->label('Backup')->badge()->color('gray'),
             TextColumn::make('last_backup_uuid')->label('Latest backup UUID')->placeholder('—')->copyable()->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('policy')->badge()->color(fn ($state) => match ($state) {
@@ -199,7 +201,7 @@ final class ManagedServerResource extends Resource
         ])->filters([
             SelectFilter::make('provider')->options(['github' => 'GitHub', 'ftb' => 'FTB', 'modrinth' => 'Modrinth',
                 'curseforge' => 'CurseForge', 'atlauncher' => 'ATLauncher', 'custom' => 'Custom']),
-            SelectFilter::make('baseline_status')->options(['verified' => 'Verified', 'unverified' => 'Unverified']),
+            SelectFilter::make('baseline_status')->options(['verified' => 'Upstream verified', 'unverified' => 'Upstream unverified']),
             TernaryFilter::make('enabled'),
         ])->toolbarActions([
             BulkAction::make('checkSelected')->label('Check selected releases')->action(function (Collection $records): void {

@@ -21,10 +21,17 @@
                     <p class="mb-3 text-sm">Preparation / inventory backend: {{ $record->transport === 'local' ? 'Same-host local filesystem' : 'Remote node worker' }}.
                         <a class="text-primary-600 underline" href="https://github.com/Avalanche7CZ/modpack-updater-pelican/blob/main/docs/local-filesystem.md" target="_blank" rel="noopener noreferrer">Same-host setup instructions</a>. Complete Local filesystem setup once, then use Filesystem backend or the default on adoption.</p>
                     <dl class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        @foreach(['label' => 'Server', 'provider' => 'Provider', 'source' => 'Project', 'installed_version' => 'Installed release', 'available_version' => 'Available release', 'baseline_status' => 'Baseline'] as $field => $label)
+                        @foreach(['label' => 'Server', 'provider' => 'Provider', 'source' => 'Project', 'installed_version' => 'Installed release', 'available_version' => 'Available release', 'baseline_status' => 'Upstream baseline'] as $field => $label)
                             <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd class="break-all">{{ $record->$field ?? 'Unavailable' }}</dd></div>
                         @endforeach
                     </dl>
+                    <p class="mt-4">{{ $record->comparisonLabel() }}.</p>
+                    @if($record->baseline_status === 'verified' && $record->comparison_status !== 'complete')
+                        <p class="text-sm">Upstream baseline verified. Installation comparison still needs to succeed. Review directory decisions and use Retry installation comparison; the existing manifest is reused.</p>
+                    @endif
+                    @if($record->comparison_diagnostic)
+                        <p class="mt-2 text-sm">{{ \Arcturus\ModpackManager\Services\PreparationDiagnostic::message($record->comparison_diagnostic) }}</p>
+                    @endif
                     @if(!$record->adopted_at)<p class="mt-4">Adoption draft. Prepare the installed baseline and review File Changes before finishing adoption.</p>@endif
                 </x-filament::section>
                 @if($this->nodeCapabilities)

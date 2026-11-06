@@ -197,6 +197,57 @@ $reviewScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\R
 $reviewScreen->call('mountAction', 'directoryDecisions');
 $reviewModal = $reviewScreen->effects['partials']['action-modals'] ?? $reviewScreen->html();
 check(str_contains($reviewModal, 'tacz') && str_contains($reviewModal, 'Keep local'), 'Native adoption UI omitted discovered directory decisions');
+// Upstream verification survives a real stdio inventory failure; retry never prepares a pack.
+$live = $dir.'/volumes/'.$uuid;
+mkdir($live.'/config', 0700);
+symlink('/etc/private?token=secret', $live.'/config/link.json');
+$failedComparison = app(Arcturus\ModpackManager\Services\OperationTracker::class)->create($record, 'baseline',
+    ['provider' => $record->provider, 'source' => $record->source, 'version' => $record->installed_version]);
+$baselineJob = new Arcturus\ModpackManager\Jobs\PrepareUpdate($record->id, true, $failedComparison->id);
+try {
+    $baselineJob->handle(app(Arcturus\ModpackManager\Services\PrepareRelease::class), app(Arcturus\ModpackManager\Services\OperationTracker::class));
+    throw new RuntimeException('Symlink inventory unexpectedly completed');
+} catch (Arcturus\ModpackManager\Services\PreparationException $error) {
+    check($error->diagnostic['code'] === 'SYMLINK_PATH' && $error->diagnostic['phase'] === 'comparing', 'Stdio failure lost its typed comparison diagnostic');
+    check(! str_contains($error->getMessage(), '/etc') && ! str_contains($error->getMessage(), 'token=secret'), 'Comparison leaked an absolute path or secret');
+}
+$record->refresh();
+$failedComparison->refresh();
+$verifiedPath = $record->base_manifest_path;
+$verifiedDigest = hash_file('sha256', $verifiedPath);
+check($record->baseline_status === 'verified' && $record->comparison_status === 'failed' && ! $record->adoption_report, 'Upstream and installation comparison states were conflated');
+check($failedComparison->phase === 'failed' && ! $record->active_operation_id && $record->operation_status === 'Comparison failed', 'Failed comparison appeared idle or successful');
+check(! $record->enabled && ! $record->deploy_enabled && ! $record->adopted_at, 'Failed comparison enabled adoption or deployment');
+check($record->events()->where('status', 'failed')->where('kind', 'baseline')->latest('id')->first()->details['diagnostic']['code'] === 'SYMLINK_PATH', 'History lost the inventory diagnostic');
+$failedScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
+check(str_contains($failedScreen->html(), 'Upstream baseline verified') && str_contains($failedScreen->html(), 'Installation comparison failed') && str_contains($failedScreen->html(), 'Retry installation comparison'), 'Recovery UI hid the failed/incomplete installation state');
+if (extension_loaded('intl')) {
+$tableHtml = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ListManagedServers::class)->html();
+check(str_contains($tableHtml, 'Upstream baseline') && str_contains($tableHtml, 'Installation comparison failed') && str_contains($tableHtml, 'Comparison failed'), 'Managed Servers table showed a misleading verified/idle state');
+}
+rejects(fn () => app(Arcturus\ModpackManager\Services\AdoptionService::class)->finish($record), 'Failed comparison finished verified adoption');
+// Preserve the problematic directory by policy, and manage a different discovered root.
+app(Arcturus\ModpackManager\Services\ServerPolicyService::class)->save($record, $record->file_rules, [], $record->policy_revision,
+    ['directory_decisions' => [['path' => 'config', 'mode' => 'keep'], ['path' => 'tacz', 'mode' => 'manage'], ['path' => 'DiscordIntegration-Data', 'mode' => 'exclude']]]);
+$record->refresh();
+unlink($dir.'/fixture.zip'); // Retry cannot read the original upstream artifact.
+Illuminate\Support\Facades\Bus::fake([Arcturus\ModpackManager\Jobs\CompareInstallation::class]);
+$retryScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
+$retryScreen->call('mountAction', 'retryComparison')->call('callMountedAction');
+check($retryScreen->instance()->getErrorBag()->isEmpty(), 'Retry action failed validation');
+$record->refresh();
+$retry = $record->operations()->findOrFail($record->active_operation_id);
+check($retry->kind === 'comparison' && $record->comparison_status === 'queued', 'Retry did not queue a separate comparison operation');
+$retryJob = Illuminate\Support\Facades\Bus::dispatched(Arcturus\ModpackManager\Jobs\CompareInstallation::class)->first();
+check($retryJob !== null, 'Native retry action did not dispatch comparison');
+$retryJob->handle(app(Arcturus\ModpackManager\Services\AdoptionService::class), app(Arcturus\ModpackManager\Services\OperationTracker::class));
+$record->refresh(); $retry->refresh();
+check($retry->phase === 'completed' && $record->comparison_status === 'complete' && ! $record->comparison_diagnostic && ! $record->active_operation_id, 'Read-only comparison recovery did not complete');
+check($record->base_manifest_path === $verifiedPath && hash_file('sha256', $verifiedPath) === $verifiedDigest, 'Retry replaced verified upstream evidence');
+check(is_file($record->staging_parent.'/'.$retry->node_operation_id.'/comparison.json') && ! is_file($record->staging_parent.'/'.$retry->node_operation_id.'/download-0') && ! is_dir($record->staging_parent.'/'.$retry->node_operation_id.'/files'), 'Retry repeated upstream preparation');
+check(isset($record->file_inventory['files']['tacz/local.json']) && ! isset($record->file_inventory['files']['config/link.json']), 'Retry ignored current per-server directory decisions');
+check(is_link($live.'/config/link.json') && file_get_contents($live.'/tacz/local.json') === 'preserved local data', 'Recovery modified live Minecraft files');
+check(! $record->enabled && ! $record->deploy_enabled && ! $record->adopted_at, 'Retry automatically adopted or enabled updates');
 file_put_contents($dir.'/approval.json', $approvedContents);
 $remote = $local->adoptionAttributes($other, 'default');
 check($remote === ['transport' => 'wings'], 'Local default changed remote-node selection');

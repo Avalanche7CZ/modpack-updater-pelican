@@ -129,10 +129,11 @@ final class PrepareRelease
         $provenance = ['operation_id' => $operation->id, 'node_operation_id' => $operation->node_operation_id, 'transport' => $server->transport ?? 'wings',
             'provider' => $server->provider, 'project' => $server->source, 'version' => $context['version'],
             'manifest_sha256' => $status['manifest_sha256'], 'verification' => 'upstream-checksums'];
+        $this->tracker->transition($operation, 'comparing');
         PreparationProgress::phase($operation, 'comparing', 'inventory_enumeration');
         if ($operation->kind === 'baseline') {
             $server->update(['base_manifest_path' => $path, 'baseline_status' => 'verified',
-                'baseline_provenance' => $provenance, 'approved_plan_sha256' => null]);
+                'baseline_provenance' => $provenance, 'adoption_report' => null, 'comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'approved_plan_sha256' => null]);
             app(AdoptionService::class)->compare($server, $operation);
         } else {
             $server->update(['target_manifest_path' => $path, 'prepared_root' => ($server->transport === 'local' ? 'local:' : 'node:').$operation->node_operation_id,

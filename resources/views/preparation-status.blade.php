@@ -1,7 +1,7 @@
 <div wire:poll.3s.visible>
-    @if($operation && in_array($operation->kind, ['baseline', 'prepare'], true))
+    @if($operation && in_array($operation->kind, ['baseline', 'prepare', 'comparison'], true))
         @php($terminal = $operation->completed_at !== null)
-        <x-filament::section :heading="$terminal ? 'Last preparation' : 'Background operation'">
+        <x-filament::section :heading="$operation->kind === 'comparison' ? 'Installation comparison' : ($terminal ? 'Last preparation' : 'Background operation')">
             <div class="flex flex-wrap items-center justify-between gap-3">
                 <x-filament::badge :color="$presentation['color']" :icon="$terminal ? ($operation->phase === 'completed' ? 'heroicon-m-check-circle' : 'heroicon-m-exclamation-circle') : null">
                     {{ $presentation['status'] }}

@@ -66,10 +66,41 @@ class WorkerTests(unittest.TestCase):
     def test_links_are_rejected(self):
         self.put('mods/good.jar')
         (self.live / 'mods/link.jar').symlink_to('/etc/passwd')
-        with self.assertRaises(OSError):
+        with self.assertRaises(w.PreparationFailure) as failure:
             self.worker.hashes(self.server, ['mods/link.jar'])
+        self.assertEqual(failure.exception.code, 'SYMLINK_PATH')
         with self.assertRaises(ValueError):
             self.worker.inventory(self.server)
+
+    def test_inventory_diagnostics_and_protected_link_pruning(self):
+        import errno
+        self.put('config/valid.cfg')
+        private = self.live / 'config/backups'
+        private.symlink_to('/etc', target_is_directory=True)
+        self.assertIn('config/valid.cfg', self.worker.inventory(self.server)['files'])
+        for index, (error, code) in enumerate([
+            (PermissionError('/absolute/private?token=secret'), 'PERMISSION_DENIED'),
+            (OSError(errno.ELOOP, '/absolute/private?token=secret'), 'SYMLINK_PATH'),
+            (OSError(errno.EIO, '/absolute/private?token=secret'), 'IO_ERROR'),
+            (FileNotFoundError('/absolute/private?token=secret'), 'FILES_CHANGED'),
+            (ValueError('File changed during hashing; retry after the server is stopped'), 'FILES_CHANGED'),
+            (TypeError('/absolute/private?token=secret'), 'METADATA_INVALID'),
+        ]):
+            with self.subTest(code=code), patch.object(w, 'hash_file', side_effect=error):
+                with self.assertRaises(w.PreparationFailure) as failure:
+                    self.worker.inventory(self.server, str(index) * 32)
+                self.assertEqual(failure.exception.code, code)
+                record = json.loads((self.stage / (str(index) * 32) / 'comparison.json').read_text())
+                self.assertEqual(record['diagnostic']['code'], code)
+                self.assertEqual(record['diagnostic']['phase'], 'comparing')
+                public = json.dumps(record['diagnostic'])
+                self.assertNotIn('/absolute', public)
+                self.assertNotIn('token=secret', public)
+        fifo = self.live / 'config/runtime.sock'
+        os.mkfifo(fifo)
+        with self.assertRaises(w.PreparationFailure) as failure:
+            self.worker.inventory(self.server)
+        self.assertEqual(failure.exception.code, 'FILE_TYPE')
 
     def test_directory_link_is_rejected(self):
         (self.live / 'mods').symlink_to(self.stage)

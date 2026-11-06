@@ -185,7 +185,7 @@ final class WingsFiles implements ServerFiles
     {
         $data = $this->worker->request('inventory', $this->operationId ? ['operation_id' => $this->operationId] : []);
         if (($data['complete'] ?? false) !== true || ! is_array($data['files'] ?? null)) {
-            throw new RuntimeException('Remote managed-file inventory is incomplete');
+            throw new \Arcturus\ModpackManager\Services\PreparationException(['code' => 'METADATA_INVALID', 'phase' => 'comparing']);
         }
         (new UpdatePlanner)->plan([], $data['files'], []);
 

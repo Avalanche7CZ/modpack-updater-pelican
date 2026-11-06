@@ -26,7 +26,7 @@ final class PreparationStatus extends Component
     {
         Access::requireAdmin();
         $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id']);
-        $event = $server->events()->whereIn('kind', ['baseline', 'prepare'])->latest('id')->first(['details', 'status']);
+        $event = $server->events()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->latest('id')->first(['details', 'status']);
         $id = $server->active_operation_id ?: ($event?->details['operation_id'] ?? null);
         $operation = $id ? $server->operations()->find($id, ['id', 'kind', 'phase', 'node_operation_id', 'heartbeat_at', 'completed_at', 'cancel_requested_at', 'progress']) : null;
         $report = $operation?->progress ?? [];
@@ -39,6 +39,9 @@ final class PreparationStatus extends Component
         $presentation = \Arcturus\ModpackManager\Services\PreparationProgressView::make($report,
             $operation?->phase ?? 'queued', $operation?->completed_at !== null,
             $operation?->cancel_requested_at !== null, time());
+        if ($operation?->kind === 'comparison') {
+            $presentation['rows'] = array_values(array_filter($presentation['rows'], fn ($row) => $row['key'] === 'comparing'));
+        }
         return view('arcturus-modpack-manager::preparation-status', compact('operation', 'report', 'diagnostic', 'legacy', 'presentation'));
     }
 }

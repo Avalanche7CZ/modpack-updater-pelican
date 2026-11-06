@@ -85,13 +85,42 @@ final class AdoptionService
 
     public function compare(ManagedServer $server, ?\Arcturus\ModpackManager\Models\Operation $operation = null): array
     {
+        $revision = $server->policy_revision;
+        $baseline = $server->base_manifest_path;
+        DB::transaction(function () use ($server, $operation, $revision, $baseline): void {
+            $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
+            if (($fresh->active_operation_id && $fresh->active_operation_id !== $operation?->id) ||
+                $fresh->policy_revision !== $revision || $fresh->base_manifest_path !== $baseline) {
+                throw new PreparationException(['code' => 'COMPARISON_STALE', 'phase' => 'comparing']);
+            }
+            $fresh->update(['comparison_status' => 'running', 'comparison_diagnostic' => null,
+                'adoption_report' => null, 'file_inventory' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
+        });
+        try {
+            return $this->compareInstallation($server, $operation);
+        } catch (Throwable $error) {
+            $detail = $error instanceof PreparationException ? $error->diagnostic : PreparationDiagnostic::normalize([
+                'code' => $error instanceof \Arcturus\ModpackManager\Remote\CapabilityUnavailable ? 'WORKER_CONFIGURATION' : (($error instanceof \InvalidArgumentException || $error instanceof \TypeError || $error instanceof \JsonException) ? 'METADATA_INVALID' : 'COMPARISON_FAILED'),
+                'phase' => 'comparing',
+            ]);
+            // A stale request cannot overwrite newer evidence or revive its approval.
+            ManagedServer::whereKey($server->id)->where('policy_revision', $revision)->where('base_manifest_path', $baseline)
+                ->where('comparison_status', 'running')->update(['comparison_status' => 'failed', 'comparison_diagnostic' => json_encode($detail, JSON_THROW_ON_ERROR)]);
+            $server->events()->create(['kind' => 'comparison', 'status' => 'failed',
+                'message' => PreparationDiagnostic::message($detail), 'details' => ['diagnostic' => $detail, 'operation_id' => $operation?->id]]);
+            throw new PreparationException($detail);
+        }
+    }
+
+    private function compareInstallation(ManagedServer $server, ?\Arcturus\ModpackManager\Models\Operation $operation): array
+    {
         $base = $this->store->load($server->base_manifest_path);
         (new BaselineGuard)->require($base, $server->provider, $server->source, $server->installed_version);
         $inventory = $this->files->managed($server, $operation)->inventory();
         if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning'); }
         $observed = $this->inspect($server->pelicanServer);
         if (($observed['world_path_verified'] ?? null) === false) {
-            throw new RuntimeException('Verify the custom world path in server.properties before adoption comparison');
+            throw new PreparationException(['code' => 'WORLD_PATH_UNVERIFIED', 'phase' => 'comparing']);
         }
         // Display inferred upstream fields separately; do not pretend they prove the running loader.
         $observed['upstream_runtime'] = $base['runtime'];
@@ -108,12 +137,15 @@ final class AdoptionService
             'changes' => $plan['changes'],
             'scope' => $inventory['scope'], 'excluded_roots' => $inventory['excluded_roots'],
             'observed_at' => now()->toIso8601String(), 'notice' => $inventory['notice']];
-        $saved = DB::transaction(function () use ($server, $report, $observed, $inventory): ManagedServer {
+        $saved = DB::transaction(function () use ($server, $report, $observed, $inventory, $operation): ManagedServer {
             $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
             if ($fresh->policy_revision !== $server->policy_revision || $fresh->base_manifest_path !== $server->base_manifest_path) {
-                throw new RuntimeException('Server policy changed during adoption comparison; compare again');
+                throw new PreparationException(['code' => 'COMPARISON_STALE', 'phase' => 'comparing']);
             }
-            $fresh->update(['adoption_report' => $report, 'runtime_report' => $observed, 'file_inventory' => [...$inventory, 'observed_at' => now()->toIso8601String()]]);
+            if ($operation && \Arcturus\ModpackManager\Models\Operation::whereKey($operation->id)->value('cancel_requested_at')) {
+                throw new PreparationException(['code' => 'CANCELLED', 'phase' => 'comparing']);
+            }
+            $fresh->update(['comparison_status' => 'complete', 'comparison_diagnostic' => null, 'adoption_report' => $report, 'runtime_report' => $observed, 'file_inventory' => [...$inventory, 'observed_at' => now()->toIso8601String()]]);
 
             return $fresh;
         });
@@ -141,7 +173,7 @@ final class AdoptionService
             $runtime = $fresh->runtime_report ?? [];
             unset($runtime['upstream_runtime']);
             $fresh->update(['installed_version' => $version, 'baseline_status' => 'unverified',
-                'base_manifest_path' => null, 'baseline_provenance' => null, 'adoption_report' => null,
+                'comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'base_manifest_path' => null, 'baseline_provenance' => null, 'adoption_report' => null,
                 'target_manifest_path' => null, 'target_metadata' => null, 'selected_version' => null,
                 'prepared_root' => null, 'artifact_sha256' => null, 'preview_summary' => null,
                 'approved_plan_sha256' => null, 'approved_by' => null, 'approved_at' => null,
@@ -157,13 +189,17 @@ final class AdoptionService
         if (! $allowUnverified && (new DirectoryPolicy)->pending($server)) {
             throw new RuntimeException('Review the discovered upstream directories before finishing adoption');
         }
-        if (! $allowUnverified) {
-            $this->compare($server);
-        }
+        // Approve the current recorded comparison; never start a large inventory in this web action.
+        // Baseline and policy edits invalidate this evidence through the model revision guard.
         DB::transaction(function () use ($server, $allowUnverified): void {
             $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
             if ($fresh->active_operation_id) {
                 throw new RuntimeException('Wait for baseline preparation to finish');
+            }
+            if (! $allowUnverified && ($fresh->baseline_status !== 'verified' || $fresh->comparison_status !== 'complete' ||
+                ($fresh->adoption_report['policy_revision'] ?? null) !== $fresh->policy_revision ||
+                ($fresh->adoption_report['version'] ?? null) !== $fresh->installed_version || $fresh->base_manifest_path !== $server->base_manifest_path)) {
+                throw new PreparationException(['code' => 'COMPARISON_STALE', 'phase' => 'comparing']);
             }
             $fresh->update(['adopted_at' => now(), 'enabled' => true,
                 'deploy_enabled' => false, 'policy' => $fresh->policy ?? config('arcturus-modpack-manager.default_policy', 'approve'), 'baseline_status' => $allowUnverified ? 'unverified' : 'verified']);

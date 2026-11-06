@@ -118,3 +118,11 @@ Cancellation is a persisted request until the worker confirms it, including whil
 ### Archives with an enclosing directory
 
 Unknown sole content directories are retained for review; obvious serverpack wrappers are detected as described above. Legacy operator-reviewed `archive_roots` remain supported without granting live access.
+
+## Installation comparison recovery
+
+**Upstream baseline** and **Installation comparison** report separate evidence. A verified checksum-bound upstream manifest remains valid when live inventory fails. The operation and History retain the failed comparison, while adoption remains incomplete. Existing installations are migrated without deleting manifests; older comparison failures with no specific diagnostic remain explicitly failed/incomplete until retried.
+
+Use **Retry installation comparison** after reviewing the diagnostic or adjusting per-server directory decisions. This queues a read-only comparison using the authenticated stored manifest, with no provider resolution, download, extraction or staged hashing. It pins the baseline identity and policy revision, reports progress/History separately, supports cancellation, invalidates old approvals and never enables deployment or monitoring automatically. Complete verified adoption remains a separate action after a successful comparison and directory review.
+
+Inventory reports fixed codes for links (`SYMLINK_PATH`), special/changed entry types (`FILE_TYPE`), access denial, missing/changed files, limits, invalid metadata and OS errors. Errors carry only validated logical names or a hashed file ID; exception messages, host paths and link targets never enter public diagnostics. Protected subtrees are pruned before checking their links. Optional unsupported JAR identity metadata remains unavailable rather than guessed, but filesystem errors during metadata reads fail comparison. The earlier generic production error cannot identify its original cause retrospectively; retry now records the specific condition without downloading again.
