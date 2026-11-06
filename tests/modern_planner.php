@@ -22,7 +22,7 @@ check($plan['blocked'] > 0, 'Unidentified missing mod did not block ambiguous ne
 $plan = $p->plan($base, ['mods/renamed-local.jar' => $h('local')], $target, [], [...$ids, 'local' => ['mods/renamed-local.jar' => 'example']]);
 check(collectAction($plan, 'mods/renamed.jar') === 'skip_disabled', 'Manually renamed mod gained a duplicate active upstream copy');
 check($p->plan(['config/a.cfg' => strtoupper($h('same'))], ['config/a.cfg' => $h('same')], ['config/a.cfg' => $h('same')])['counts']['unchanged'] === 1, 'Hash case caused a false conflict');
-foreach (['config/Paradigm/main.yml', 'config/Arcturus/config.json', 'run.sh', 'ops.txt'] as $path) {
+foreach (['world/level.dat', 'custom/region/r.0.0.mca', '.arcturus-modpack-manager/state.json'] as $path) {
     check(collectAction($p->plan([$path => $h('a')], [$path => $h('b')], [$path => $h('c')], [['pattern' => $path, 'mode' => 'replace']]), $path) === 'preserve', 'Protected path could be replaced');
 }
 $merge = new PropertiesMerge;

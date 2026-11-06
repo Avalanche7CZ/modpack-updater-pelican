@@ -9,29 +9,14 @@ use InvalidArgumentException;
 /** A pure manifest diff: it NEVER mutates a server or claims a merge succeeded. */
 final class UpdatePlanner
 {
-    /** Runtime data is never package-owned, including with an explicit replace rule. */
-    private const RUNTIME_DIRS = [
-        'world', 'world_nether', 'world_the_end', 'logs', 'crash-reports',
-        'backup', 'backups', 'dimensions', 'data', '.arcturus-modpack-manager', 'DIM-1', 'DIM1', 'saves',
-    ];
-
-    private const RUNTIME_FILES = [
-        'server.properties', 'eula.txt', 'ops.json', 'whitelist.json',
-        'banned-players.json', 'banned-ips.json', 'usercache.json',
-        'session.lock', 'ops.txt', 'white-list.txt', 'banned-players.txt', 'banned-ips.txt',
-        'start.sh', 'startserver.sh', 'run.sh', 'start.bat', 'run.bat', 'variables.txt',
-        'user_jvm_args.txt', 'unix_args.txt', 'fabric-server-launcher.properties',
-        'quilt-server-launcher.properties',
-    ];
-
     /**
      * @param  array<string,string>  $base  Verified manifest of installed upstream version
      * @param  array<string,string>  $local  Hashes of existing files from the server
      * @param  array<string,string>  $target  Verified manifest of target upstream version
-     * @param  list<array{pattern:string,mode:string}>  $rules  Last matching rule wins
+     * @param  list<array{pattern:string,mode:string}>  $rules  Server-scoped policy rules
      * @return array{changes:list<array<string,mixed>>,counts:array<string,int>,blocked:int,applicable:bool}
      */
-    public function plan(array $base, array $local, array $target, array $rules = [], array $identities = [], array $disabled = []): array
+    public function plan(array $base, array $local, array $target, array $rules = [], array $identities = [], array $disabled = [], array $safetyRoots = [], array $metadata = []): array
     {
         foreach (['base' => $base, 'local' => $local, 'target' => $target] as $label => $manifest) {
             foreach ($manifest as $path => $hash) {
@@ -44,16 +29,8 @@ final class UpdatePlanner
         $base = array_map('strtolower', $base);
         $local = array_map('strtolower', $local);
         $target = array_map('strtolower', $target);
-        if (count($rules) > 256) {
-            throw new InvalidArgumentException('Too many protection rules');
-        }
-        foreach ($rules as $rule) {
-            if (! is_array($rule) || ! isset($rule['pattern'], $rule['mode']) ||
-                ! in_array($rule['mode'], ['protect', 'disable', 'merge', 'replace', 'review', 'ignore'], true)) {
-                throw new InvalidArgumentException('Invalid protection rule');
-            }
-            self::assertPath($rule['pattern']);
-        }
+        $policy = new ProtectionPolicy;
+        $rules = $policy->normalize($rules);
 
         // Mod identity survives upstream renames. Ambiguous/missing identities block new JARs
         // whenever an upstream mod disappeared locally, including intentionally deleted mods.
@@ -78,17 +55,22 @@ final class UpdatePlanner
                 if (! is_string($id) || $id === '' || strlen($id) > 1024) {
                     throw new InvalidArgumentException('Invalid mod identity mapping');
                 }
-                if (isset($seenIds[$id])) {
-                    $ambiguousIds[$id] = true;
+                foreach (explode('+', strtolower($id)) as $componentId) {
+                    if (isset($seenIds[$componentId])) {
+                        $ambiguousIds[$id] = true;
+                        $ambiguousIds[$seenIds[$componentId]] = true;
+                    }
+                    $seenIds[$componentId] = $id;
                 }
-                $seenIds[$id] = true;
             }
         }
         foreach ($base as $file => $hash) {
             if (self::isMod($file) && ! isset($local[$file])) {
                 $id = $baseIds[$file] ?? null;
                 if ($id) {
-                    $disabledIds[$id] = true;
+                    foreach (explode('+', strtolower($id)) as $componentId) {
+                        $disabledIds[$componentId] = true;
+                    }
                 } else {
                     $missingUnidentified = true;
                 }
@@ -96,7 +78,9 @@ final class UpdatePlanner
         }
         foreach ($localIds as $file => $id) {
             if (str_ends_with(strtolower($file), '.disabled')) {
-                $disabledIds[$id] = true;
+                foreach (explode('+', strtolower($id)) as $componentId) {
+                    $disabledIds[$componentId] = true;
+                }
             }
         }
         $paths = array_unique(array_merge(array_keys($base), array_keys($local), array_keys($target)));
@@ -109,14 +93,18 @@ final class UpdatePlanner
             $old = $base[$path] ?? null;
             $current = $local[$path] ?? null;
             $new = $target[$path] ?? null;
-            $mode = $this->ruleFor($path, $rules);
-
             $identity = $targetIds[$path] ?? $baseIds[$path] ?? $localIds[$path] ?? null;
-            if ($mode === 'immutable' || $mode === 'protect') {
+            $rawClass = $this->classification($path, $old, $current, $new, $current !== $old && $old !== null ? 'preserve_local_change' : '');
+            $decision = $policy->effective($path, $rules, $identity, $metadata[$path]['loader'] ?? null, $rawClass);
+            $mode = $decision['mode'];
+            $invariant = SafetyPaths::reason($path, $safetyRoots);
+            if ($invariant !== null || $mode === 'protect') {
                 $action = 'preserve';
+            } elseif ($current !== null && str_starts_with($path, 'mods/') && str_ends_with(strtolower($path), '.jar.disabled') && $mode !== 'remove') {
+                $action = 'preserve_disabled';
             } elseif (self::isMod($path) && $identity && isset($ambiguousIds[$identity])) {
                 $action = 'unsafe_ambiguous_identity';
-            } elseif ($mode === 'disable' || (self::isMod($path) && $identity && isset($disabledIds[$identity]))) {
+            } elseif ($mode === 'disable' || (self::isMod($path) && $identity && array_intersect(explode('+', strtolower($identity)), array_keys($disabledIds)) !== [])) {
                 // A present old JAR is not silently considered disabled. Explicit
                 // enforcement is required before any deployment may proceed.
                 $action = $current === null ? 'skip_disabled' : 'disable_requires_enforcement';
@@ -136,10 +124,16 @@ final class UpdatePlanner
                 $action = 'conflict';
             }
 
-            if ($action === 'add' && self::isMod($path) && $missingUnidentified && ! $identity && $identities !== []) {
+            if ($action === 'add' && self::isMod($path) && $missingUnidentified) {
                 $action = 'unsafe_ambiguous_identity';
             }
-            if ($mode === 'review' && ! in_array($action, ['unchanged', 'preserve', 'preserve_local_extra'], true)) {
+            if ($invariant === null && $mode === 'remove' && ! in_array($action, ['unsafe_ambiguous_identity', 'skip_disabled'], true)) {
+                $action = $current === null ? 'already_absent' : 'remove_with_override';
+            }
+            if ($invariant === null && $mode === 'replace' && ! in_array($action, ['unsafe_ambiguous_identity', 'skip_disabled', 'disable_requires_enforcement', 'preserve_disabled'], true)) {
+                $action = $new === null ? ($current === null ? 'already_absent' : 'remove_with_override') : ($current === $new ? 'unchanged' : 'replace_with_override');
+            }
+            if ($mode === 'review' && ! in_array($action, ['unchanged', 'preserve', 'preserve_local_extra', 'preserve_disabled'], true)) {
                 $action = 'manual_review';
             }
             if ($mode === 'ignore' && $old === null && $new === null) {
@@ -161,8 +155,15 @@ final class UpdatePlanner
             $changes[] = [
                 'path' => $path,
                 'action' => $action,
-                'rule' => $mode,
+                'rule' => $invariant !== null ? 'immutable' : $mode,
+                'rule_origin' => $invariant ?? $decision['origin'],
+                'effective_rule' => $decision['effective_rule'],
+                'matching_rules' => $decision['matching_rules'],
+                'destructive' => in_array($action, ['update', 'remove', 'remove_with_override', 'replace_with_override', 'disable_requires_enforcement'], true),
+                'approval_required' => $isBlocked || in_array($action, ['remove_with_override', 'replace_with_override'], true),
+                'metadata' => $metadata[$path] ?? null,
                 'identity' => $identity,
+                'file_state' => $rawClass,
                 'classification' => $this->classification($path, $old, $current, $new, $action),
                 'base_sha256' => $old,
                 'local_sha256' => $current,
@@ -214,26 +215,6 @@ final class UpdatePlanner
         }
 
         return $base === $target ? 'unchanged_upstream' : 'updated_upstream';
-    }
-
-    private function ruleFor(string $path, array $rules): ?string
-    {
-        $parts = explode('/', $path);
-        if (preg_match('~(?:^|/)(?:arcturus|paradigm)[^/]*(?:/|$)~i', $path) ||
-            preg_match('~(?:^|/)(?:crucible|fabric-server-launch|quilt-server-launch)[^/]*\.jar$~i', $path) ||
-            in_array($parts[0], self::RUNTIME_DIRS, true) ||
-            in_array($path, self::RUNTIME_FILES, true) ||
-            preg_match('/^world_[^\/]+(?:\/|$)/D', $path) === 1) {
-            return 'immutable';
-        }
-        $mode = null;
-        foreach ($rules as $rule) {
-            if (self::matches($rule['pattern'], $path)) {
-                $mode = $rule['mode'];
-            }
-        }
-
-        return $mode;
     }
 
     /** Glob * and ? stay within one directory; ** supports nested directories. */

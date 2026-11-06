@@ -32,8 +32,8 @@ Open **Arcturus Modpack Manager → Managed servers → Adopt Existing Server**.
 
 1. Select the existing Pelican server and inspect runtime/launch evidence.
 2. Enter the actual provider/project and exact installed release ID. FTB uses a numeric version ID; CurseForge a file ID; Modrinth an immutable version ID; GitHub the exact tag. An image tag is a Java hint, not proof of the running runtime.
-3. Set an explicit server asset pattern for GitHub, particularly GTNH's Java/Crucible variants. Set exclusions for backup folders only.
-4. Create the adoption draft. Choose **Prepare installed baseline** on its detail page. Files are fetched into isolated node staging, independently of the live customized server.
+3. Set an explicit server asset pattern for GitHub, particularly GTNH's Java/Crucible variants. Choose an editable per-server policy template (or Empty), rules, disabled mod IDs, backup backend and safe exclusions.
+4. Review the final summary and click **Create adoption draft** (or **Adopt for monitoring only**). Choose **Prepare installed baseline** on its detail page. Files are fetched into isolated node staging, independently of the live customized server.
 5. Review **File Changes**: modified configs, local-only mods, missing files, renamed/disabled mods and protected paths. Retain baseline stages for later text-merge review.
 6. Finish verified adoption. If the exact upstream release cannot be verified, use **Adopt for monitoring only**. Destructive operations stay restricted.
 
@@ -62,7 +62,7 @@ Check releases, select an exact target, prepare its files and compare them with 
 
 The planner distinguishes upstream additions/updates/removals, local modifications/extras, missing files, disabled mods, protected files, conflicts and unsafe identity changes. Review individual conflicts using **Keep local** or **Accept upstream**. These actions change the plan; they do not write live files. Editing rules invalidates previous review.
 
-Rules are ordered, with the last matching administrator rule winning. Immutable runtime/world/identity and Arcturus/Paradigm protection has priority. Globs support `*`, `?`, and `**`. Strategies: preserve, accept upstream, manual review, merge review, keep disabled, ignore local-only files. World data is excluded from managed inventories. File count or byte-limit failure never yields a partial-success inventory.
+Use **Mods & Files** for searchable inventory and bulk file/mod policies, or **Protection Rules** for templates and the advanced rule editor with Test rule. Exact-path rules outrank mod ID, filename, directory, glob, loader and extension rules; priority then row order resolve ties. World/path invariants remain enforced. Named launchers and Arcturus/Paradigm configs are no longer immutable exceptions. See [per-server policy behavior and upgrade notes](docs/server-policies.md). File count or byte-limit failure never yields a partial-success inventory.
 
 Mod identity comes from Fabric/Quilt metadata, Forge/NeoForge TOML or legacy `mcmod.info`. Use explicit path-to-identity mappings when metadata is absent. Missing upstream mods are kept absent across upstream renames where identity is known; unknown/ambiguous identities block new JARs. Additional local mods are preserved. Strict single-line `.properties` merges can be reviewed as text; unsupported syntax or conflicting keys requires manual work through Pelican's file editor. No merge writes live data automatically.
 
@@ -106,4 +106,4 @@ Run `bash scripts/test.sh` for the existing and expanded offline regression suit
 
 CI checks PHP 8.4/8.5, the Python worker, packaging and official Pelican rc.1/rc.2 lockfiles. Every successful main commit publishes a uniquely versioned install ZIP, native `update.json`, and SHA-256 sums after the required checks pass. Preview builds use the source version; release ZIP metadata and update feed share the computed release version. Local artifacts are not proof of publication.
 
-The repository is currently private: downloading its releases requires GitHub access. Pelican's unauthenticated native update URL cannot read private release assets. Use manual authenticated download/import or configure an operator-controlled public mirror; this plugin does not change repository visibility.
+The public release ZIP and `update.json` are available to Pelican's native updater. Cached update checks may take up to ten minutes to refresh.

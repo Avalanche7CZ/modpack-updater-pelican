@@ -26,9 +26,10 @@ php tests/integration/livewire.php
 php tests/integration/adoption.php
 php tests/integration/curseforge.php
 php tests/integration/runtime.php
+php tests/integration/policies.php
 ```
 
-The bootstrap refuses a checkout with an existing `.env`, uses in-memory SQLite and test-only cache/session/mail configuration, and requires an explicit completion marker to prevent Laravel's console exception renderer producing false success. It loads actual Pelican/Laravel/Filament classes, runs Arcturus migrations up/down, verifies the reference plugin's sentinel data is untouched, tests encrypted settings, checks durable queue exclusion/recovery locks and exercises actual daemon repositories through mocked HTTP responses. The Filament test discovers both panels, constructs native wizard/forms/tables/settings and compiles every Blade template. The Livewire test renders and switches all six detail tabs and verifies guest denial and the disabled destructive control.
+The bootstrap refuses a checkout with an existing `.env`, uses in-memory SQLite and test-only cache/session/mail configuration, and requires an explicit completion marker to prevent Laravel's console exception renderer producing false success. It loads actual Pelican/Laravel/Filament classes, runs Arcturus migrations up/down, verifies the reference plugin's sentinel data is untouched, tests encrypted settings, checks durable queue exclusion/recovery locks and exercises actual daemon repositories through mocked HTTP responses. The Filament test discovers both panels, constructs native wizard/forms/tables/settings and compiles every Blade template. The Livewire test renders and switches all seven detail tabs and verifies guest denial and the disabled destructive control.
 
 Runtime inspection tests use the native Wings file repository with a remote FTB-like NeoForge tree, including obsolete versions and a symlink. They verify active launcher selection and Minecraft arguments without reading worlds, executing scripts or sending power requests.
 
@@ -52,6 +53,14 @@ Remote destructive operations stay disabled until these checks are implemented a
 
 ## Browser layout check performed
 
-The six detail tabs were rendered through actual Livewire with a small customized-server fixture and Pelican's built CSS. Chromium checked widths 390, 768 and 1440 in light/dark mode (36 combinations), with no page-level horizontal overflow and a disabled Apply Update control. Long file paths were visually reviewed and the change table uses a bounded horizontal scroll region on narrow screens. These are fixture layout checks, not end-to-end authenticated Panel/Wings user-flow tests. Loading indicators were hidden to reflect their normal idle state in static snapshots.
+The original six detail tabs were rendered through actual Livewire with a small customized-server fixture and Pelican's built CSS. Chromium checked widths 390, 768 and 1440 in light/dark mode (36 combinations), with no page-level horizontal overflow and a disabled Apply Update control. Long file paths were visually reviewed and the change table uses a bounded horizontal scroll region on narrow screens. These are fixture layout checks, not end-to-end authenticated Panel/Wings user-flow tests. Loading indicators were hidden to reflect their normal idle state in static snapshots.
 
 To export the same fixture HTML after building Pelican's frontend assets, set `ARCTURUS_UI_SNAPSHOTS=/tmp/arcturus-ui` when running `tests/integration/livewire.php`; serve the exported files and that disposable Panel's `public/build` directory together. No browser libraries or frontend framework are shipped with the plugin.
+
+## Per-server policy validation
+
+The policy suite runs actual native Livewire wizard steps and submits its rendered final action, covering draft creation, monitoring-only creation, full validation and unauthorized users. Native bulk-policy and advanced-rule modals are mounted; Test rule executes against a discovered fixture mod. Tests cover SQLite reload/isolation, unchanged upgrade rule JSON, policy audit before/after, stale editor rejection, active-operation locks and concurrent policy/preview approval invalidation. A real disposable filesystem fixture compares the actual PreviewService decisions with LocalDeployment and rejects mismatched decisions before mutation. Python fixtures validate legacy/modern mod names/versions and custom inventory/world boundaries.
+
+Set `ARCTURUS_UI_SNAPSHOTS=/tmp/arcturus-policy-ui` while running `tests/integration/policies.php` to export adoption review, Mods & Files and the native rule modal for responsive layout checks using a disposable Panel's built CSS. These are layout fixtures; native stateful submissions are exercised by Livewire, not represented as live Wings or full browser end-to-end qualification.
+
+The three new policy screens passed 18 Chromium viewport/theme fixture checks (390, 768, 1440 pixels in light/dark). The final adoption action was explicitly checked for visibility on the final step. Snapshots reflect the native last-step/modal and idle loading state; they do not replace the actual Livewire submission and rule-action tests.

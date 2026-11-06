@@ -4,7 +4,7 @@
     @php($target = $record->target_metadata ?? $record->release_metadata ?? [])
     <div wire:poll.10s>
         <x-filament::tabs label="Modpack management">
-            @foreach(['overview' => 'Overview', 'updates' => 'Updates', 'changes' => 'File Changes', 'protection' => 'Protection Rules', 'backups' => 'Backups', 'history' => 'History'] as $key => $label)
+            @foreach(['overview' => 'Overview', 'updates' => 'Updates', 'changes' => 'File Changes', 'mods' => 'Mods & Files', 'protection' => 'Protection Rules', 'backups' => 'Backups', 'history' => 'History'] as $key => $label)
                 <x-filament::tabs.item :active="$this->tab === $key" wire:click="selectTab('{{ $key }}')">{{ $label }}</x-filament::tabs.item>
             @endforeach
         </x-filament::tabs>
@@ -100,8 +100,11 @@
                             <tbody>
                                 @forelse($changes['rows'] as $change)
                                     <tr wire:key="change-{{ hash('sha256', $change['path']) }}" class="border-t border-gray-200 dark:border-gray-700">
-                                        <td class="p-2"><details><summary class="cursor-pointer break-all">{{ $change['path'] }}</summary><dl class="mt-2 break-all">
+                                        <td class="p-2"><x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $change['path'] }}" aria-label="Select {{ $change['path'] }}" /> <details><summary class="cursor-pointer break-all">{{ $change['path'] }}</summary><dl class="mt-2 break-all">
                                             @foreach(['base_sha256' => 'Upstream baseline', 'local_sha256' => 'Installed', 'target_sha256' => 'Target'] as $field => $label)<dt class="text-gray-500">{{ $label }}</dt><dd>{{ $change[$field] ?? 'Absent' }}</dd>@endforeach
+                                            <dt class="text-gray-500">Effective rule</dt><dd>{{ $change['rule_origin'] ?? 'Three-way comparison' }} · {{ $change['rule'] ?? 'follow' }}</dd>
+                                            <dt class="text-gray-500">Matching rule rows</dt><dd>{{ implode(', ', $change['matching_rules'] ?? []) ?: 'None' }}</dd>
+                                            <dt class="text-gray-500">Approval / destructive</dt><dd>{{ ($change['approval_required'] ?? false) ? 'Approval required' : 'Plan review' }} · {{ ($change['destructive'] ?? false) ? 'Destructive' : 'Preserves live data' }}</dd>
                                         </dl></details></td>
                                         <td class="p-2">{{ str_replace('_', ' ', $change['classification']) }}</td>
                                         <td class="p-2">{{ str_replace('_', ' ', $change['action']) }}</td>
@@ -112,7 +115,7 @@
                                                         <x-filament::button size="xs" color="gray" wire:click="reviewMerge(@js($change['path']))">Review text merge</x-filament::button>
                                                     @endif
                                                     <x-filament::button size="xs" color="gray" wire:click="resolve(@js($change['path']), 'protect')">Keep local</x-filament::button>
-                                                    <x-filament::button size="xs" color="warning" wire:click="resolve(@js($change['path']), 'replace')">Accept upstream</x-filament::button>
+                                                    <x-filament::button size="xs" color="warning" wire:confirm="Approve an upstream replacement policy for this file? The next deployment still needs a reviewed plan and backup." wire:click="resolve(@js($change['path']), 'replace')">Accept upstream</x-filament::button>
                                                 </div>
                                             @else — @endif
                                         </td>
@@ -127,11 +130,49 @@
                         <x-filament::button color="gray" wire:click="$set('changePage', {{ min($changes['pages'], $changes['page'] + 1) }})" :disabled="$changes['page'] >= $changes['pages']">Next</x-filament::button>
                     </div>
                 </x-filament::section>
+            @elseif($this->tab === 'mods')
+                @php($files = $this->fileRows())
+                <x-filament::section heading="Mods & Files">
+                    <div class="flex flex-wrap items-center gap-3">
+                        <x-filament::input.wrapper><x-filament::input wire:model.live.debounce.400ms="pathSearch" placeholder="Search path, mod ID or name" aria-label="Search files and mods" /></x-filament::input.wrapper>
+                        <x-filament::input.wrapper><x-filament::input.select wire:model.live="classification" aria-label="File state">
+                            <option value="">All states</option>
+                            @foreach(\Arcturus\ModpackManager\Services\ProtectionPolicy::CLASSIFICATIONS as $state)<option value="{{ $state }}">{{ str_replace('_', ' ', $state) }}</option>@endforeach
+                        </x-filament::input.select></x-filament::input.wrapper>
+                        <label class="flex items-center gap-2 text-sm"><x-filament::input.checkbox wire:model.live="modsOnly" /> Mods only</label>
+                        <span class="text-sm">{{ count($this->selectedPaths) }} selected</span>
+                    </div>
+                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $files['total'] }} files · inventory observed {{ $record->file_inventory['observed_at'] ?? 'not yet' }}. Prepare the baseline or compare files to refresh. Unavailable metadata is never guessed.</p>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm" style="min-width:52rem;table-layout:fixed">
+                            <thead><tr><th class="p-2">Select / installed file</th><th class="p-2">Mod metadata</th><th class="p-2">State / target</th><th class="p-2">Effective policy</th></tr></thead>
+                            <tbody>
+                            @forelse($files['rows'] as $file)
+                                <tr wire:key="file-{{ hash('sha256', $file['path']) }}" class="border-t border-gray-200 dark:border-gray-700">
+                                    <td class="p-2 break-all"><label><x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $file['path'] }}" /> {{ $file['path'] }}</label></td>
+                                    <td class="p-2 break-all">{{ $file['name'] ?? 'Name unavailable' }}<br>{{ $file['identity'] ?? 'ID ambiguous / unavailable' }}<br>{{ $file['version'] ?? 'Version unavailable' }} · {{ $file['loader'] ?? 'Loader unknown' }}<p class="text-xs text-gray-500">{{ $file['identity_status'] }}</p></td>
+                                    <td class="p-2 break-all">{{ str_replace('_', ' ', $file['classification']) }}{{ $file['disabled'] ? ' · disabled' : '' }}<br>{{ str_replace('_', ' ', $file['action']) }}
+                                        @if($file['target_path'])<p>Target: {{ $file['target_path'] }} · {{ $file['target_version'] ?? 'Version unavailable' }}</p>@endif
+                                        <p>{{ $file['base_sha256'] ? 'Upstream file' : ($file['classification'] === 'local_only' ? 'Manually installed' : ($file['classification'] === 'new_upstream' ? 'New upstream file' : 'Origin not compared')) }}</p>
+                                    </td>
+                                    <td class="p-2 break-all">{{ $file['invariant'] ?? \Arcturus\ModpackManager\Services\ProtectionPolicy::ACTIONS[$file['mode'] ?? 'follow'] }}<br>{{ $file['origin'] }}<p class="text-xs text-gray-500">Matching rules: {{ implode(', ', $file['matching_rules']) ?: 'None' }}</p></td>
+                                </tr>
+                            @empty<tr><td colspan="4" class="p-3">No matching inventory. Create and verify the upstream baseline, then compare the installation.</td></tr>@endforelse
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-3 flex gap-2">
+                        <x-filament::button color="gray" wire:click="$set('changePage', {{ max(1, $files['page'] - 1) }})" :disabled="$files['page'] <= 1">Previous</x-filament::button>
+                        <x-filament::button color="gray" wire:click="$set('changePage', {{ min($files['pages'], $files['page'] + 1) }})" :disabled="$files['page'] >= $files['pages']">Next</x-filament::button>
+                    </div>
+                </x-filament::section>
             @elseif($this->tab === 'protection')
                 <x-filament::section heading="Protection Rules">
-                    <p class="mb-3">Edit this managed server to change path rules. World and identity protection always takes precedence.</p>
-                    @forelse($record->file_rules ?? [] as $rule)<p class="break-all text-sm"><code>{{ $rule['pattern'] }}</code> · {{ $rule['mode'] }}</p>@empty<p>No additional path rules.</p>@endforelse
-                    <p class="mt-3 text-sm text-gray-500 dark:text-gray-400">Mod identity is read from JAR metadata. Renamed or missing mods without a reliable identity require manual mapping and review.</p>
+                    <p class="mb-3 text-sm">Use Edit protection rules for templates, ordered rules and Test rule. Use Mods & Files to select real files and apply policies in bulk. Saving never modifies the installation.</p>
+                    @forelse((new \Arcturus\ModpackManager\Services\ProtectionPolicy)->normalize($record->file_rules ?? []) as $rule)
+                        <p class="break-all text-sm">#{{ $loop->iteration }} · {{ $rule['enabled'] ? 'Enabled' : 'Disabled' }} · {{ $rule['scope'] }}: <code>{{ $rule['pattern'] }}</code> · {{ \Arcturus\ModpackManager\Services\ProtectionPolicy::ACTIONS[$rule['mode']] }} · priority {{ $rule['priority'] }}{{ $rule['comment'] ? ' · '.$rule['comment'] : '' }}</p>
+                    @empty<p>No additional rules. Three-way comparison still preserves unchanged upstream local customizations and blocks conflicts.</p>@endforelse
+                    <p class="mt-3 text-sm text-gray-500 dark:text-gray-400">World data and unsafe paths cannot be overridden. Exact paths take precedence over mod ID, filename, directory, glob, loader and extension rules. Higher priority and then later row break ties within a scope. Policy revision: {{ $record->policy_revision }}.</p>
                 </x-filament::section>
             @elseif($this->tab === 'backups')
                 <x-filament::section heading="Backup and recovery">

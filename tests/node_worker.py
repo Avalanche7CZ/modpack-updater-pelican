@@ -141,6 +141,41 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(w.mod_identity(self.live, 'mods/a.jar'), 'example')
         self.assertEqual(w.mod_identity(self.live, 'mods/b.jar.disabled'), 'legacy')
 
+    def test_mod_metadata_and_names_do_not_come_from_filename(self):
+        mods = self.live / 'mods'
+        mods.mkdir()
+        entries = [('renamed.jar', 'mcmod.info', '[{"modid":"legacy","name":"Legacy Mod","version":"1.0"}]'),
+                   ('neo.jar', 'META-INF/neoforge.mods.toml', '[[mods]]\nmodId="modern"\ndisplayName="Modern Mod"\nversion="2.0"')]
+        for filename, metadata, content in entries:
+            with zipfile.ZipFile(mods / filename, 'w') as jar:
+                jar.writestr(metadata, content)
+        data = self.worker.inventory(self.server)
+        self.assertEqual(data['metadata']['mods/renamed.jar']['name'], 'Legacy Mod')
+        self.assertEqual(data['metadata']['mods/renamed.jar']['identity'], 'legacy')
+        self.assertEqual(data['metadata']['mods/neo.jar']['loader'], 'neoforge')
+        self.assertEqual(data['metadata']['mods/neo.jar']['version'], '2.0')
+        self.put('mods/guessed-filename-1.0.jar', b'not a real jar')
+        self.assertIsNone(w.mod_metadata(self.live, 'mods/guessed-filename-1.0.jar'))
+
+    def test_per_server_inventory_directories_and_unscanned_capability(self):
+        self.put('custom-tools/readme.txt')
+        self.assertIn('custom-tools', self.worker.inventory(self.server)['excluded_roots'])
+        self.settings['servers'][self.server]['managed_directories'] = ['custom-tools']
+        self.assertIn('custom-tools/readme.txt', self.worker.inventory(self.server)['files'])
+        self.put('custom-tools/DIM42/region/r.0.0.mca', b'world must not be read')
+        self.assertNotIn('custom-tools/DIM42/region/r.0.0.mca', self.worker.inventory(self.server)['files'])
+        with self.assertRaises(ValueError):
+            self.worker.hashes(self.server, ['custom-tools/DIM42/region/r.0.0.mca'])
+
+    def test_custom_world_variants_and_whitespace_properties(self):
+        self.put('server.properties', b'level-name custom\n')
+        for name in ('custom', 'custom_nether', 'custom_the_end'):
+            self.put(name + '/data/x', b'world')
+        self.settings['servers'][self.server]['managed_directories'] = ['custom', 'custom_nether', 'custom_the_end']
+        self.assertEqual(set(self.worker.inventory(self.server)['files']), {'server.properties'})
+        with self.assertRaises(ValueError):
+            self.worker.hashes(self.server, ['custom_nether/data/x'])
+
     def test_restart_marks_operations_interrupted_without_replay(self):
         op = self.stage / ('a' * 32)
         op.mkdir()

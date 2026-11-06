@@ -21,8 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, urljoin
 
 MANAGED_DIRS = frozenset(('mods', 'config', 'configs', 'scripts', 'kubejs', 'libraries', 'defaultconfigs', 'configureddefaults', 'plugins', 'resources', 'patches', 'datapacks', 'ftbteambases', 'resourcepacks', 'shaderpacks', 'global_packs', 'paxi', 'openloader', 'schematics', 'assets', 'structures'))
-RUNTIME = frozenset(('world', 'world_nether', 'world_the_end', 'saves', 'dimensions', 'data',
-                     'logs', 'crash-reports', 'backups', 'backup', 'DIM-1', 'DIM1'))
+RUNTIME = frozenset(('world', 'world_nether', 'world_the_end', 'saves', 'dimensions',
+                     'DIM-1', 'DIM1'))
+DEFAULT_EXCLUDED = frozenset(('logs', 'crash-reports', 'backups', 'backup', 'data'))
 MAX_REQUEST = 16 * 1024 * 1024
 MAX_FILES = 100000
 
@@ -232,39 +233,46 @@ def extract_zip(archive, destination, maximum, cancelled=lambda: False):
             os.chmod(dest, 0o750 if (item.external_attr >> 16) & 0o111 else 0o640)
 
 
-def mod_identity(root, path):
-    """Metadata identity; filenames are deliberately not used as IDs."""
+def mod_metadata(root, path):
+    """Bounded JAR metadata, including legacy Forge mcmod.info. Never infer IDs from names."""
     if not path.startswith('mods/') or not (path.lower().endswith('.jar') or path.lower().endswith('.jar.disabled')):
         return None
     try:
         with open_regular(root, path) as stream, zipfile.ZipFile(stream) as jar:
-            for name, key in [('fabric.mod.json', 'id'), ('quilt.mod.json', 'quilt_loader'), ('mcmod.info', None)]:
-                if name not in jar.namelist():
+            for name, loader in [('fabric.mod.json', 'fabric'), ('quilt.mod.json', 'quilt'), ('mcmod.info', 'forge'),
+                                 ('META-INF/neoforge.mods.toml', 'neoforge'), ('META-INF/mods.toml', 'forge')]:
+                if name not in jar.namelist() or jar.getinfo(name).file_size > 1048576:
                     continue
-                info = jar.getinfo(name)
-                if info.file_size > 1048576:
-                    continue
-                data = json.loads(jar.read(name))
-                if key == 'quilt_loader':
-                    ids = [data[key].get('id')]
-                elif key:
-                    ids = [data.get(key)]
+                raw = jar.read(name)
+                if name.endswith('.toml'):
+                    import tomllib
+                    data = tomllib.loads(raw.decode())
+                    items, key = data.get('mods', []), 'modId'
                 else:
-                    items = data if isinstance(data, list) else data.get('modList', [])
-                    ids = [item.get('modid') for item in items]
-                ids = sorted(x.lower() for x in ids if isinstance(x, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', x))
+                    data = json.loads(raw)
+                    if loader == 'quilt':
+                        items, key = [data['quilt_loader']], 'id'
+                    elif loader == 'fabric':
+                        items, key = [data], 'id'
+                    else:
+                        items, key = data if isinstance(data, list) else data.get('modList', []), 'modid'
+                if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
+                    continue
+                ids = sorted(set(x[key].lower() for x in items if isinstance(x.get(key), str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', x[key])))
                 if ids:
-                    return '+'.join(ids)
-            import tomllib
-            for name in ('META-INF/neoforge.mods.toml', 'META-INF/mods.toml'):
-                if name in jar.namelist() and jar.getinfo(name).file_size <= 1048576:
-                    data = tomllib.loads(jar.read(name).decode())
-                    ids = sorted(x['modId'].lower() for x in data.get('mods', []) if re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', x.get('modId', '')))
-                    if ids:
-                        return '+'.join(ids)
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+                    def text(key):
+                        value = items[0].get(key)
+                        return value[:200] if isinstance(value, str) and '${' not in value and not any(ord(c) < 32 for c in value) else None
+                    return {'identity': '+'.join(ids), 'ids': ids, 'loader': loader,
+                            'name': text('name') or text('displayName'), 'version': text('version')}
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
         pass
     return None
+
+
+def mod_identity(root, path):
+    metadata = mod_metadata(root, path)
+    return metadata['identity'] if metadata else None
 
 
 class Worker:
@@ -286,6 +294,14 @@ class Worker:
                     raise ValueError('Staging must be outside every configured server volume')
         for server_id, entry in settings['servers'].items():
             uuid.UUID(server_id)
+            for option in ('managed_directories', 'excluded_directories'):
+                values = entry.get(option, [])
+                if not isinstance(values, list) or len(values) > 128:
+                    raise ValueError('Inventory directories must be a bounded list')
+                for value in values:
+                    relative(value)
+                    if '/' in value:
+                        raise ValueError('Inventory directories must be top-level names')
             if len(entry.get('token', '')) < 32:
                 raise ValueError('Use independent random per-server tokens of at least 32 characters')
             live, stage = Path(entry['root']), Path(entry['staging'])
@@ -309,7 +325,7 @@ class Worker:
         return self.settings['servers'][server]
 
     def world_roots(self, server):
-        result = set(RUNTIME)
+        result = set(RUNTIME) | set(self.entry(server).get('excluded_directories', DEFAULT_EXCLUDED))
         try:
             with open_regular(self.entry(server)['root'], 'server.properties') as source:
                 raw = source.read(1048577)
@@ -322,18 +338,23 @@ class Worker:
                     key = re.split(r'[=:\s]', line, maxsplit=1)[0]
                     if '\\' in key:
                         raise ValueError('Escaped property keys prevent safe world detection')
-                    match = re.match(r'^level-name\s*[=:]\s*(.*)$', line)
+                    match = re.match(r'^level-name(?:\s*[=:]\s*|\s+)(.*)$', line)
                     if match:
                         name = match[1].strip()
                         relative(name)
-                        result.add(name.split('/')[0])
+                        first = name.split('/')[0]
+                        result.update((first, first + '_nether', first + '_the_end'))
         except FileNotFoundError:
             pass
         return result
 
     def managed(self, server, path, excluded=None):
         relative(path)
-        return path.split('/')[0] not in (self.world_roots(server) if excluded is None else excluded) and not path.startswith('.arcturus-') and (len(path.split('/')) == 1 or path.split('/')[0] in MANAGED_DIRS)
+        markers = ('region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock')
+        if any(p in markers or re.fullmatch(r'DIM-?[0-9]+', p) for p in path.split('/')):
+            return False
+        allowed = self.entry(server).get('managed_directories', MANAGED_DIRS)
+        return not any(path == r or path.startswith(r + '/') for r in (self.world_roots(server) if excluded is None else excluded)) and not path.startswith('.arcturus-modpack-manager') and (len(path.split('/')) == 1 or path.split('/')[0] in allowed)
 
     def inventory(self, server):
         entry = self.entry(server)
@@ -343,11 +364,13 @@ class Worker:
         excluded = sorted(self.world_roots(server))
         for item in root.iterdir():
             if not self.managed(server, item.name, excluded):
+                if item.is_dir():
+                    excluded.append(item.name)
                 continue
             if item.is_symlink():
                 raise ValueError('Symlink in managed inventory')
             if item.is_dir():
-                if item.name not in MANAGED_DIRS:
+                if item.name not in self.entry(server).get('managed_directories', MANAGED_DIRS):
                     excluded.append(item.name)
                     continue
                 for directory, dirs, names in os.walk(item, followlinks=False):
@@ -358,18 +381,29 @@ class Worker:
                         path = Path(directory) / name
                         if path.is_symlink():
                             raise ValueError('Symlink in managed inventory')
-                    paths.extend(str((Path(directory) / name).relative_to(root)) for name in names)
+                    safe_dirs = []
+                    for name in dirs:
+                        rel = str((Path(directory) / name).relative_to(root))
+                        if self.managed(server, rel, excluded):
+                            safe_dirs.append(name)
+                        else:
+                            excluded.append(rel)
+                    dirs[:] = safe_dirs
+                    for name in names:
+                        rel = str((Path(directory) / name).relative_to(root))
+                        if self.managed(server, rel, excluded):
+                            paths.append(rel)
                     if len(paths) > MAX_FILES:
                         raise ValueError('Inventory file limit exceeded')
             else:
                 paths.append(item.name)
         files = self.hashes(server, paths)['files']
-        identities = {}
+        identities, metadata = {}, {}
         for path in paths:
-            identity = mod_identity(root, path)
-            if identity:
-                identities[path] = identity
-        return {'complete': True, 'files': files, 'identities': identities,
+            item = mod_metadata(root, path)
+            if item:
+                identities[path], metadata[path] = item['identity'], item
+        return {'complete': True, 'files': files, 'identities': identities, 'metadata': metadata,
                 'scope': 'managed-pack-files', 'excluded_roots': sorted(set(excluded)),
                 'notice': 'World data is not hashed. A running-server inventory is a point-in-time observation.'}
 
@@ -501,7 +535,7 @@ class Worker:
     def _finalize(self, server, base, recipe, artifacts, maximum, update):
         files = base / 'files'
         update(state='hashing')
-        manifest, identities, bytes_hashed = {}, {}, 0
+        manifest, identities, metadata, bytes_hashed = {}, {}, {}, 0
         for directory, dirs, names in os.walk(files):
             for name in names:
                 rel = str((Path(directory) / name).relative_to(files))
@@ -512,13 +546,13 @@ class Worker:
                 manifest[rel] = digest
                 if len(manifest) > MAX_FILES:
                     raise ValueError('Prepared file limit exceeded')
-                identity = mod_identity(files, rel)
-                if identity:
-                    identities[rel] = identity
+                item = mod_metadata(files, rel)
+                if item:
+                    identities[rel], metadata[rel] = item['identity'], item
         if not manifest:
             raise ValueError('Prepared server pack is empty')
         result = {'schema': 2, 'provider': recipe['provider'], 'project': recipe['project'],
-                  'version': recipe['version'], 'files': manifest, 'identities': identities,
+                  'version': recipe['version'], 'files': manifest, 'identities': identities, 'metadata': metadata,
                   'runtime': recipe.get('runtime', {}), 'artifacts': artifacts,
                   'verification': 'upstream-checksums', 'bytes': bytes_hashed}
         atomic_json(base / 'manifest.json', result)

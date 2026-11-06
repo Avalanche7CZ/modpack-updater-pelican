@@ -9,6 +9,7 @@ use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\Create
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\EditManagedServer;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ListManagedServers;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer;
+use Arcturus\ModpackManager\Filament\Forms\PolicyFields;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
 use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 use Arcturus\ModpackManager\Models\ManagedServer;
@@ -155,28 +156,15 @@ final class ManagedServerResource extends Resource
                     ->columnSpanFull(),
             ]),
             Section::make('File protection')
-                ->description('Rules apply in order. The last matching rule wins. The planner always protects world/runtime data.')
+                ->description('Rules are scoped to this server. World data and path safety always take precedence.')
                 ->schema([
-                    TagsInput::make('disabled_mods')->label('Disabled mod identities')->helperText('Stable metadata IDs to keep disabled across release versions.'),
+                    ...PolicyFields::rules(),
                     Repeater::make('mod_identity_mappings')->label('Administrator identity mappings')->default([])->columns(3)->schema([
                         Select::make('scope')->options(['base' => 'Installed upstream', 'target' => 'Target upstream', 'local' => 'Installed local file'])->required(),
                         TextInput::make('path')->required()->maxLength(1024),
                         TextInput::make('identity')->required()->maxLength(128),
                     ])->helperText('Map renamed or metadata-less JARs to the same stable mod identity. Mappings are checked against the actual file inventories.'),
-                    Repeater::make('file_rules')->label('Rules')->default([])
-                        ->columns(2)->schema([
-                            TextInput::make('pattern')->label('Path / glob')
-                                ->placeholder('config/Arcturus/**')->required()->maxLength(1024),
-                            Select::make('mode')->label('Strategy')->required()->native(false)
-                                ->options([
-                                    'protect' => 'Keep local file',
-                                    'merge' => 'Review a supported text merge',
-                                    'review' => 'Require manual review',
-                                    'ignore' => 'Ignore local-only files',
-                                    'disable' => 'Keep matching mod disabled',
-                                    'replace' => 'Explicitly replace local changes',
-                                ]),
-                        ])->addActionLabel('Add file rule')->reorderable()->collapsible(),
+
                 ]),
         ]);
     }

@@ -55,7 +55,7 @@ $snapshotDir = getenv('ARCTURUS_UI_SNAPSHOTS');
 if ($snapshotDir && ! is_dir($snapshotDir)) {
     mkdir($snapshotDir, 0700, true);
 }
-foreach (['overview', 'updates', 'changes', 'protection', 'backups', 'history'] as $tab) {
+foreach (['overview', 'updates', 'changes', 'mods', 'protection', 'backups', 'history'] as $tab) {
     $test->call('selectTab', $tab);
     $html = $test->html();
     check(str_contains($html, 'Modpack management'), 'Native tab rendering failed: '.$tab);

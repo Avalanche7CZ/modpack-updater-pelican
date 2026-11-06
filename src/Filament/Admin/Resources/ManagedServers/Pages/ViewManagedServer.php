@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages;
 
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\ManagedServerResource;
+use Arcturus\ModpackManager\Filament\Forms\PolicyFields;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
 use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 use Arcturus\ModpackManager\Models\ManagedServer;
@@ -12,11 +13,16 @@ use Arcturus\ModpackManager\Modpacks\ProviderRegistry;
 use Arcturus\ModpackManager\Remote\NodeWorker;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\AdoptionService;
+use Arcturus\ModpackManager\Services\FilePolicyCatalog;
 use Arcturus\ModpackManager\Services\MergeReview;
 use Arcturus\ModpackManager\Services\PreviewService;
+use Arcturus\ModpackManager\Services\ProtectionPolicy;
+use Arcturus\ModpackManager\Services\ServerPolicyService;
 use Arcturus\ModpackManager\Services\UpdatePlanner;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\Checkbox;
+use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
@@ -38,6 +44,10 @@ final class ViewManagedServer extends ViewRecord
 
     public int $changePage = 1;
 
+    public array $selectedPaths = [];
+
+    public bool $modsOnly = true;
+
     #[Locked]
     public ?array $nodeCapabilities = null;
 
@@ -54,13 +64,42 @@ final class ViewManagedServer extends ViewRecord
     public function selectTab(string $tab): void
     {
         Access::requireAdmin();
-        abort_unless(in_array($tab, ['overview', 'updates', 'changes', 'protection', 'backups', 'history'], true), 422);
+        abort_unless(in_array($tab, ['overview', 'updates', 'changes', 'mods', 'protection', 'backups', 'history'], true), 422);
         $this->tab = $tab;
+        $this->changePage = 1;
+        $this->classification = '';
+        $this->pathSearch = '';
+        $this->selectedPaths = [];
     }
 
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('editPolicies')->label('Edit protection rules')->button()->color('gray')
+                ->visible(fn () => $this->tab === 'protection')->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
+                ->fillForm(fn () => ['file_rules' => (new ProtectionPolicy)->normalize($this->getRecord()->file_rules ?? []), 'disabled_mods' => $this->getRecord()->disabled_mods ?? [], 'revision' => $this->getRecord()->policy_revision])
+                ->schema([...PolicyFields::rules(), Hidden::make('revision')])
+                ->modalSubmitActionLabel('Save rules and invalidate approval')
+                ->action(function (array $data): void {
+                    app(ServerPolicyService::class)->save($this->getRecord()->refresh(), $data['file_rules'] ?? [], $data['disabled_mods'] ?? [], (int) $data['revision']);
+                    $this->recompare();
+                }),
+            Action::make('filePolicy')->label('Set policy for selected files')->button()
+                ->visible(fn () => in_array($this->tab, ['mods', 'changes'], true))
+                ->disabled(fn () => ! $this->selectedPaths || (bool) $this->getRecord()->active_operation_id)
+                ->fillForm(fn () => ['revision' => $this->getRecord()->policy_revision])
+                ->schema([
+                    Select::make('mode')->label('Policy')->options(ProtectionPolicy::ACTIONS)->required()->live(),
+                    Checkbox::make('confirm')->label('I reviewed dependencies and approve replacement, removal or disabling during a future update')
+                        ->visible(fn ($get) => in_array($get('mode'), ['replace', 'remove', 'disable'], true))->accepted(),
+                    Hidden::make('revision'),
+                ])->modalDescription('Changes the saved policy only. Single-ID mod rules follow renamed JARs; ambiguous IDs use exact paths. A fresh deployment approval and backup remain required.')
+                ->modalSubmitActionLabel('Save selected policies')
+                ->action(function (array $data): void {
+                    app(ServerPolicyService::class)->assign($this->getRecord()->refresh(), $this->selectedPaths, $data['mode'], (int) $data['revision']);
+                    $this->selectedPaths = [];
+                    $this->recompare();
+                }),
             Action::make('inspectRuntime')->label('Inspect runtime')->button()->color('gray')->icon('heroicon-o-magnifying-glass')
                 ->visible(fn () => $this->tab === 'overview')
                 ->action(function (): void {
@@ -166,10 +205,34 @@ final class ViewManagedServer extends ViewRecord
         UpdatePlanner::assertPath($path);
         // Escape glob metacharacters by rejecting them for exact-path decisions.
         abort_if(strpbrk($path, '*?') !== false, 422);
-        $rules = $record->file_rules ?? [];
-        $rules[] = ['pattern' => $path, 'mode' => $mode];
-        $record->update(['file_rules' => $rules, 'approved_plan_sha256' => null, 'approved_at' => null]);
-        app(PreviewService::class)->generate($record);
+        app(ServerPolicyService::class)->assign($record, [$path], $mode, $record->policy_revision);
+        $this->recompare();
+    }
+
+    private function recompare(): void
+    {
+        $this->mergeReview = null;
+        $record = $this->getRecord()->refresh();
+        try {
+            if ($record->base_manifest_path && $record->target_manifest_path) {
+                app(PreviewService::class)->generate($record);
+            } elseif ($record->baseline_status === 'verified' && $record->base_manifest_path) {
+                app(AdoptionService::class)->compare($record);
+            }
+            $this->queued('Server policies saved; previous approval invalidated');
+        } catch (\Throwable $error) {
+            Notification::make()->title('Policy saved; comparison unavailable')->body('Prepare or reconnect the node, then compare again. Previous approval is invalid.')->warning()->send();
+        }
+    }
+
+    public function fileRows(): array
+    {
+        $rows = array_values(array_filter((new FilePolicyCatalog)->rows($this->managed()), fn ($r) => (! $this->modsOnly || $r['is_mod']) && ($this->classification === '' || $r['classification'] === $this->classification) &&
+            ($this->pathSearch === '' || str_contains(strtolower($r['path'].' '.$r['identity'].' '.$r['name']), strtolower($this->pathSearch)))));
+        $pages = max(1, (int) ceil(count($rows) / 50));
+        $page = min($pages, max(1, $this->changePage));
+
+        return ['rows' => array_slice($rows, ($page - 1) * 50, 50), 'total' => count($rows), 'pages' => $pages, 'page' => $page];
     }
 
     public function reviewMerge(string $path): void

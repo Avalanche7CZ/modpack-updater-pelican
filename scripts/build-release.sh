@@ -61,6 +61,12 @@ php -r '
       "arcturus-modpack-manager/src/Filament/Server/Pages/ArcturusModpack.php",
       "arcturus-modpack-manager/node-worker/worker.py",
       "arcturus-modpack-manager/docs/capabilities.md",
+      "arcturus-modpack-manager/src/Services/ProtectionPolicy.php",
+      "arcturus-modpack-manager/src/Services/ServerPolicyService.php",
+      "arcturus-modpack-manager/src/Filament/Forms/PolicyFields.php",
+      "arcturus-modpack-manager/resources/views/adoption-submit.blade.php",
+      "arcturus-modpack-manager/resources/views/adoption-review.blade.php",
+      "arcturus-modpack-manager/database/migrations/2026_11_06_000000_add_server_policy_inventory.php",
       "arcturus-modpack-manager/database/migrations/2026_11_05_000000_create_arcturus_modpack_tables.php"
   ];
   foreach ($required as $file) {
