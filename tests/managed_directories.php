@@ -42,3 +42,5 @@ foreach (['config/backups/private.zip', 'scripts/playerdata/uuid.dat', 'kubejs/s
     $plan = (new UpdatePlanner)->plan([], [], [$path => $hash], [['pattern' => '**', 'mode' => 'replace']]);
     check(! in_array($plan['changes'][0]['action'], ['add', 'replace_with_override'], true), 'File rule overrode invariant');
 }
+
+check(ManagedPaths::allowed('kubejs/data/pack/recipes/item.json'), 'Pack datapack content was mistaken for runtime data');

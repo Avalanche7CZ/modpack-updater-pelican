@@ -122,6 +122,8 @@ class TfgManagedPaths(unittest.TestCase):
         self.put(name + '/assets/local.json', b'{}')
         result = self.worker.handle(self.server, 'inventory', {'directory_scope': {'manage': [name], 'exclude': []}})
         self.assertIn(name + '/assets/local.json', result['files'])
+        self.put('kubejs/data/pack/recipes/item.json', b'{}')
+        self.assertIn('kubejs/data/pack/recipes/item.json', self.worker.inventory(self.server)['files'])
         self.put('config/.private/credentials.txt', b'secret')
         self.assertNotIn('config/.private/credentials.txt', self.worker.inventory(self.server)['files'])
 

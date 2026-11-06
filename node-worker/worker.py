@@ -43,10 +43,10 @@ def additional_directories(values):
 # Identical invariants apply inside standard and reviewed roots, at every depth.
 def protected_path(path):
     parts = path.lower().split('/')
-    reserved = {v.lower() for v in RUNTIME | DEFAULT_EXCLUDED} | {
+    reserved = {v.lower() for v in RUNTIME | (DEFAULT_EXCLUDED - {'data'})} | {
         'region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock',
         '.env', '.ssh', '.aws', '.git', 'secrets', 'credentials', 'tokens', 'passwords'}
-    return any(part.startswith('.') or part in reserved or part.startswith('.arcturus-') or part.startswith('.env.')
+    return parts[0] == 'data' or any(part.startswith('.') or part in reserved or part.startswith('.arcturus-') or part.startswith('.env.')
                or re.fullmatch(r'dim-?[0-9]+', part) or part.endswith(('.pem', '.key', '.p12', '.keystore'))
                for part in parts)
 
