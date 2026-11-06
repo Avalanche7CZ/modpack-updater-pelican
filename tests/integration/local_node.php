@@ -59,6 +59,8 @@ $zip->open($dir.'/fixture.zip', ZipArchive::CREATE);
 $zip->addFromString('config/example.cfg', 'verified upstream');
 $zip->addFromString('unix_args.txt', 'upstream arguments');
 $zip->addFromString('tacz/guns.json', 'verified pack data');
+$zip->addFromString('tacz/read-only.json', 'upstream data');
+$zip->addFromString('tacz/private/child.json', 'upstream data');
 $zip->addFromString('DiscordIntegration-Data/locale.json', 'verified pack locale');
 $zip->close();
 $approval = ['schema' => 1, 'node_id' => 1, 'node_uuid' => $uuid, 'volume_root' => $dir.'/volumes',
@@ -229,8 +231,13 @@ $tableHtml = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Reso
 check(str_contains($tableHtml, 'Upstream baseline') && str_contains($tableHtml, 'Installation comparison failed') && str_contains($tableHtml, 'Comparison failed'), 'Managed Servers table showed a misleading verified/idle state');
 }
 rejects(fn () => app(Arcturus\ModpackManager\Services\AdoptionService::class)->finish($record), 'Failed comparison finished verified adoption');
+// Inaccessible fixtures are created with restrictive modes; no permissions are changed by inventory.
+$previousMask = umask(0777);
+try { file_put_contents($live.'/tacz/read-only.json', 'unreadable local data'); } finally { umask($previousMask); }
+mkdir($live.'/tacz/private', 0000);
+$unreadableBefore = stat($live.'/tacz/read-only.json');
 // Preserve the problematic directory by policy, and manage a different discovered root.
-app(Arcturus\ModpackManager\Services\ServerPolicyService::class)->save($record, [...$record->file_rules, ['scope' => 'exact', 'pattern' => 'unix_args.txt', 'mode' => 'replace']], [], $record->policy_revision,
+app(Arcturus\ModpackManager\Services\ServerPolicyService::class)->save($record, [...$record->file_rules, ['scope' => 'exact', 'pattern' => 'unix_args.txt', 'mode' => 'replace'], ['scope' => 'exact', 'pattern' => 'tacz/read-only.json', 'mode' => 'replace'], ['scope' => 'glob', 'pattern' => 'tacz/private/**', 'mode' => 'remove']], [], $record->policy_revision,
     ['directory_decisions' => [['path' => 'config', 'mode' => 'keep'], ['path' => 'tacz', 'mode' => 'manage'], ['path' => 'DiscordIntegration-Data', 'mode' => 'exclude']]]);
 $record->refresh();
 unlink($dir.'/fixture.zip'); // Retry cannot read the original upstream artifact.
@@ -254,9 +261,21 @@ check($record->file_inventory['skipped_symlinks'] === ['unix_args.txt'] && $reco
 $linkedChange = array_column($record->adoption_report['changes'], null, 'path')['unix_args.txt'];
 check($linkedChange['action'] === 'preserve' && $linkedChange['rule'] === 'immutable', 'Policy could replace a skipped link with upstream content');
 check(is_link($live.'/unix_args.txt') && readlink($live.'/unix_args.txt') === $dir.'/args-target.txt' && file_get_contents($dir.'/args-target.txt') === 'local arguments', 'Comparison changed the link or its target');
+$summary = $record->file_inventory['inventory_summary'];
+check($summary['files_hashed'] === count($record->file_inventory['files']) && $summary['unreadable_files_skipped'] === 1 && $summary['unreadable_directories'] === 1, 'Unreadable content was counted as hashed or hidden from the summary');
+check(! isset($record->file_inventory['files']['tacz/read-only.json']) && in_array('tacz/private', $record->file_inventory['excluded_roots'], true), 'Unreadable paths entered the verified inventory');
+$protectedChanges = array_column($record->adoption_report['changes'], null, 'path');
+foreach (['tacz/read-only.json', 'tacz/private/child.json'] as $path) {
+    check($protectedChanges[$path]['action'] === 'preserve' && $protectedChanges[$path]['rule'] === 'immutable' && $protectedChanges[$path]['file_state'] === 'protected', 'Policy overrode unreadable content protection');
+}
+check(count($record->adoption_report['unreadable_paths']) === 2, 'Comparison report omitted protected unreadable paths');
+clearstatcache(true, $live.'/tacz/read-only.json');
+check(stat($live.'/tacz/read-only.json') === $unreadableBefore, 'Inventory changed inaccessible file metadata or permissions');
 $successScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
 check(str_contains($successScreen->html(), 'Preserved symlinks') && str_contains($successScreen->html(), 'unix_args.txt') && ! str_contains($successScreen->html(), $dir.'/args-target.txt'), 'Nonfatal symlink information was absent or leaked its target');
+check(str_contains($successScreen->html(), 'Protected unreadable content') && str_contains($successScreen->html(), '1 known files skipped') && str_contains($successScreen->html(), 'EACCES during file hashing') && str_contains($successScreen->html(), 'total file count is unknown'), 'UI did not explain skipped counts and reasons');
 check(! $record->enabled && ! $record->deploy_enabled && ! $record->adopted_at, 'Retry automatically adopted or enabled updates');
+rmdir($live.'/tacz/private'); // Dispose of the empty test fixture without changing its permissions.
 file_put_contents($dir.'/approval.json', $approvedContents);
 $remote = $local->adoptionAttributes($other, 'default');
 check($remote === ['transport' => 'wings'], 'Local default changed remote-node selection');

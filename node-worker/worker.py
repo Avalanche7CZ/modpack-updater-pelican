@@ -266,18 +266,28 @@ def relative(value):
 
 
 @contextlib.contextmanager
-def inventory_entry(path):
+def inventory_entry(path, on_unreadable=None, kind='unknown', phase='enumeration'):
     """Attach only logical identifiers and a fixed diagnostic, never raw exception text."""
     try:
         yield
-    except (InterruptedError, PreparationFailure):
+    except InterruptedError:
+        raise
+    except PreparationFailure:
         raise
     except Exception as error:
-        detail = diagnostic(error, 'comparing', {'file': path})
+        logical = getattr(error, 'inventory_path', path)
+        entry_kind = getattr(error, 'inventory_kind', kind)
+        if on_unreadable is not None and isinstance(error, OSError) and error.errno in (errno.EACCES, errno.EPERM):
+            on_unreadable(logical, entry_kind, phase, error.errno)
+            return
+        detail = diagnostic(error, 'comparing', {'file': logical})
         code = detail['code']
         if code in ('PREPARATION_FAILED', 'INVENTORY_FAILED'):
             code = 'METADATA_INVALID' if isinstance(error, (ValueError, AttributeError, UnicodeError)) else 'INVENTORY_FAILED'
-        raise PreparationFailure(code, **detail.get('context', {})) from error
+        failure = PreparationFailure(code, **detail.get('context', {}))
+        if isinstance(error, OSError) and error.errno in (errno.EACCES, errno.EPERM):
+            failure.inventory_path, failure.inventory_kind = logical, entry_kind
+        raise failure from error
 
 
 def fail_walk(error):
@@ -298,14 +308,26 @@ def atomic_json(path, value):
 def open_regular(root, path):
     """Pin every path component using directory descriptors, never follow links."""
     parts = relative(path).split('/')
-    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        error.inventory_path, error.inventory_kind = '', 'directory'
+        raise
     fd = None
     try:
-        for segment in parts[:-1]:
-            child = os.open(segment, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+        for index, segment in enumerate(parts[:-1]):
+            try:
+                child = os.open(segment, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            except OSError as error:
+                error.inventory_path, error.inventory_kind = '/'.join(parts[:index + 1]), 'directory'
+                raise
             os.close(directory)
             directory = child
-        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except OSError as error:
+            error.inventory_path, error.inventory_kind = path, 'file'
+            raise
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError('Only regular files can be read')
         with os.fdopen(fd, 'rb') as stream:
@@ -673,7 +695,8 @@ class Worker:
         update(state='comparing', step='inventory_enumeration', files_done=0, files_total=None)
         try:
             result = self._inventory(server, update, cancelled)
-            update(force=True, state='completed', phase='comparing', files_done=len(result['files']), files_total=len(result['files']))
+            update(force=True, state='completed', phase='comparing', files_done=len(result['files']), files_total=len(result['files']),
+                   bytes_done=result['inventory_summary']['bytes_hashed'], bytes_total=result['inventory_summary']['bytes_hashed'])
             return result
         except InterruptedError:
             update(force=True, state='cancelled', diagnostic=diagnostic(PreparationFailure('CANCELLED'), 'comparing'), error=FAILURES['CANCELLED'][0])
@@ -688,18 +711,37 @@ class Worker:
         paths = []
         skipped_symlinks = []
         entries_scanned = 0
-        with inventory_entry('server.properties'):
-            excluded = sorted(self.world_roots(server))
+        excluded = sorted(RUNTIME | DEFAULT_EXCLUDED | set(entry.get('excluded_directories', [])))
+        unreadable = {}
+        def protect_unreadable(path, kind, phase, number):
+            if not path:
+                # Losing access to the approved root is a boundary change, not an individual exclusion.
+                raise PreparationFailure('FILES_CHANGED')
+            relative(path)
+            excluded.append(path)
+            unreadable[path] = {'path': path, 'kind': kind, 'phase': phase, 'errno': number}
+        def is_excluded(path):
+            return any(path == r or path.startswith(r + '/') for r in excluded)
+        world_path_unreadable = False
+        try:
+            with inventory_entry('server.properties', kind='file'):
+                excluded = sorted(self.world_roots(server))
+        except PreparationFailure as error:
+            if error.code != 'PERMISSION_DENIED' or error.context.get('errno') not in (errno.EACCES, errno.EPERM):
+                raise
+            protect_unreadable(getattr(error, 'inventory_path', 'server.properties'), 'file', 'enumeration', error.context['errno'])
+            # Without level-name, every directory could contain a custom world. Protect all of them.
+            world_path_unreadable = True
         with inventory_entry('inventory-root'):
             children = list(root.iterdir())
         for item in children:
-            with inventory_entry(item.name):
+            with inventory_entry(item.name, protect_unreadable):
                 # Unknown and protected roots are excluded before inspecting their contents or links.
                 if not self.managed(server, item.name, excluded):
                     excluded.append(item.name)
                     continue
                 info = item.lstat()
-                if stat.S_ISDIR(info.st_mode) and item.name not in self.managed_directories(server):
+                if stat.S_ISDIR(info.st_mode) and (world_path_unreadable or item.name not in self.managed_directories(server)):
                     excluded.append(item.name)
                     continue
                 if stat.S_ISLNK(info.st_mode):
@@ -709,9 +751,12 @@ class Worker:
                 if stat.S_ISDIR(info.st_mode):
                     def walk_error(error):
                         # onerror includes an absolute path; reduce it to a logical path before classification.
-                        with inventory_entry(str(Path(error.filename).relative_to(root))):
+                        with inventory_entry(str(Path(error.filename).relative_to(root)), protect_unreadable, kind='directory'):
                             raise error
                     for directory, dirs, names in os.walk(item, followlinks=False, onerror=walk_error):
+                        if is_excluded(str(Path(directory).relative_to(root))):
+                            dirs[:] = []
+                            continue
                         if cancelled():
                             raise InterruptedError('Operation cancelled')
                         entries_scanned += len(dirs) + len(names)
@@ -721,13 +766,20 @@ class Worker:
                         safe_dirs = []
                         for name in dirs + names:
                             rel = str((Path(directory) / name).relative_to(root))
-                            with inventory_entry(rel):
+                            with inventory_entry(rel, protect_unreadable):
                                 if not self.managed(server, rel, excluded):
                                     excluded.append(rel)
                                     continue
                                 with_context = {'file': None, 'file_id': None, **safe_file(rel)}
                                 report(**with_context)
-                                info = (root / rel).lstat()
+                                try:
+                                    info = (root / rel).lstat()
+                                except OSError as error:
+                                    # lstat needs search access to its parent, not read access to the entry.
+                                    if error.errno in (errno.EACCES, errno.EPERM):
+                                        error.inventory_path = str(Path(directory).relative_to(root))
+                                        error.inventory_kind = 'directory'
+                                    raise
                                 if stat.S_ISLNK(info.st_mode):
                                     excluded.append(rel)
                                     skipped_symlinks.append(rel)
@@ -740,59 +792,83 @@ class Worker:
                                     paths.append(rel)
                                 else:
                                     raise PreparationFailure('FILE_TYPE', file=rel)
-                        dirs[:] = safe_dirs
+                        dirs[:] = [name for name in safe_dirs if not is_excluded(str((Path(directory) / name).relative_to(root)))]
                         if len(paths) > MAX_FILES:
                             raise PreparationFailure('INVENTORY_LIMIT')
                 elif stat.S_ISREG(info.st_mode):
                     paths.append(item.name)
                 else:
                     raise PreparationFailure('FILE_TYPE', file=item.name)
-        hashed = self.hashes(server, paths, report=report, cancelled=cancelled)
+        hashed = self.hashes(server, paths, report=report, cancelled=cancelled, on_unreadable=protect_unreadable, excluded=excluded)
         if hashed['missing']:
             raise PreparationFailure('FILES_CHANGED')
         files = hashed['files']
         identities, metadata = {}, {}
         report(state='comparing', step='reading_mod_metadata', files_done=0, files_total=len(paths))
-        for index, path in enumerate(paths):
+        metadata_done = 0
+        for path in paths:
             if cancelled():
                 raise InterruptedError('Operation cancelled')
-            with inventory_entry(path):
+            if path not in files or is_excluded(path):
+                continue
+            item = None
+            with inventory_entry(path, protect_unreadable, kind='file', phase='metadata'):
                 item = mod_metadata(root, path)
             if item:
                 identities[path], metadata[path] = item['identity'], item
-            report(state='comparing', files_done=index + 1)
+            if not is_excluded(path):
+                metadata_done += 1
+            report(state='comparing', files_done=metadata_done)
+        # Access can disappear during metadata inspection after hashing. Such content is not verified.
+        files = {path: digest for path, digest in files.items() if not is_excluded(path)}
+        identities = {path: value for path, value in identities.items() if path in files}
+        metadata = {path: value for path, value in metadata.items() if path in files}
+        known_skipped = {path for path in paths if any(path == r or path.startswith(r + '/') for r in unreadable)}
+        known_skipped.update(path for path, value in unreadable.items() if value['kind'] == 'file')
+        summary = {'files_hashed': len(files), 'bytes_hashed': sum(hashed['sizes'][path] for path in files),
+                   'unreadable_files_skipped': len(known_skipped),
+                   'unreadable_directories': sum(value['kind'] == 'directory' for value in unreadable.values()),
+                   'unreadable_entries_unknown': sum(value['kind'] == 'unknown' for value in unreadable.values())}
         return {'complete': True, 'files': files, 'identities': identities, 'metadata': metadata,
                 'scope': 'managed-pack-files', 'excluded_roots': sorted(set(excluded)),
                 'skipped_symlinks': sorted(set(skipped_symlinks)),
+                'unreadable_paths': sorted(unreadable.values(), key=lambda value: value['path']),
+                'inventory_summary': summary, 'world_path_unreadable': world_path_unreadable,
                 'notice': 'World data is not hashed. A running-server inventory is a point-in-time observation.'}
 
-    def hashes(self, server, paths, report=lambda **v: None, cancelled=lambda: False):
+    def hashes(self, server, paths, report=lambda **v: None, cancelled=lambda: False, on_unreadable=None, excluded=None):
         if not isinstance(paths, list) or len(paths) > MAX_FILES or len(set(paths)) != len(paths):
             raise ValueError('Invalid inventory path list')
-        result, missing = {}, []
+        result, missing, sizes = {}, [], {}
         budget = self.entry(server).get('max_inventory_bytes', 32 * 1024**3)
-        excluded = self.world_roots(server)
+        excluded = self.world_roots(server) if excluded is None else excluded
         consumed = 0
         report(state='comparing', step='inventory_hashing', files_done=0, files_total=len(paths), bytes_done=0, bytes_total=None)
         for index, path in enumerate(paths):
             if cancelled():
                 raise InterruptedError('Operation cancelled')
+            if on_unreadable is not None and any(path == r or path.startswith(r + '/') for r in excluded):
+                continue
             if not self.managed(server, path, excluded):
                 raise ValueError('Hash request is outside managed pack scope; world reads are forbidden')
             try:
                 report(**{'file': None, 'file_id': None, **safe_file(path)})
-                with inventory_entry(path):
+                with inventory_entry(path, kind='file', phase='hashing'):
                     digest, size = hash_file(self.entry(server)['root'], path, budget,
                         progress=lambda n: report(bytes_done=consumed + n), cancelled=cancelled)
                 consumed += size
                 budget -= size
                 result[path] = digest
+                sizes[path] = size
             except PreparationFailure as error:
-                if error.code != 'MISSING_FILE':
+                if on_unreadable is not None and error.code == 'PERMISSION_DENIED' and error.context.get('errno') in (errno.EACCES, errno.EPERM):
+                    on_unreadable(getattr(error, 'inventory_path', path), getattr(error, 'inventory_kind', 'file'), 'hashing', error.context['errno'])
+                elif error.code == 'MISSING_FILE':
+                    missing.append(path)
+                else:
                     raise
-                missing.append(path)
-            report(files_done=index + 1, bytes_done=consumed)
-        return {'files': result, 'missing': missing}
+            report(files_done=len(result), bytes_done=consumed)
+        return {'files': result, 'missing': missing, **({'sizes': sizes} if on_unreadable is not None else {})}
 
     def operation_path(self, server, operation_id):
         if not isinstance(operation_id, str) or not re.fullmatch('[a-f0-9]{32}', operation_id):

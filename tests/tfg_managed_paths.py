@@ -91,14 +91,17 @@ class TfgManagedPaths(unittest.TestCase):
             self.worker.hashes(self.server, ['tacz/level.dat'])
         self.assertNotIn('tacz/level.dat', self.worker.inventory(self.server)['files'])
 
-    def test_unreadable_approved_directory_does_not_return_complete_empty_inventory(self):
+    def test_unreadable_approved_directory_returns_explicit_protected_exclusion(self):
         self.settings['servers'][self.server]['additional_managed_directories'] = ['tacz']
         directory = self.put('tacz/guns.json').parent
         directory.chmod(0)
         try:
-            with self.assertRaises(w.PreparationFailure) as failure:
-                self.worker.inventory(self.server)
-            self.assertEqual(failure.exception.code, 'PERMISSION_DENIED')
+            inventory = self.worker.inventory(self.server)
+            self.assertTrue(inventory['complete'])
+            self.assertIn('tacz', inventory['excluded_roots'])
+            self.assertEqual(inventory['unreadable_paths'], [{'path': 'tacz', 'kind': 'directory', 'phase': 'enumeration', 'errno': 13}])
+            self.assertEqual(inventory['inventory_summary']['unreadable_directories'], 1)
+            self.assertEqual(inventory['files'], {})
         finally:
             directory.chmod(0o700)
 

@@ -137,6 +137,8 @@ final class AdoptionService
             'changes' => $plan['changes'],
             'scope' => $inventory['scope'], 'excluded_roots' => $inventory['excluded_roots'],
             'skipped_symlinks' => $inventory['skipped_symlinks'] ?? [],
+            'unreadable_paths' => $inventory['unreadable_paths'] ?? [], 'inventory_summary' => $inventory['inventory_summary'] ?? [],
+            'world_path_unreadable' => $inventory['world_path_unreadable'] ?? false,
             'observed_at' => now()->toIso8601String(), 'notice' => $inventory['notice']];
         $saved = DB::transaction(function () use ($server, $report, $observed, $inventory, $operation): ManagedServer {
             $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);

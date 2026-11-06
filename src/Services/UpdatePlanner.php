@@ -163,7 +163,7 @@ final class UpdatePlanner
                 'approval_required' => $isBlocked || in_array($action, ['remove_with_override', 'replace_with_override'], true),
                 'metadata' => $metadata[$path] ?? null,
                 'identity' => $identity,
-                'file_state' => $rawClass,
+                'file_state' => $invariant !== null ? 'protected' : $rawClass,
                 'classification' => $this->classification($path, $old, $current, $new, $action),
                 'base_sha256' => $old,
                 'local_sha256' => $current,
