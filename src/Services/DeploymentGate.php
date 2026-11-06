@@ -14,6 +14,9 @@ final class DeploymentGate
         if ($server->transport !== 'local') {
             throw new RuntimeException('Remote deployment is disabled: a qualified node transaction and exclusion-preserving restore are not available');
         }
+        if (($server->runtime_report['world_path_verified'] ?? null) === false) {
+            throw new RuntimeException('World directory path requires manual verification before deployment');
+        }
         if (! $server->adopted_at || $server->baseline_status !== 'verified') {
             throw new RuntimeException('Verified adoption is required before deployment');
         }
