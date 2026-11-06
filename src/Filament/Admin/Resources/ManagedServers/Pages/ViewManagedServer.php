@@ -18,6 +18,7 @@ use Arcturus\ModpackManager\Services\UpdatePlanner;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
 use Illuminate\Support\Facades\DB;
@@ -74,6 +75,19 @@ final class ViewManagedServer extends ViewRecord
                 CheckRelease::dispatch($this->getRecord()->id);
                 $this->queued('Release check queued');
             }),
+            Action::make('reassociate')->label('Record a manual update')->button()->color('gray')->icon('heroicon-o-pencil-square')
+                ->visible(fn () => $this->tab === 'overview' && $this->getRecord()->adopted_at !== null)
+                ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
+                ->modalHeading('Record the release already installed manually')
+                ->modalDescription('This changes the database association only. It clears the old baseline and approvals, then requires a new upstream comparison. No server files or runtime settings are changed.')
+                ->modalSubmitActionLabel('Record release and invalidate baseline')
+                ->schema([TextInput::make('version')->label('Exact installed upstream release ID / tag')->required()->maxLength(120)])
+                ->action(function (array $data): void {
+                    Access::requireAdmin();
+                    app(AdoptionService::class)->reassociate($this->getRecord(), $data['version']);
+                    $this->mergeReview = null;
+                    $this->queued('Release association updated; prepare the exact baseline and review adoption again');
+                }),
             Action::make('baseline')->button()->icon('heroicon-o-arrow-down-tray')->label('Prepare installed baseline')->visible(fn () => $this->getRecord()->baseline_status !== 'verified')->requiresConfirmation()
                 ->modalDescription('Fetch the exact installed upstream release into isolated node staging. The live server is untouched.')
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)

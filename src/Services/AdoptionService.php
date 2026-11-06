@@ -7,6 +7,7 @@ namespace Arcturus\ModpackManager\Services;
 use App\Models\Server;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Remote\ServerFilesFactory;
+use Arcturus\ModpackManager\Security\Access;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -65,6 +66,36 @@ final class AdoptionService
         $server->update(['adoption_report' => $report, 'runtime_report' => $observed]);
 
         return $report;
+    }
+
+    /** Record a manual update without reusing the old upstream baseline or changing live files. */
+    public function reassociate(ManagedServer $server, string $version): void
+    {
+        Access::requireAdmin();
+        if (trim($version) === '' || strlen($version) > 120 || preg_match('/[\x00-\x1f\x7f]/', $version)) {
+            throw new RuntimeException('Enter a valid exact upstream release ID');
+        }
+        DB::transaction(function () use ($server, $version): void {
+            $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
+            if ($fresh->active_operation_id) {
+                throw new RuntimeException('Resolve the active operation before changing the installed release association');
+            }
+            if ($fresh->installed_version === $version) {
+                throw new RuntimeException('The installed release association already matches');
+            }
+            $old = $fresh->installed_version;
+            $runtime = $fresh->runtime_report ?? [];
+            unset($runtime['upstream_runtime']);
+            $fresh->update(['installed_version' => $version, 'baseline_status' => 'unverified',
+                'base_manifest_path' => null, 'baseline_provenance' => null, 'adoption_report' => null,
+                'target_manifest_path' => null, 'target_metadata' => null, 'selected_version' => null,
+                'prepared_root' => null, 'artifact_sha256' => null, 'preview_summary' => null,
+                'approved_plan_sha256' => null, 'approved_by' => null, 'approved_at' => null,
+                'adopted_at' => null, 'enabled' => false, 'deploy_enabled' => false, 'runtime_report' => $runtime]);
+            $fresh->events()->create(['kind' => 'adoption', 'status' => 'warning', 'from_version' => $old,
+                'to_version' => $version, 'message' => 'Manual release association recorded; upstream verification required. No live files changed.',
+                'details' => ['actor_id' => auth()->id()]]);
+        });
     }
 
     public function finish(ManagedServer $server, bool $allowUnverified = false): void

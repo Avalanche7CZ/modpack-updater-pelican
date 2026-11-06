@@ -6,6 +6,7 @@ $app = require __DIR__.'/bootstrap.php';
 use App\Models\Egg;
 use App\Models\Node;
 use App\Models\Server;
+use App\Models\User;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Modpacks\JsonClient;
 use Arcturus\ModpackManager\Services\AdoptionService;
@@ -14,6 +15,7 @@ use Arcturus\ModpackManager\Services\OperationTracker;
 use Arcturus\ModpackManager\Services\PrepareRelease;
 use Arcturus\ModpackManager\Services\ReleaseStore;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 
@@ -92,5 +94,27 @@ check(ManagedServer::findOrFail($managed->id)->adopted_at !== null && ! $managed
 foreach (Http::recorded() as [$request,$response]) {
     check(! preg_match('~/power|/reinstall|files/write|files/delete|/backup~', $request->url()), 'Adoption mutated the live server');
 }
+$adopted = ManagedServer::findOrFail($managed->id);
+$priorBaseline = $adopted->base_manifest_path;
+$beforeRequests = count(Http::recorded());
+rejects(fn () => app(AdoptionService::class)->reassociate($adopted, '2.0'), 'An unauthorized user changed installed release identity');
+Auth::guard()->setUser(new class extends User
+{
+    public function isRootAdmin(): bool
+    {
+        return true;
+    }
+});
+$active = $tracker->create($adopted, 'prepare');
+rejects(fn () => app(AdoptionService::class)->reassociate($adopted, '2.0'), 'Installed release changed during an active operation');
+$tracker->transition($active, 'cancelled');
+$adopted->update(['approved_plan_sha256' => str_repeat('f', 64), 'approved_at' => now(), 'file_rules' => [['pattern' => 'config/custom/**', 'mode' => 'protect']]]);
+app(AdoptionService::class)->reassociate($adopted, '2.0');
+$updated = ManagedServer::findOrFail($managed->id);
+check($updated->installed_version === '2.0' && $updated->baseline_status === 'unverified', 'Manual update retained the old verified release identity');
+check(! $updated->adopted_at && ! $updated->enabled && ! $updated->deploy_enabled && ! $updated->approved_plan_sha256 && ! $updated->base_manifest_path,
+    'Manual association retained approvals or enabled deployment');
+check(count($updated->file_rules) === 1 && is_file($priorBaseline), 'Manual association lost protection rules or deleted upstream evidence');
+check(count(Http::recorded()) === $beforeRequests, 'Recording a manual update contacted or mutated the node');
 echo "Adoption orchestration uses independent upstream baseline, reports customizations and sends no destructive requests\n";
 $GLOBALS['arcturus_integration_passed'] = true;

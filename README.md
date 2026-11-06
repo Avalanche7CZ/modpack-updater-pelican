@@ -37,6 +37,8 @@ Open **Arcturus Modpack Manager → Managed servers → Adopt Existing Server**.
 5. Review **File Changes**: modified configs, local-only mods, missing files, renamed/disabled mods and protected paths. Retain baseline stages for later text-merge review.
 6. Finish verified adoption. If the exact upstream release cannot be verified, use **Adopt for monitoring only**. Destructive operations stay restricted.
 
+After an independently performed manual update, use **Record a manual update** on Overview to record the exact release now installed. It invalidates the previous baseline/approvals and requires a fresh adoption comparison; it never updates server files itself.
+
 The wizard never fabricates provenance by hashing live files. Existing startup commands, eggs, Docker images and Java choices are preserved. Arcturus stores association/provenance in its own database, not the reference plugin's metadata. Back up the Panel database and APP_KEY as well as server backups.
 
 ## Providers
