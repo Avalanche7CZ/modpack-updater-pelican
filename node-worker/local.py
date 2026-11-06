@@ -163,6 +163,7 @@ def main():
             mapped = 'PERMISSION_DENIED' if code == 'permissions' else 'METADATA_INVALID'
             detail = diagnostic(PreparationFailure(mapped), phase)
         else:
+            # Typed worker diagnostics cross stdio unchanged; never use exception text as a response.
             code = 'permissions' if isinstance(error, PermissionError) else 'paths'
             detail = diagnostic(PreparationFailure('CANCELLED') if isinstance(error, InterruptedError) else error, phase)
         finish({'code': code, 'diagnostic': detail})

@@ -78,7 +78,7 @@ final class LocalWorker implements IntegrityWorker
         $process->setTimeout($timeout);
         $output = '';
         $result = null;
-        $lastPhase = 'queued';
+        $lastPhase = ($request['operation'] ?? '') === 'inventory' ? 'comparing' : 'queued';
         try {
             $process->start(function (string $type, string $chunk) use (&$output, &$result, &$lastPhase, $process, $streaming, $progress): void {
                 if ($type === Process::OUT) {
@@ -125,7 +125,8 @@ final class LocalWorker implements IntegrityWorker
         }
         $data = $streaming ? $result : json_decode($output, true);
         if ($streaming && trim($output) !== '') { throw new PreparationException(['code' => 'METADATA_INVALID']); }
-        if (! $process->isSuccessful() || ! is_array($data)) {
+        if (! is_array($data)) { throw new PreparationException(['code' => 'METADATA_INVALID', 'phase' => $lastPhase]); }
+        if (! $process->isSuccessful()) {
             if (isset($data['diagnostic']) && ! in_array($request['operation'], ['capabilities', 'node_capabilities', 'provision'], true)) {
                 throw new PreparationException($data['diagnostic']);
             }

@@ -21,6 +21,32 @@ final class QueuePreparation
         }
     }
 
+    public function comparison(ManagedServer $server): void
+    {
+        \Arcturus\ModpackManager\Security\Access::requireAdmin();
+        $server->refresh();
+        if ($server->baseline_status !== 'verified' || ! $server->base_manifest_path) {
+            throw new RuntimeException('Prepare the exact upstream baseline before comparing the installation');
+        }
+        $manifest = app(ReleaseStore::class)->load($server->base_manifest_path);
+        (new BaselineGuard)->require($manifest, $server->provider, $server->source, $server->installed_version);
+        if ($server->transport === 'local') { $this->requireLocalQueue(); }
+        $tracker = app(OperationTracker::class);
+        $operation = $tracker->create($server, 'comparison', ['baseline' => $server->base_manifest_path,
+            'policy_revision' => $server->policy_revision, 'provider' => $server->provider, 'source' => $server->source, 'version' => $server->installed_version]);
+        ManagedServer::whereKey($server->id)->where('active_operation_id', $operation->id)->update([
+            'comparison_status' => 'queued', 'comparison_diagnostic' => null, 'adoption_report' => null, 'file_inventory' => null]);
+        try {
+            \Arcturus\ModpackManager\Jobs\CompareInstallation::dispatch($server->id, $operation->id);
+        } catch (\Throwable) {
+            $detail = PreparationDiagnostic::normalize(['code' => 'COMPARISON_FAILED', 'phase' => 'comparing']);
+            ManagedServer::whereKey($server->id)->where('active_operation_id', $operation->id)->update([
+                'comparison_status' => 'failed', 'comparison_diagnostic' => json_encode($detail, JSON_THROW_ON_ERROR)]);
+            $tracker->fail($operation, PreparationDiagnostic::message($detail));
+            throw new PreparationException($detail);
+        }
+    }
+
     public function queue(ManagedServer $server, bool $baseline = false): void
     {
         $server->refresh();

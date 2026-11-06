@@ -41,7 +41,7 @@ final class ArcturusModpack extends Page
 
         // No secrets, host paths, worker identifiers, provider recipes or administrator mutations.
         return ['name' => $record->label, 'provider' => $record->provider, 'installed' => $record->installed_version,
-            'available' => $record->available_version, 'baseline' => $record->baseline_status,
+            'available' => $record->available_version, 'baseline' => $record->baseline_status, 'comparison' => $record->comparisonLabel(),
             'checked' => $record->last_checked_at?->diffForHumans(), 'policy' => $record->policy,
             'operation' => $record->operations()->latest()->value('phase'),
             'blocked' => $record->preview_summary['blocked'] ?? null,

@@ -206,8 +206,16 @@ final class ViewManagedServer extends ViewRecord
                     Access::requireAdmin();
                     $this->queuePreparation(true);
                 }),
+            Action::make('retryComparison')->label('Retry installation comparison')->button()->icon('heroicon-o-arrow-path')
+                ->visible(fn () => $this->getRecord()->baseline_status === 'verified' && (bool) $this->getRecord()->base_manifest_path)
+                ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
+                ->modalDescription('Reuse the verified upstream manifest with current directory decisions and protection rules. No download, extraction, staged hashing or live file changes.')
+                ->action(function (): void {
+                    app(QueuePreparation::class)->comparison($this->getRecord());
+                    $this->queued('Installation comparison queued; verified upstream manifest reused');
+                }),
             Action::make('adopt')->button()->icon('heroicon-o-check-circle')->label('Finish verified adoption')->visible(fn () => ! $this->getRecord()->adopted_at)->requiresConfirmation()
-                ->disabled(fn () => $this->getRecord()->baseline_status !== 'verified' || (bool) $this->getRecord()->active_operation_id)
+                ->disabled(fn () => $this->getRecord()->baseline_status !== 'verified' || $this->getRecord()->comparison_status !== 'complete' || (bool) $this->getRecord()->active_operation_id)
                 ->action(function (): void {
                     Access::requireAdmin();
                     app(AdoptionService::class)->finish($this->getRecord());
@@ -297,11 +305,11 @@ final class ViewManagedServer extends ViewRecord
             if ($record->base_manifest_path && $record->target_manifest_path) {
                 app(PreviewService::class)->generate($record);
             } elseif ($record->baseline_status === 'verified' && $record->base_manifest_path) {
-                app(AdoptionService::class)->compare($record);
+                app(QueuePreparation::class)->comparison($record);
             }
             $this->queued('Server policies saved; previous approval invalidated');
         } catch (\Throwable $error) {
-            Notification::make()->title('Policy saved; comparison unavailable')->body('Prepare or reconnect the node, then compare again. Previous approval is invalid.')->warning()->send();
+            Notification::make()->title('Policy saved; comparison unavailable')->body('Previous approval is invalid. '.($error instanceof \Arcturus\ModpackManager\Services\PreparationException ? $error->getMessage() : 'Retry installation comparison using the existing verified baseline.'))->warning()->send();
         }
     }
 
@@ -327,7 +335,7 @@ final class ViewManagedServer extends ViewRecord
     {
         Access::requireAdmin();
         $record = $this->getRecord()->refresh();
-        $operation = $record->operations()->whereNull('completed_at')->whereIn('kind', ['baseline', 'prepare'])->first();
+        $operation = $record->operations()->whereNull('completed_at')->whereIn('kind', ['baseline', 'prepare', 'comparison'])->first();
         if (! $operation) { $this->queued('No active preparation to cancel'); return; }
         $operation->update(['cancel_requested_at' => now()]);
         if ($operation->phase !== 'queued') {
@@ -341,8 +349,10 @@ final class ViewManagedServer extends ViewRecord
     {
         Access::requireAdmin();
         $op = $this->getRecord()->operations()->whereNull('completed_at')->firstOrFail();
-        abort_unless(in_array($op->kind, ['baseline', 'prepare'], true), 409);
-        PrepareUpdate::dispatch($op->managed_server_id, $op->kind === 'baseline', $op->id);
+        abort_unless(in_array($op->kind, ['baseline', 'prepare', 'comparison'], true), 409);
+        if ($op->kind === 'comparison') {
+            \Arcturus\ModpackManager\Jobs\CompareInstallation::dispatch($op->managed_server_id, $op->id);
+        } else { PrepareUpdate::dispatch($op->managed_server_id, $op->kind === 'baseline', $op->id); }
         $this->queued('Preparation reconciliation queued');
     }
 

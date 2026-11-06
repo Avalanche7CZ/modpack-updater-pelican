@@ -2,6 +2,7 @@
 """Arcturus's server-scoped integrity/staging worker. No subprocess or shell API."""
 import argparse
 import contextlib
+import errno
 import copy
 import hashlib
 import hmac
@@ -104,6 +105,11 @@ FAILURES = {
     'CANCELLED': ('Cancellation was confirmed; partial staging is retained.', 'Start a new operation only after reviewing the retained stage.'),
     'INTERRUPTED': ('The preparation process stopped before completion; staging is retained.', 'Inspect process and operation state before an explicit new attempt.'),
 }
+FAILURES.update({
+    'SYMLINK_PATH': ('A symbolic link was found in the selected managed scope.', 'Review the logical file ID and replace the link with reviewed regular content, or Keep local/Exclude its directory. Links are never followed.'),
+    'FILE_TYPE': ('A selected managed entry is not a regular file or directory.', 'Inspect the logical file ID for a socket, FIFO or changed directory. No partial inventory is accepted.'),
+    'INVENTORY_FAILED': ('Installation inventory failed with an unclassified filesystem validation error.', 'Inspect the retained comparison checkpoint and file ID. Retry installation comparison after correcting the entry; the verified upstream baseline is retained.'),
+})
 PHASES = frozenset(('queued', 'downloading', 'verifying', 'extracting', 'hashing', 'comparing', 'awaiting_resolution'))
 
 
@@ -130,7 +136,7 @@ def safe_file(value):
 def diagnostic(error, phase, context=None):
     if isinstance(error, ManagedPathFailure):
         return error.diagnostic
-    code = 'PREPARATION_FAILED'
+    code = 'INVENTORY_FAILED' if phase == 'comparing' else 'PREPARATION_FAILED'
     if isinstance(error, PreparationFailure):
         code = error.code
     elif isinstance(error, InterruptedError):
@@ -150,13 +156,18 @@ def diagnostic(error, phase, context=None):
     elif isinstance(error, (zipfile.BadZipFile, NotImplementedError)):
         code = 'ARCHIVE_INVALID'
     elif isinstance(error, OSError):
-        code = 'DISK_FULL' if error.errno in (28, 122) else 'IO_ERROR'
-    elif isinstance(error, (KeyError, TypeError, json.JSONDecodeError)):
+        code = ('SYMLINK_PATH' if error.errno == errno.ELOOP else 'FILE_TYPE' if error.errno in (errno.ENOTDIR, errno.EISDIR)
+                else 'FILES_CHANGED' if error.errno == errno.ESTALE else 'DISK_FULL' if error.errno in (28, 122) else 'IO_ERROR')
+    elif isinstance(error, (KeyError, TypeError, AttributeError, UnicodeError, json.JSONDecodeError)):
         code = 'METADATA_INVALID'
     elif isinstance(error, ValueError):
         # Recognize only our fixed legacy messages. Never serialize arbitrary exception text.
         message = str(error)
-        if message in ('Unsafe relative path', 'Hash request is outside managed pack scope; world reads are forbidden',
+        if message == 'Symlink in managed inventory':
+            code = 'SYMLINK_PATH'
+        elif message == 'Only regular files can be read':
+            code = 'FILE_TYPE'
+        elif message in ('Unsafe relative path', 'Hash request is outside managed pack scope; world reads are forbidden',
                        'Upstream release contains runtime or unmanaged paths; explicit normalization required',
                        'Duplicate or unsafe Modrinth path', 'Unsafe Modrinth override', 'Unsafe CurseForge override path'):
             code = 'MANAGED_PATH'
@@ -165,13 +176,15 @@ def diagnostic(error, phase, context=None):
         elif message in ('Inventory byte limit exceeded; no partial inventory returned', 'Inventory byte limit exceeded',
                          'Managed inventory directory/count limit exceeded', 'Inventory file limit exceeded', 'Prepared file limit exceeded'):
             code = 'INVENTORY_LIMIT'
+        elif message in ('Invalid inventory path list',):
+            code = 'METADATA_INVALID'
         elif message in ('Download hostname has no address',):
             code = 'NETWORK_DNS'
         elif message in ('Download hostname resolves to a non-public address', 'Artifact redirect limit exceeded'):
             code = 'DOWNLOAD_POLICY'
-    supplied = {**(context or {}), **(getattr(error, 'context', {}))}
+    supplied = {**({'errno': error.errno} if isinstance(error, OSError) else {}), **(context or {}), **(getattr(error, 'context', {}))}
     safe = {}
-    for key in ('artifact_index', 'entry_index', 'http_status', 'file_index'):
+    for key in ('artifact_index', 'entry_index', 'http_status', 'file_index', 'errno'):
         value = supplied.get(key)
         if type(value) is int and 0 <= value <= 1000000:
             safe[key] = value
@@ -250,6 +263,21 @@ def relative(value):
     if value.startswith('/') or any(x in ('', '.', '..') for x in value.split('/')) or any(ord(x) < 32 or ord(x) == 127 for x in value):
         raise ValueError('Unsafe relative path')
     return value
+
+
+@contextlib.contextmanager
+def inventory_entry(path):
+    """Attach only logical identifiers and a fixed diagnostic, never raw exception text."""
+    try:
+        yield
+    except (InterruptedError, PreparationFailure):
+        raise
+    except Exception as error:
+        detail = diagnostic(error, 'comparing', {'file': path})
+        code = detail['code']
+        if code in ('PREPARATION_FAILED', 'INVENTORY_FAILED'):
+            code = 'METADATA_INVALID' if isinstance(error, (ValueError, AttributeError, UnicodeError)) else 'INVENTORY_FAILED'
+        raise PreparationFailure(code, **detail.get('context', {})) from error
 
 
 def fail_walk(error):
@@ -532,7 +560,7 @@ def mod_metadata(root, path):
                         return value[:200] if isinstance(value, str) and '${' not in value and not any(ord(c) < 32 for c in value) else None
                     return {'identity': '+'.join(ids), 'ids': ids, 'loader': loader,
                             'name': text('name') or text('displayName'), 'version': text('version')}
-    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
+    except (ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
         pass
     return None
 
@@ -639,6 +667,7 @@ class Worker:
         if operation_id is None:
             return self._inventory(server)
         base = self.operation_path(server, operation_id)
+        base.mkdir(mode=0o700, exist_ok=True)
         update = ProgressState(base / 'comparison.json', {'operation_id': operation_id, 'state': 'comparing'}, self.observer)
         cancelled = lambda: (base / 'cancel').exists()
         update(state='comparing', step='inventory_enumeration', files_done=0, files_total=None)
@@ -658,45 +687,61 @@ class Worker:
         root = Path(entry['root'])
         paths = []
         entries_scanned = 0
-        excluded = sorted(self.world_roots(server))
-        for item in root.iterdir():
-            if not self.managed(server, item.name, excluded):
-                if item.is_dir():
-                    excluded.append(item.name)
-                continue
-            if item.is_symlink():
-                raise ValueError('Symlink in managed inventory')
-            if item.is_dir():
-                if item.name not in self.managed_directories(server):
+        with inventory_entry('server.properties'):
+            excluded = sorted(self.world_roots(server))
+        with inventory_entry('inventory-root'):
+            children = list(root.iterdir())
+        for item in children:
+            with inventory_entry(item.name):
+                # Unknown and protected roots are excluded before inspecting their contents or links.
+                if not self.managed(server, item.name, excluded):
                     excluded.append(item.name)
                     continue
-                for directory, dirs, names in os.walk(item, followlinks=False, onerror=fail_walk):
-                    if cancelled():
-                        raise InterruptedError('Operation cancelled')
-                    entries_scanned += len(dirs) + len(names)
-                    report(state='comparing', step='inventory_enumeration', entries_scanned=entries_scanned)
-                    if entries_scanned > MAX_FILES or len(Path(directory).relative_to(root).parts) > 32:
-                        raise ValueError('Managed inventory directory/count limit exceeded')
-                    for name in dirs + names:
-                        path = Path(directory) / name
-                        if path.is_symlink():
-                            raise ValueError('Symlink in managed inventory')
-                    safe_dirs = []
-                    for name in dirs:
-                        rel = str((Path(directory) / name).relative_to(root))
-                        if self.managed(server, rel, excluded):
-                            safe_dirs.append(name)
-                        else:
-                            excluded.append(rel)
-                    dirs[:] = safe_dirs
-                    for name in names:
-                        rel = str((Path(directory) / name).relative_to(root))
-                        if self.managed(server, rel, excluded):
-                            paths.append(rel)
-                    if len(paths) > MAX_FILES:
-                        raise ValueError('Inventory file limit exceeded')
-            else:
-                paths.append(item.name)
+                info = item.lstat()
+                if stat.S_ISDIR(info.st_mode) and item.name not in self.managed_directories(server):
+                    excluded.append(item.name)
+                    continue
+                if stat.S_ISLNK(info.st_mode):
+                    raise PreparationFailure('SYMLINK_PATH', file=item.name)
+                if stat.S_ISDIR(info.st_mode):
+                    def walk_error(error):
+                        # onerror includes an absolute path; reduce it to a logical path before classification.
+                        with inventory_entry(str(Path(error.filename).relative_to(root))):
+                            raise error
+                    for directory, dirs, names in os.walk(item, followlinks=False, onerror=walk_error):
+                        if cancelled():
+                            raise InterruptedError('Operation cancelled')
+                        entries_scanned += len(dirs) + len(names)
+                        report(state='comparing', step='inventory_enumeration', entries_scanned=entries_scanned)
+                        if entries_scanned > MAX_FILES or len(Path(directory).relative_to(root).parts) > 32:
+                            raise PreparationFailure('INVENTORY_LIMIT')
+                        safe_dirs = []
+                        for name in dirs + names:
+                            rel = str((Path(directory) / name).relative_to(root))
+                            with inventory_entry(rel):
+                                if not self.managed(server, rel, excluded):
+                                    excluded.append(rel)
+                                    continue
+                                with_context = {'file': None, 'file_id': None, **safe_file(rel)}
+                                report(**with_context)
+                                info = (root / rel).lstat()
+                                if stat.S_ISLNK(info.st_mode):
+                                    raise PreparationFailure('SYMLINK_PATH', file=rel)
+                                if name in dirs:
+                                    if not stat.S_ISDIR(info.st_mode):
+                                        raise PreparationFailure('FILES_CHANGED', file=rel)
+                                    safe_dirs.append(name)
+                                elif stat.S_ISREG(info.st_mode):
+                                    paths.append(rel)
+                                else:
+                                    raise PreparationFailure('FILE_TYPE', file=rel)
+                        dirs[:] = safe_dirs
+                        if len(paths) > MAX_FILES:
+                            raise PreparationFailure('INVENTORY_LIMIT')
+                elif stat.S_ISREG(info.st_mode):
+                    paths.append(item.name)
+                else:
+                    raise PreparationFailure('FILE_TYPE', file=item.name)
         hashed = self.hashes(server, paths, report=report, cancelled=cancelled)
         if hashed['missing']:
             raise PreparationFailure('FILES_CHANGED')
@@ -706,7 +751,8 @@ class Worker:
         for index, path in enumerate(paths):
             if cancelled():
                 raise InterruptedError('Operation cancelled')
-            item = mod_metadata(root, path)
+            with inventory_entry(path):
+                item = mod_metadata(root, path)
             if item:
                 identities[path], metadata[path] = item['identity'], item
             report(state='comparing', files_done=index + 1)
@@ -729,12 +775,15 @@ class Worker:
                 raise ValueError('Hash request is outside managed pack scope; world reads are forbidden')
             try:
                 report(**{'file': None, 'file_id': None, **safe_file(path)})
-                digest, size = hash_file(self.entry(server)['root'], path, budget,
-                    progress=lambda n: report(bytes_done=consumed + n), cancelled=cancelled)
+                with inventory_entry(path):
+                    digest, size = hash_file(self.entry(server)['root'], path, budget,
+                        progress=lambda n: report(bytes_done=consumed + n), cancelled=cancelled)
                 consumed += size
                 budget -= size
                 result[path] = digest
-            except FileNotFoundError:
+            except PreparationFailure as error:
+                if error.code != 'MISSING_FILE':
+                    raise
                 missing.append(path)
             report(files_done=index + 1, bytes_done=consumed)
         return {'files': result, 'missing': missing}
@@ -1133,8 +1182,8 @@ class Worker:
             return self.status(server, payload['operation_id'])
         if operation == 'cancel':
             base = self.operation_path(server, payload['operation_id'])
-            data = self.status(server, payload['operation_id'])
             comparison = base / 'comparison.json'
+            data = self.status(server, payload['operation_id']) if (base / 'operation.json').exists() else {'state': 'completed'}
             comparing = comparison.exists() and json.loads(comparison.read_text()).get('state') == 'comparing'
             if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted') or comparing:
                 (base / 'cancel').touch(mode=0o600)

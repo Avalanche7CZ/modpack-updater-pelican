@@ -8,6 +8,12 @@ namespace Arcturus\ModpackManager\Services;
 final class PreparationDiagnostic
 {
     public const DEFINITIONS = [
+        'SYMLINK_PATH' => ['A symbolic link was found in the selected managed scope.', 'Review the logical file ID and replace the link with reviewed regular content, or Keep local/Exclude its directory. Links are never followed.'],
+        'FILE_TYPE' => ['A selected managed entry is not a regular file or directory.', 'Inspect the logical file ID for a socket, FIFO or changed directory. No partial inventory is accepted.'],
+        'INVENTORY_FAILED' => ['Installation inventory failed with an unclassified filesystem validation error.', 'Inspect the retained comparison checkpoint and file ID. Retry installation comparison after correcting the entry; the verified upstream baseline is retained.'],
+        'COMPARISON_FAILED' => ['Installation comparison did not complete.', 'Review the saved diagnostic and retry installation comparison. The verified upstream baseline is retained; no download is needed.'],
+        'COMPARISON_STALE' => ['Server policy or baseline changed during comparison.', 'Retry installation comparison with the current directory decisions and protection rules.'],
+        'WORLD_PATH_UNVERIFIED' => ['The custom world path could not be safely verified.', 'Resolve level-name in server.properties before retrying installation comparison. World protection cannot be bypassed.'],
         'WORKER_CONFIGURATION' => ['The preparation backend is missing configuration or filesystem access.', 'Open Local filesystem setup or test the configured remote worker; check permissions as the unprivileged queue account.'],
         'WORKER_HTTP' => ['The node worker rejected the request.', 'Check the matching server UUID/token and reverse proxy access rules. Never disable TLS verification.'],
         'CHECKSUM_MISSING' => ['An independently verified upstream checksum is missing.', 'Select a release with published checksums or an operator-reviewed verified recipe.'],
@@ -24,7 +30,7 @@ final class PreparationDiagnostic
         'ARCHIVE_INVALID' => ['The downloaded archive is corrupt or uses an unsupported format.', 'Verify the official server ZIP and retain the downloaded evidence.'],
         'ARCHIVE_UNSAFE' => ['An archive entry is unsafe, duplicated, encrypted or unsupported.', 'Inspect the numbered entry in the retained archive; use a reviewed normalized server pack.'],
         'ARCHIVE_LIMIT' => ['The archive exceeds file-count or expansion safety limits.', 'Review the archive and configured staging limits; do not bypass ZIP safety checks.'],
-        'PERMISSION_DENIED' => ['A required file or directory could not be accessed.', 'Re-run node setup for managed-file read access and check private staging ownership. Do not grant live write access.'],
+        'PERMISSION_DENIED' => ['A required file or directory could not be accessed.', 'The verified baseline is retained. Choose Keep local/Exclude for the affected directory, or ask the host operator to provision read access for this server. Retry installation comparison; the Panel cannot change POSIX ACLs.'],
         'DISK_FULL' => ['The staging filesystem has no available space or quota.', 'Free operator-reviewed staging space without deleting active evidence, or provision more capacity.'],
         'IO_ERROR' => ['A filesystem operation failed.', 'Check filesystem health, mount state, staging capacity and permissions.'],
         'MISSING_FILE' => ['A required file disappeared or was not present.', 'Inspect retained staging and release contents; do not substitute live files for upstream evidence.'],
@@ -52,7 +58,7 @@ final class PreparationDiagnostic
         $phase = is_array($value) && in_array($value['phase'] ?? null, self::PHASES, true) ? $value['phase'] : 'queued';
         [$description, $action] = self::DEFINITIONS[$code];
         $context = [];
-        foreach (['artifact_index', 'entry_index', 'file_index', 'http_status'] as $key) {
+        foreach (['artifact_index', 'entry_index', 'file_index', 'http_status', 'errno'] as $key) {
             $number = $value['context'][$key] ?? null;
             if (is_int($number) && $number >= 0 && $number <= 1000000) {
                 $context[$key] = $number;
@@ -75,7 +81,7 @@ final class PreparationDiagnostic
         $detail = self::normalize($detail);
         $context = $detail['context'] ?? [];
         $labels = [];
-        foreach (['http_status' => 'HTTP ', 'artifact_index' => 'artifact #', 'entry_index' => 'archive entry #'] as $key => $label) {
+        foreach (['http_status' => 'HTTP ', 'artifact_index' => 'artifact #', 'entry_index' => 'archive entry #', 'errno' => 'OS error #'] as $key => $label) {
             if (isset($context[$key])) { $labels[] = $label.$context[$key]; }
         }
         if (isset($context['file'])) { $labels[] = $context['file']; }

@@ -96,8 +96,9 @@ class TfgManagedPaths(unittest.TestCase):
         directory = self.put('tacz/guns.json').parent
         directory.chmod(0)
         try:
-            with self.assertRaises(PermissionError):
+            with self.assertRaises(w.PreparationFailure) as failure:
                 self.worker.inventory(self.server)
+            self.assertEqual(failure.exception.code, 'PERMISSION_DENIED')
         finally:
             directory.chmod(0o700)
 

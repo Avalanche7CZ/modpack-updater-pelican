@@ -18,7 +18,10 @@ final class RecoverOperations extends Command
     public function handle(): int
     {
         foreach (Operation::whereNull('completed_at')->where('heartbeat_at', '<', now()->subMinutes(5))->get() as $op) {
-            if (in_array($op->kind, ['prepare', 'baseline'], true)) {
+            if ($op->kind === 'comparison') {
+                \Arcturus\ModpackManager\Jobs\CompareInstallation::dispatch($op->managed_server_id, $op->id);
+                $this->line('Queued installation comparison reconciliation: '.$op->id);
+            } elseif (in_array($op->kind, ['prepare', 'baseline'], true)) {
                 PrepareUpdate::dispatch($op->managed_server_id, $op->kind === 'baseline', $op->id);
                 $this->line('Queued preparation reconciliation: '.$op->id);
             } else {

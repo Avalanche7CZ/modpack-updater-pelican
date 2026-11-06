@@ -51,7 +51,7 @@ final class Overview extends Page implements HasTable
 
     public function table(Table $table): Table
     {
-        return $table->query(ManagedServer::query()->with('pelicanServer'))->columns([
+        return $table->query(ManagedServer::query()->with(['pelicanServer', 'latestOperationEvent']))->columns([
             TextColumn::make('label')->label('Server')->searchable()->sortable(),
             TextColumn::make('pelicanServer.name')->label('Pelican server')->searchable()->placeholder('Missing server'),
             TextColumn::make('runtime_report.state')->label('Last observed state')->badge()->placeholder('Unknown'),
@@ -59,11 +59,14 @@ final class Overview extends Page implements HasTable
             TextColumn::make('installed_version')->label('Installed')->wrap(),
             TextColumn::make('available_version')->label('Latest')->wrap()->placeholder('Not checked')
                 ->color(fn ($record) => $record->hasUpdate() ? 'warning' : 'gray'),
-            TextColumn::make('baseline_status')->label('Baseline')->badge(),
+            TextColumn::make('baseline_status')->label('Upstream baseline')->badge(),
+            TextColumn::make('comparison_status')->label('Installation comparison')->badge()->formatStateUsing(fn (ManagedServer $record) => $record->comparisonLabel())
+                ->color(fn ($state) => match ($state) { 'complete' => 'success', 'failed' => 'danger', default => 'warning' }),
+            TextColumn::make('operation_status')->label('Operation')->badge(),
             TextColumn::make('policy')->badge(),
             TextColumn::make('backup_mode')->label('Backup'),
             TextColumn::make('last_checked_at')->label('Last successful check')->since()->placeholder('Never'),
-            TextColumn::make('last_error')->label('Failure / blocked')->limit(80)->wrap()->placeholder('—'),
+            TextColumn::make('failure_summary')->label('Failure / blocked')->limit(80)->wrap()->placeholder('—'),
         ])->filters([SelectFilter::make('provider')->options(['ftb' => 'FTB', 'github' => 'GitHub',
             'modrinth' => 'Modrinth', 'curseforge' => 'CurseForge', 'atlauncher' => 'ATLauncher', 'custom' => 'Custom'])])
             ->recordUrl(fn ($record) => ManagedServerResource::getUrl('view', ['record' => $record]))
