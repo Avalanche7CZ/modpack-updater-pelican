@@ -86,6 +86,9 @@ final class AdoptionService
         (new BaselineGuard)->require($base, $server->provider, $server->source, $server->installed_version);
         $inventory = $this->files->wings($server->pelicanServer)->inventory();
         $observed = $this->inspect($server->pelicanServer);
+        if (($observed['world_path_verified'] ?? null) === false) {
+            throw new RuntimeException('Verify the custom world path in server.properties before adoption comparison');
+        }
         // Display inferred upstream fields separately; do not pretend they prove the running loader.
         $observed['upstream_runtime'] = $base['runtime'];
         $observed['observed_at'] = now()->toIso8601String();
