@@ -52,3 +52,24 @@ foreach (['127.0.0.1', '10.0.0.1', '100.64.0.1', '169.254.169.254', '192.168.1.1
     check(! PublicAddress::isPublic($ip), 'Private or special address accepted: '.$ip);
 }
 check(PublicAddress::isPublic('1.1.1.1'), 'Public address rejected');
+
+$neoPath = 'libraries/net/neoforged/neoforge/21.1.172/unix_args.txt';
+$oldPath = 'libraries/net/neoforged/neoforge/21.1.100/unix_args.txt';
+$report = $runtime->inspect([$neoPath, $oldPath], [
+    'startserver.sh' => "#!/bin/sh\njava @user_jvm_args.txt @{$neoPath} \"\$@\"\n",
+    $neoPath => '--launchTarget neoforgeserver --fml.neoForgeVersion 21.1.172 --fml.mcVersion 1.21.1',
+    $oldPath => '--fml.mcVersion 1.21.1',
+], 'bash startserver.sh', 'java_21');
+check($report['loader'] === 'neoforge' && $report['loader_version'] === '21.1.172' && $report['minecraft'] === '1.21.1',
+    'Active FTB NeoForge arguments were not detected or stale library version took precedence');
+$report = $runtime->inspect([$neoPath, $oldPath], [], 'java @unix_args.txt', 'java_21');
+check($report['loader_version'] === null && count($report['warnings']) > 0, 'Ambiguous loader version was guessed');
+$report = $runtime->inspect([$neoPath], ['run.sh' => "# java @libraries/net/minecraftforge/forge/1.20.1-47.0/unix_args.txt\njava @{$neoPath}", $neoPath => '--fml.mcVersion=1.21.1'], 'bash run.sh', 'java_21');
+check($report['minecraft'] === '1.21.1' && ! $report['warnings'], 'Commented launcher path was treated as active');
+$report = $runtime->inspect(['fabric-server-launch.jar'], ['manifest.json' => json_encode([
+    'manifestType' => 'minecraftModpack', 'minecraft' => ['version' => '1.20.1', 'modLoaders' => [['id' => 'fabric-0.16.10', 'primary' => true]]],
+])], 'java -jar fabric-server-launch.jar', 'java_17');
+check($report['loader'] === 'fabric' && $report['minecraft'] === '1.20.1', 'Manifest runtime evidence was ignored');
+echo "FTB NeoForge startup references, nested arguments and ambiguity checks passed\n";
+$report = $runtime->inspect(['unix_args.txt', $oldPath], ['unix_args.txt' => '--fml.mcVersion 1.21.1 --fml.neoForgeVersion 21.1.172'], 'java @unix_args.txt', 'java_21');
+check($report['loader'] === 'neoforge' && $report['loader_version'] === '21.1.172' && $report['minecraft'] === '1.21.1', 'Root unix_args.txt launcher was ignored');

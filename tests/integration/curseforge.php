@@ -97,6 +97,9 @@ Http::fake(function ($request) use ($operation, $requirements, $upstream, $upstr
         return Http::response(['complete' => true, 'scope' => 'managed-pack-files',
             'excluded_roots' => ['world'], 'notice' => 'Fixture inventory', 'identities' => [], 'files' => $upstreamFiles]);
     }
+    if (str_contains($url, '/files/list-directory')) {
+        return Http::response([], 200, ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)']);
+    }
     if (str_contains($url, 'wings.fixture.test')) {
         return Http::response(['state' => 'running'], 200, ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)']);
     }

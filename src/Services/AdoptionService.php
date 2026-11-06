@@ -21,16 +21,8 @@ final class AdoptionService
     public function inspect(Server $server): array
     {
         $files = $this->files->wings($server);
-        $root = $files->listing();
-        $texts = [];
-        $paths = array_column($root, 'name');
-        foreach (['modrinth.index.json', 'manifest.json', 'modpack.json', 'server.properties',
-            'fabric-server-launcher.properties', 'quilt-server-launcher.properties', 'run.sh', 'startserver.sh', 'start.sh'] as $path) {
-            if (in_array($path, $paths, true)) {
-                $texts[$path] = $files->read($path);
-            }
-        }
-        $report = $this->runtime->inspect($paths, $texts, $server->startup, $server->image, $server->egg?->name);
+        $evidence = (new RuntimeEvidenceCollector)->collect($files);
+        $report = $this->runtime->inspect($evidence['paths'], $evidence['texts'], $server->startup, $server->image, $server->egg?->name);
         $report['state'] = app(PelicanPowerController::class)->state($server);
         $report['observed_at'] = now()->toIso8601String();
 
@@ -42,11 +34,8 @@ final class AdoptionService
         $base = $this->store->load($server->base_manifest_path);
         (new BaselineGuard)->require($base, $server->provider, $server->source, $server->installed_version);
         $inventory = $this->files->wings($server->pelicanServer)->inventory();
-        $paths = array_keys($inventory['files']);
-        $observed = $this->runtime->inspect($paths, [], $server->pelicanServer->startup,
-            $server->pelicanServer->image, $server->pelicanServer->egg?->name);
+        $observed = $this->inspect($server->pelicanServer);
         // Display inferred upstream fields separately; do not pretend they prove the running loader.
-        $observed['state'] = app(PelicanPowerController::class)->state($server->pelicanServer);
         $observed['upstream_runtime'] = $base['runtime'];
         $observed['observed_at'] = now()->toIso8601String();
         $rules = $server->file_rules ?? [];

@@ -12,3 +12,4 @@ PELICAN_SOURCE="$TEST_PANEL" php tests/integration/filament.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/livewire.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/adoption.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/curseforge.php
+PELICAN_SOURCE="$TEST_PANEL" php tests/integration/runtime.php

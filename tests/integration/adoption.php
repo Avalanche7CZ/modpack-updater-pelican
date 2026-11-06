@@ -72,6 +72,9 @@ Http::fake(function ($request) use ($operation, $upstream, $local) {
             'excluded_roots' => ['world'], 'notice' => 'Fixture point-in-time scan', 'identities' => [],
             'files' => ['config/a.properties' => $local, 'mods/local-extra.jar' => hash('sha256', 'local extra')]]);
     }
+    if (str_contains($url, '/files/list-directory')) {
+        return Http::response([], 200, ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)']);
+    }
     if (str_contains($url, 'wings.fixture.test')) {
         return Http::response(['state' => 'running'], 200, ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)']);
     }

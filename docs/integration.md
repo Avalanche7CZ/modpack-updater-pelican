@@ -25,9 +25,12 @@ php tests/integration/filament.php
 php tests/integration/livewire.php
 php tests/integration/adoption.php
 php tests/integration/curseforge.php
+php tests/integration/runtime.php
 ```
 
 The bootstrap refuses a checkout with an existing `.env`, uses in-memory SQLite and test-only cache/session/mail configuration, and requires an explicit completion marker to prevent Laravel's console exception renderer producing false success. It loads actual Pelican/Laravel/Filament classes, runs Arcturus migrations up/down, verifies the reference plugin's sentinel data is untouched, tests encrypted settings, checks durable queue exclusion/recovery locks and exercises actual daemon repositories through mocked HTTP responses. The Filament test discovers both panels, constructs native wizard/forms/tables/settings and compiles every Blade template. The Livewire test renders and switches all six detail tabs and verifies guest denial and the disabled destructive control.
+
+Runtime inspection tests use the native Wings file repository with a remote FTB-like NeoForge tree, including obsolete versions and a symlink. They verify active launcher selection and Minecraft arguments without reading worlds, executing scripts or sending power requests.
 
 Do not substitute a production Panel checkout, database, Wings node or server. Framework tests deliberately do not execute actual power, native backup, restore or provider installation requests.
 
