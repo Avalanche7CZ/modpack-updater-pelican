@@ -60,7 +60,11 @@ final class ViewManagedServer extends ViewRecord
     {
         Access::requireAdmin();
 
-        return $this->getRecord()->refresh();
+        $record = $this->getRecord();
+        $record->setRawAttributes(ManagedServer::lightweight()->findOrFail($record->id)->getAttributes(), true);
+        $record->evidenceProjection = true;
+        $record->unsetRelations();
+        return $record;
     }
 
     public function selectTab(string $tab): void
@@ -108,7 +112,7 @@ final class ViewManagedServer extends ViewRecord
                 ->visible(fn () => (bool) $this->getRecord()->base_manifest_path)
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->modalDescription('Verified upstream structure. Standard folders default to Manage. Unfamiliar folders require a decision. Keep local and Exclude prevent inventory reads and updates. Protected runtime paths cannot be managed. Saving invalidates previous approval; compare again without downloading.')
-                ->fillForm(fn () => ['directories' => (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->rows($this->getRecord()), 'revision' => $this->getRecord()->policy_revision])
+                ->fillForm(fn () => ['directories' => (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->rows($this->getRecord()), 'revision' => $this->getRecord()->policy_revision, 'request_id' => (string) \Illuminate\Support\Str::uuid()])
                 ->schema([
                     \Filament\Forms\Components\Repeater::make('directories')->addable(false)->deletable(false)->reorderable(false)
                         ->itemLabel(fn (array $state) => ($state['path'] ?? '').' · '.($state['classification'] ?? ''))
@@ -117,13 +121,13 @@ final class ViewManagedServer extends ViewRecord
                             Select::make('mode')->options(['review' => 'Choose a decision', 'manage' => 'Manage', 'keep' => 'Keep local', 'exclude' => 'Exclude'])
                                 ->disabled(fn ($get) => $get('classification') === 'protected')->required(),
                         ]),
-                    Hidden::make('revision'),
+                    Hidden::make('revision'), Hidden::make('request_id'),
                 ])->action(function (array $data): void {
                     $server = $this->getRecord()->refresh();
                     $decisions = array_values(array_map(fn ($row) => ['path' => $row['path'], 'mode' => $row['mode']],
                         array_filter($data['directories'] ?? [], fn ($row) => ($row['classification'] ?? '') !== 'protected' && ($row['mode'] ?? 'review') !== 'review')));
-                    app(ServerPolicyService::class)->save($server, $server->file_rules ?? [], $server->disabled_mods ?? [], (int) $data['revision'], ['directory_decisions' => $decisions]);
-                    $this->recompare();
+                    $operation = app(ServerPolicyService::class)->saveDirectories($server, $decisions, (int) $data['revision'], $data['request_id']);
+                    $this->queued('Directory decisions saved; comparison operation '.$operation->id);
                 }),
             Action::make('editPolicies')->label('Edit protection rules')->button()->color('gray')
                 ->visible(fn () => $this->tab === 'protection')->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
@@ -209,9 +213,10 @@ final class ViewManagedServer extends ViewRecord
             Action::make('retryComparison')->label('Retry installation comparison')->button()->icon('heroicon-o-arrow-path')
                 ->visible(fn () => $this->getRecord()->baseline_status === 'verified' && (bool) $this->getRecord()->base_manifest_path)
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
+                ->fillForm(fn () => ['request_id' => (string) \Illuminate\Support\Str::uuid()])->schema([Hidden::make('request_id')])
                 ->modalDescription('Reuse the verified upstream manifest with current directory decisions and protection rules. No download, extraction, staged hashing or live file changes.')
-                ->action(function (): void {
-                    app(QueuePreparation::class)->comparison($this->getRecord());
+                ->action(function (array $data): void {
+                    app(QueuePreparation::class)->comparison($this->getRecord(), false, $data['request_id']);
                     $this->queued('Installation comparison queued; verified upstream manifest reused');
                 }),
             Action::make('adopt')->button()->icon('heroicon-o-check-circle')->label('Finish verified adoption')->visible(fn () => ! $this->getRecord()->adopted_at)->requiresConfirmation()
@@ -258,9 +263,11 @@ final class ViewManagedServer extends ViewRecord
                     Access::requireAdmin();
                     $this->queuePreparation(false);
                 }),
-            Action::make('preview')->button()->icon('heroicon-o-document-magnifying-glass')->label('Compare files')->color('gray')->visible(fn () => in_array($this->tab, ['updates', 'changes'], true))->action(function (): void {
+            Action::make('preview')->button()->icon('heroicon-o-document-magnifying-glass')->label('Compare files')->color('gray')->visible(fn () => in_array($this->tab, ['updates', 'changes'], true))
+                ->fillForm(fn () => ['request_id' => (string) \Illuminate\Support\Str::uuid()])->schema([Hidden::make('request_id')])
+                ->action(function (array $data): void {
                 Access::requireAdmin();
-                app(PreviewService::class)->generate($this->getRecord());
+                app(QueuePreparation::class)->comparison($this->getRecord(), true, $data['request_id']);
                 $this->tab = 'changes';
             }),
             EditAction::make(),
@@ -288,8 +295,7 @@ final class ViewManagedServer extends ViewRecord
         abort_unless(in_array($mode, ['protect', 'replace', 'review', 'disable'], true), 422);
         $record = $this->getRecord()->refresh();
         abort_if((bool) $record->active_operation_id, 409);
-        $changes = $record->preview_summary['changes'] ?? [];
-        abort_unless(collect($changes)->contains(fn ($c) => $c['path'] === $path), 422);
+        abort_unless(isset((new FilePolicyCatalog)->selected($record, [$path])[$path]), 422);
         UpdatePlanner::assertPath($path);
         // Escape glob metacharacters by rejecting them for exact-path decisions.
         abort_if(strpbrk($path, '*?') !== false, 422);
@@ -303,7 +309,7 @@ final class ViewManagedServer extends ViewRecord
         $record = $this->getRecord()->refresh();
         try {
             if ($record->base_manifest_path && $record->target_manifest_path) {
-                app(PreviewService::class)->generate($record);
+                app(QueuePreparation::class)->comparison($record, true);
             } elseif ($record->baseline_status === 'verified' && $record->base_manifest_path) {
                 app(QueuePreparation::class)->comparison($record);
             }
@@ -315,19 +321,21 @@ final class ViewManagedServer extends ViewRecord
 
     public function fileRows(): array
     {
-        $rows = array_values(array_filter((new FilePolicyCatalog)->rows($this->managed()), fn ($r) => (! $this->modsOnly || $r['is_mod']) && ($this->classification === '' || $r['classification'] === $this->classification) &&
-            ($this->pathSearch === '' || str_contains(strtolower($r['path'].' '.$r['identity'].' '.$r['name']), strtolower($this->pathSearch)))));
-        $pages = max(1, (int) ceil(count($rows) / 50));
-        $page = min($pages, max(1, $this->changePage));
+        return (new FilePolicyCatalog)->page($this->managed(), $this->changePage, $this->modsOnly, $this->classification, $this->pathSearch);
+    }
 
-        return ['rows' => array_slice($rows, ($page - 1) * 50, 50), 'total' => count($rows), 'pages' => $pages, 'page' => $page];
+    public function inventoryWarnings(): array
+    {
+        $id = $this->getRecord()->id;
+        return ['skipped_symlinks' => \Arcturus\ModpackManager\Services\EvidenceView::warnings($id, 'skipped_symlinks'),
+            'unreadable_paths' => \Arcturus\ModpackManager\Services\EvidenceView::warnings($id, 'unreadable_paths')];
     }
 
     public function reviewMerge(string $path): void
     {
         Access::requireAdmin();
         $record = $this->getRecord()->refresh();
-        abort_unless(collect($record->preview_summary['changes'] ?? [])->contains(fn ($c) => $c['path'] === $path), 422);
+        abort_unless(isset((new FilePolicyCatalog)->selected($record, [$path])[$path]), 422);
         $this->mergeReview = app(MergeReview::class)->properties($record, $path);
     }
 
@@ -358,13 +366,6 @@ final class ViewManagedServer extends ViewRecord
 
     public function changeRows(): array
     {
-        $changes = $this->managed()->preview_summary['changes'] ?? $this->managed()->adoption_report['changes'] ?? [];
-        $filtered = array_values(array_filter($changes, fn ($c) => $c['action'] !== 'unchanged' &&
-            ($this->classification === '' || $c['classification'] === $this->classification) &&
-            ($this->pathSearch === '' || str_contains(strtolower($c['path']), strtolower($this->pathSearch)))));
-        $pages = max(1, (int) ceil(count($filtered) / 50));
-
-        return ['total' => count($filtered), 'pages' => $pages, 'page' => min($pages, max(1, $this->changePage)),
-            'rows' => array_slice($filtered, (min($pages, max(1, $this->changePage)) - 1) * 50, 50)];
+        return \Arcturus\ModpackManager\Services\EvidenceView::changePage($this->getRecord()->id, $this->changePage, $this->pathSearch, $this->classification);
     }
 }

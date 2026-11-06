@@ -42,7 +42,7 @@ final class InventoryWarnings
 
     public static function summary(array $inventory): array
     {
-        $summary = ['files_hashed' => count($inventory['files'] ?? [])];
+        $summary = ['files_hashed' => $inventory['files_count'] ?? count($inventory['files'] ?? [])];
         foreach (['unreadable_files_skipped', 'unreadable_directories', 'unreadable_entries_unknown'] as $key) {
             $value = $inventory['inventory_summary'][$key] ?? 0;
             $summary[$key] = is_int($value) && $value >= 0 && $value <= 100000 ? $value : 0;

@@ -1,6 +1,8 @@
 <x-filament-panels::page>
     @php($record = $this->managed())
     @php($preview = $record->preview_summary ?? [])
+    @php($inventory = $record->file_inventory ?? [])
+    @php($warnings = $this->inventoryWarnings())
     @php($target = $record->target_metadata ?? $record->release_metadata ?? [])
     <div wire:poll.10s>
         <x-filament::tabs label="Modpack management">
@@ -16,8 +18,8 @@
                     <x-filament::button color="warning" wire:click="cancelPreparation">Cancel preparation</x-filament::button>
                 </div>
             @endif
-            @if($record->file_inventory['unreadable_paths'] ?? [])
-                @php($inventorySummary = \Arcturus\ModpackManager\Services\InventoryWarnings::summary($record->file_inventory))
+            @if($inventory['unreadable_count'] ?? 0)
+                @php($inventorySummary = \Arcturus\ModpackManager\Services\InventoryWarnings::summary($inventory))
                 <x-filament::section heading="Protected unreadable content">
                     <p class="text-sm">{{ number_format($inventorySummary['files_hashed']) }} readable files hashed;
                         {{ number_format($inventorySummary['unreadable_files_skipped']) }} known files skipped,
@@ -25,22 +27,22 @@
                         {{ number_format($inventorySummary['unreadable_entries_unknown']) }} other inaccessible entries.
                         Unreadable directory contents were not enumerated; their total file count is unknown.</p>
                     <p class="mt-2 text-sm">These paths and their descendants are protected from all update rules. Excluded content is not verified. No permissions were changed. Keep the exclusions, or ask the host operator to review access if you want these paths managed, then retry comparison using the existing baseline.</p>
-                    @if($record->file_inventory['world_path_unreadable'] ?? false)
+                    @if($inventory['world_path_unreadable'] ?? false)
                         <p class="mt-2 text-sm">World path settings were unreadable. Every directory is protected because the custom world location cannot be determined.</p>
                     @endif
                     <ul class="mt-2 list-inside list-disc text-sm">
-                        @foreach(\Arcturus\ModpackManager\Services\InventoryWarnings::unreadable($record->file_inventory) as $warning)
+                        @foreach(\Arcturus\ModpackManager\Services\InventoryWarnings::unreadable($warnings) as $warning)
                             <li class="break-all">{{ $warning }}</li>
                         @endforeach
                     </ul>
-                    @if(count($record->file_inventory['unreadable_paths']) > 250)<p class="mt-2 text-sm">Showing the first 250 protected paths.</p>@endif
+                    @if($inventory['unreadable_count'] > 250)<p class="mt-2 text-sm">Showing the first 250 protected paths.</p>@endif
                 </x-filament::section>
             @endif
-            @if($record->file_inventory['skipped_symlinks'] ?? [])
+            @if($inventory['symlink_count'] ?? 0)
                 <x-filament::section heading="Preserved symlinks">
                     <p class="text-sm">These links and their descendants are excluded from updates. Their targets were not read. Comparison can complete without changing them.</p>
                     <ul class="mt-2 list-inside list-disc text-sm">
-                        @foreach(\Arcturus\ModpackManager\Services\InventoryWarnings::symlinks($record->file_inventory) as $warning)
+                        @foreach(\Arcturus\ModpackManager\Services\InventoryWarnings::symlinks($warnings) as $warning)
                             <li class="break-all">{{ $warning }}</li>
                         @endforeach
                     </ul>
@@ -55,6 +57,9 @@
                             <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd class="break-all">{{ $record->$field ?? 'Unavailable' }}</dd></div>
                         @endforeach
                     </dl>
+                    @if(($record->adoption_report['policy_revision'] ?? $record->policy_revision) !== $record->policy_revision)
+                        <p class="mt-2 text-sm">Showing retained comparison evidence from an earlier policy revision. A new comparison is required.</p>
+                    @endif
                     <p class="mt-4">{{ $record->comparisonLabel() }}.</p>
                     @if($record->baseline_status === 'verified' && $record->comparison_status !== 'complete')
                         <p class="text-sm">Upstream baseline verified. Installation comparison still needs to succeed. Review directory decisions and use Retry installation comparison; the existing manifest is reused.</p>
@@ -170,7 +175,7 @@
                         <label class="flex items-center gap-2 text-sm"><x-filament::input.checkbox wire:model.live="modsOnly" /> Mods only</label>
                         <span class="text-sm">{{ count($this->selectedPaths) }} selected</span>
                     </div>
-                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $files['total'] }} files · inventory observed {{ $record->file_inventory['observed_at'] ?? 'not yet' }}. Prepare the baseline or compare files to refresh. Unavailable metadata is never guessed.</p>
+                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $files['total'] }} files · inventory observed {{ $inventory['observed_at'] ?? 'not yet' }}. Prepare the baseline or compare files to refresh. Unavailable metadata is never guessed.</p>
                     <div class="overflow-x-auto">
                         <table class="w-full text-left text-sm" style="min-width:52rem;table-layout:fixed">
                             <thead><tr><th class="p-2">Select / installed file</th><th class="p-2">Mod metadata</th><th class="p-2">State / target</th><th class="p-2">Effective policy</th></tr></thead>
@@ -209,7 +214,7 @@
                 </x-filament::section>
             @elseif($this->tab === 'history')
                 <x-filament::section heading="Recent job timeline">
-                    @forelse($record->events()->latest()->limit(100)->get() as $event)
+                    @forelse($record->events()->select(['id', 'managed_server_id', 'kind', 'status', 'message', 'created_at'])->latest()->limit(100)->get() as $event)
                         <div class="border-b border-gray-200 py-3 dark:border-gray-700"><p class="text-sm text-gray-500">{{ $event->created_at }} · {{ $event->kind }} · {{ str_replace('_', ' ', $event->status) }}</p><p class="break-words">{{ $event->message }}</p></div>
                     @empty<p>No preparation events recorded. Check queue health if you expected a job.</p>@endforelse
                 </x-filament::section>

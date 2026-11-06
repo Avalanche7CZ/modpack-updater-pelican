@@ -56,6 +56,11 @@ final class ManagedServerResource extends Resource
         return 'Managed servers';
     }
 
+    public static function getEloquentQuery(): \Illuminate\Database\Eloquent\Builder
+    {
+        return parent::getEloquentQuery()->lightweight();
+    }
+
     public static function getModelLabel(): string
     {
         return 'managed server';
@@ -225,10 +230,8 @@ final class ManagedServerResource extends Resource
                 ->action(function (ManagedServer $record): void {
                     Access::requireAdmin();
                     try {
-                        $result = app(PreviewService::class)->generate($record);
-                        Notification::make()->title('Dry-run complete')
-                            ->body($result['blocked'].' unresolved changes · '.$result['total'].' files compared')
-                            ->color($result['blocked'] ? 'warning' : 'success')->send();
+                        app(QueuePreparation::class)->comparison($record, true);
+                        Notification::make()->title('Read-only comparison queued')->success()->send();
                     } catch (\Throwable $e) {
                         Notification::make()->title('Preview unavailable')
                             ->body($e->getMessage())->danger()->send();

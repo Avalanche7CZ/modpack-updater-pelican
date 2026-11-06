@@ -48,7 +48,13 @@ final class CompareInstallation implements ShouldQueue
             }
             $tracker->transition($operation, 'comparing');
             PreparationProgress::phase($operation, 'comparing', 'inventory_enumeration');
-            $adoption->compare($server, $operation);
+            if (($context['mode'] ?? 'adoption') === 'preview') {
+                if ($server->target_manifest_path !== $context['target'] || $server->targetVersion() !== $context['target_version']) {
+                    throw new PreparationException(['code' => 'COMPARISON_STALE', 'phase' => 'comparing']);
+                }
+                app(\Arcturus\ModpackManager\Services\PreviewService::class)->generate($server, $operation);
+                $server->update(['comparison_status' => 'complete', 'comparison_diagnostic' => null]);
+            } else { $adoption->compare($server, $operation); }
             $tracker->transition($operation, 'completed');
         } catch (\Throwable $error) {
             $detail = $error instanceof PreparationException ? $error->diagnostic : PreparationDiagnostic::normalize(['code' => 'COMPARISON_FAILED', 'phase' => 'comparing']);

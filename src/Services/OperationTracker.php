@@ -18,7 +18,7 @@ final class OperationTracker
     public function create(ManagedServer $server, string $kind, array $context = [], ?string $requestId = null): Operation
     {
         return DB::transaction(function () use ($server, $kind, $context, $requestId): Operation {
-            $fresh = ManagedServer::query()->lockForUpdate()->findOrFail($server->id);
+            $fresh = ManagedServer::query()->lightweight()->lockForUpdate()->findOrFail($server->id);
             if ($fresh->active_operation_id) {
                 throw new RuntimeException('An operation is active or requires recovery; inspect its history before continuing');
             }
@@ -40,7 +40,7 @@ final class OperationTracker
             }
             $current->update(['phase' => $phase, 'context' => array_replace($current->context ?? [], $context),
                 'heartbeat_at' => now(), 'completed_at' => in_array($phase, self::TERMINAL, true) ? now() : null]);
-            ManagedServer::findOrFail($current->managed_server_id)->events()->create([
+            ManagedServer::lightweight()->findOrFail($current->managed_server_id)->events()->create([
                 'kind' => $current->kind, 'status' => $phase, 'message' => $current->error ?: str_replace('_', ' ', ucfirst($phase)),
                 'details' => ['operation_id' => $current->id, 'diagnostic' => $current->context['diagnostic'] ?? null],
             ]);

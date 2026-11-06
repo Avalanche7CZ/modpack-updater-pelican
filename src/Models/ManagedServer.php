@@ -19,7 +19,57 @@ final class ManagedServer extends Model
     protected $attributes = ['policy_revision' => 0, 'comparison_status' => 'incomplete'];
 
     protected $hidden = ['worker_key', 'local_root', 'base_manifest_path', 'target_manifest_path',
-        'staging_parent', 'prepared_root', 'backup_root', 'discord_webhook'];
+        'staging_parent', 'prepared_root', 'backup_root', 'discord_webhook', 'file_inventory', 'adoption_report', 'preview_summary'];
+
+    public bool $evidenceProjection = false;
+
+    public function scopeLightweight($query)
+    {
+        $columns = \Illuminate\Support\Facades\Schema::getColumnListing($this->getTable());
+        $columns = array_diff($columns, ['file_inventory', 'adoption_report', 'preview_summary']);
+        $query->select(array_map(fn ($c) => $this->getTable().'.'.$c, $columns))->selectRaw('1 AS _evidence_projection');
+        $sqlite = $this->getConnection()->getDriverName() === 'sqlite';
+        $integer = $sqlite ? 'INTEGER' : 'UNSIGNED';
+        $length = $sqlite ? 'json_array_length' : 'json_length';
+        $files = $sqlite ? "(SELECT COUNT(*) FROM json_each(file_inventory, '$.files'))" : "json_length(file_inventory, '$.files')";
+        $query->selectRaw("CASE WHEN file_inventory IS NULL THEN NULL ELSE json_object(
+            'inventory_summary', json_extract(file_inventory, '$.inventory_summary'),
+            'world_path_unreadable', json_extract(file_inventory, '$.world_path_unreadable'),
+            'observed_at', json_extract(file_inventory, '$.observed_at'),
+            'files_count', COALESCE(CAST(json_extract(file_inventory, '$.inventory_summary.files_hashed') AS $integer), $files, 0),
+            'unreadable_count', COALESCE($length(file_inventory, '$.unreadable_paths'), 0),
+            'symlink_count', COALESCE($length(file_inventory, '$.skipped_symlinks'), 0)
+        ) END AS file_inventory");
+        foreach (['adoption_report', 'preview_summary'] as $column) {
+            $query->selectRaw("json_remove($column, '$.changes', '$.sample', '$.policy_context', '$.excluded_roots', '$.unreadable_paths', '$.skipped_symlinks') AS $column");
+        }
+        return $query;
+    }
+
+    public function newFromBuilder($attributes = [], $connection = null)
+    {
+        $attributes = (array) $attributes;
+        $projection = isset($attributes['_evidence_projection']);
+        unset($attributes['_evidence_projection']);
+        $model = parent::newFromBuilder($attributes, $connection);
+        $model->evidenceProjection = $projection;
+        return $model;
+    }
+
+    public function newQueryForRestoration($ids)
+    {
+        // Livewire restores its locked model between requests; do not hydrate the large JSON columns.
+        return parent::newQueryForRestoration($ids)->lightweight();
+    }
+
+    public function refresh()
+    {
+        if (! $this->evidenceProjection) { return parent::refresh(); }
+        $fresh = static::query()->lightweight()->useWritePdo()->findOrFail($this->getKey());
+        $this->setRawAttributes($fresh->getAttributes(), true);
+        $this->unsetRelations();
+        return $this;
+    }
 
     protected function casts(): array
     {
@@ -46,11 +96,10 @@ final class ManagedServer extends Model
                 $server->forceFill(['comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'adoption_report' => null]);
             }
             if ($server->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
-                if ($server->isDirty('directory_decisions')) { $server->file_inventory = null; }
                 (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->normalize($server->directory_decisions ?? []);
                 (new UpdatePlanner)->plan([], [], [], $server->file_rules ?? [], [], $server->disabled_mods ?? []);
                 $server->forceFill(['approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null,
-                    'preview_summary' => null, 'adoption_report' => null, 'comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'policy_revision' => ($server->policy_revision ?? 0) + 1]);
+                    'comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'policy_revision' => ($server->policy_revision ?? 0) + 1]);
             }
         });
         self::updated(function (self $server): void {

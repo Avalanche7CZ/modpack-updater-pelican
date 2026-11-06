@@ -163,7 +163,7 @@ app(ServerPolicyService::class)->save($record, [['scope' => 'mod_id', 'pattern' 
 $record->refresh();
 $other->refresh();
 check($record->file_rules[0]['pattern'] === 'my_extra' && $other->file_rules === [], 'Policies leaked between servers or failed model reload');
-check(! $record->approved_plan_sha256 && ! $record->approved_at && ! $record->preview_summary && $record->policy_revision === 1, 'Policy edit did not invalidate the plan');
+check(! $record->approved_plan_sha256 && ! $record->approved_at && $record->preview_summary === ['changes' => []] && $record->policy_revision === 1, 'Policy edit did not invalidate the plan');
 $event = $record->events()->where('kind', 'policy')->first();
 check($event && $event->details['before']['file_rules'] === $prior && $event->details['after']['file_rules'] === $record->file_rules, 'Policy audit before/after missing');
 rejects(fn () => app(ServerPolicyService::class)->save($record, [], [], 0), 'Stale policy edit overwrote newer policy');
@@ -244,6 +244,8 @@ $record->update(['base_manifest_path' => $store->put($withDirectory('1234', 'val
     'target_manifest_path' => $store->put($withDirectory('1235', 'value=new'))]);
 $directoryPolicy = new \Arcturus\ModpackManager\Services\DirectoryPolicy;
 check($directoryPolicy->pending($record) === ['tacz'], 'Unknown upstream directory was auto-approved');
+config(['queue.default' => 'database', 'queue.connections.database' => ['driver' => 'database', 'retry_after' => 14520]]);
+Illuminate\Support\Facades\Bus::fake([\Arcturus\ModpackManager\Jobs\CompareInstallation::class]);
 $directoryView = Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->getRouteKey()])->call('mountAction', 'directoryDecisions');
 $formRows = $directoryView->get('mountedActions')[0]['data']['directories'];
 foreach ($formRows as &$row) {
@@ -253,6 +255,9 @@ unset($row);
 $beforeRevision = $record->policy_revision;
 $directoryView->set('mountedActions.0.data.directories', $formRows)->call('callMountedAction');
 check($directoryView->instance()->getErrorBag()->isEmpty(), 'Directory decision form failed validation');
+$record->refresh();
+// The UI queues planning; complete the read-only fixture intent before direct service assertions.
+app(\Arcturus\ModpackManager\Services\OperationTracker::class)->transition($record->operations()->findOrFail($record->active_operation_id), 'completed');
 $record->refresh();
 check($record->policy_revision === $beforeRevision + 1 && ! $record->approved_plan_sha256, 'Directory review did not invalidate approval');
 check($directoryPolicy->pending($record) === [] && in_array('tacz', $directoryPolicy->scope($record)['exclude'], true), 'Keep-local decision was not persisted');
@@ -277,7 +282,7 @@ Http::fake(function ($request) use ($record, $hash) {
 });
 rejects(fn () => $previewer->generate($record), 'Stale comparison overwrote a concurrent policy edit');
 $record->refresh();
-check(! $record->approved_plan_sha256 && ! $record->preview_summary, 'Concurrent policy change restored a stale plan/approval');
+check(! $record->approved_plan_sha256 && $record->comparison_status !== 'complete', 'Concurrent policy change restored a stale plan/approval');
 // Edit the actual native form and submit its visible header Save action.
 $record->update(['provider' => 'github', 'source' => 'fixture/original', 'installed_version' => '1.0',
     'baseline_status' => 'verified', 'base_manifest_path' => '/fixture/old-manifest',

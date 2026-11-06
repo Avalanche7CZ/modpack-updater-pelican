@@ -48,14 +48,16 @@ final class PolicyFields
                             if (! $record?->exists) {
                                 return new HtmlString('Create a draft and prepare the baseline to test rules against its inventory.');
                             }
-                            $matches = [];
+                            $matches = []; $matchCount = 0;
                             foreach ((new FilePolicyCatalog)->rows($record) as $row) {
                                 if ($policy->effective($row['path'], $rule, $row['identity'], $row['loader'], $row['classification'])['mode'] !== null) {
+                                    $matchCount++;
+                                    if (count($matches) >= 250) { continue; }
                                     $matches[] = '<li class="break-all">'.e($row['path']).' — '.e($row['invariant'] ?? $row['origin']).'</li>';
                                 }
                             }
 
-                            return new HtmlString('<p>'.count($matches).' matching files. Existing effective rule is shown; saving may change precedence.</p><ul>'.implode('', array_slice($matches, 0, 250)).'</ul>');
+                            return new HtmlString('<p>'.$matchCount.' matching files. Existing effective rule is shown; saving may change precedence.</p><ul>'.implode('', array_slice($matches, 0, 250)).'</ul>');
                         }),
                 ])->addActionLabel('Add rule'),
         ];

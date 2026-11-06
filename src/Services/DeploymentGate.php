@@ -24,7 +24,7 @@ final class DeploymentGate
             throw new RuntimeException('Verified adoption is required before deployment');
         }
         $preview = $server->preview_summary ?? [];
-        if (! ($preview['applicable'] ?? false) || ! $approvedDigest ||
+        if (($preview['policy_revision'] ?? null) !== $server->policy_revision || ! ($preview['applicable'] ?? false) || ! $approvedDigest ||
             ! hash_equals($server->approved_plan_sha256 ?? '', $approvedDigest) ||
             ! hash_equals($preview['plan_sha256'] ?? '', $approvedDigest) ||
             ! $server->approved_at || $server->approved_at->lt(now()->subMinutes(30))) {
