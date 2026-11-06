@@ -8,13 +8,23 @@ use App\Models\Server;
 use App\Repositories\Daemon\DaemonFileRepository;
 use Arcturus\ModpackManager\Contracts\ServerFiles;
 use Arcturus\ModpackManager\Services\UpdatePlanner;
+use Illuminate\Http\Client\RequestException;
 use RuntimeException;
 
 /** Native Pelican file API. Integrity and safe archive operations require the node worker. */
 final class WingsFiles implements ServerFiles
 {
+    /** Diagnostic only: raw remote filenames are never included. */
+    private array $listingWarnings = [];
+
     public function __construct(private readonly Server $server,
         private readonly DaemonFileRepository $daemon, private readonly NodeWorker $worker) {}
+
+    /** @return list<string> */
+    public function inspectionWarnings(): array
+    {
+        return array_values(array_unique($this->listingWarnings));
+    }
 
     private function repo(): DaemonFileRepository
     {
@@ -30,18 +40,41 @@ final class WingsFiles implements ServerFiles
 
     public function listing(string $directory = ''): array
     {
-        $rows = $this->repo()->getDirectory($directory === '' ? '/' : $this->path($directory));
+        try {
+            $rows = $this->repo()->getDirectory($directory === '' ? '/' : $this->path($directory));
+        } catch (RequestException $error) {
+            // Some Wings builds accept "." as the root but return 400/404 for
+            // "/". Only retry this read-only root request, never auth failures.
+            if ($directory !== '' || ! in_array($error->response->status(), [400, 404], true)) {
+                throw $error;
+            }
+            $rows = $this->repo()->getDirectory('.');
+            $this->listingWarnings[] = 'Wings root required the alternate directory spelling';
+        }
         if (! array_is_list($rows)) {
             throw new RuntimeException('Invalid Wings directory listing');
         }
+        // Unsafe names can exist on a legitimate modded server (e.g. a colon in
+        // a local-only filename). Ignore only these entries for inspection;
+        // never let them block inspection of safe launcher/config files.
+        $safe = [];
         foreach ($rows as $row) {
-            if (! is_array($row) || ! is_string($row['name'] ?? null) || str_contains($row['name'], '/')) {
-                throw new RuntimeException('Invalid Wings file metadata');
+            if (! is_array($row) || ! is_string($row['name'] ?? null) ||
+                str_contains($row['name'], '/') || ! is_bool($row['file'] ?? null) ||
+                ! is_bool($row['directory'] ?? null) || ! is_bool($row['symlink'] ?? null)) {
+                $this->listingWarnings[] = 'Wings listed invalid file metadata; ignored unsafe entries';
+                continue;
             }
-            UpdatePlanner::assertPath($row['name']);
+            try {
+                UpdatePlanner::assertPath($row['name']);
+            } catch (\InvalidArgumentException) {
+                $this->listingWarnings[] = 'Wings listed a filename outside the safe inspection scope';
+                continue;
+            }
+            $safe[] = $row;
         }
 
-        return $rows;
+        return $safe;
     }
 
     public function stat(string $path): ?array

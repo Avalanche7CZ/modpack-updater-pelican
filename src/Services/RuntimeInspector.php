@@ -10,14 +10,14 @@ final class RuntimeInspector
     public function inspect(array $paths, array $texts, string $startup, string $image, ?string $egg = null): array
     {
         $result = ['minecraft' => null, 'loader' => null, 'loader_version' => null, 'java' => null,
-            'java_confidence' => 'unknown', 'startup' => $startup, 'image' => $image, 'egg' => $egg, 'evidence' => [], 'warnings' => []];
+            'java_confidence' => 'unknown', 'loader_confidence' => 'unknown', 'startup' => $startup, 'image' => $image, 'egg' => $egg, 'evidence' => [], 'warnings' => []];
         if (preg_match('/(?:java|jdk)[_: -]?(8|11|16|17|21|25)(?:[^0-9]|$)/i', $image, $m)) {
             $result['java'] = (int) $m[1];
             $result['java_confidence'] = 'image_hint';
         }
         // Follow textual launch references, never evaluate shell expressions or execute scripts.
         $launchTexts = ['startup' => $startup];
-        $scripts = ['run.sh', 'startserver.sh', 'start.sh', 'settings.sh'];
+        $scripts = ['run.sh', 'startserver.sh', 'start.sh', 'start_server.sh', 'start_server.bat', 'settings.sh'];
         $queue = ['startup'];
         while ($queue !== []) {
             $source = array_shift($queue);
@@ -96,6 +96,9 @@ final class RuntimeInspector
             $values = array_values(array_unique(array_filter(array_column($candidates, $key), fn ($v) => $v !== null)));
             if (count($values) === 1) {
                 $result[$key] = $values[0];
+                if ($key === 'loader') {
+                    $result['loader_confidence'] = 'file_evidence';
+                }
             } elseif (count($values) > 1) {
                 $result['warnings'][] = 'Ambiguous '.$key.' evidence; confirm the active launcher';
             }
@@ -123,6 +126,31 @@ final class RuntimeInspector
                 }
             }
         }
+        // TerraFirmaGreg Modern and other Forge Server Starter packs use a
+        // small declarative forge-auto-install.txt instead of a direct Forge
+        // launcher. Never execute the starter or its shell scripts.
+        $starterConfig = false;
+        if (isset($texts['forge-auto-install.txt'])) {
+            $settings = [];
+            foreach (['minecraftVersion', 'loaderType', 'loaderVersion'] as $setting) {
+                if (preg_match('/^[ \\t]*'.preg_quote($setting, '/').'[ \\t]*=[ \\t]*([^#\\r\\n]+)$/mi',
+                    $texts['forge-auto-install.txt'], $match)) {
+                    $settings[$setting] = trim($match[1]);
+                }
+            }
+            $minecraft = $settings['minecraftVersion'] ?? '';
+            $loaderType = strtolower($settings['loaderType'] ?? '');
+            $loaderVersion = $settings['loaderVersion'] ?? '';
+            if (preg_match('/^1\\.[0-9]+(?:\\.[0-9]+)?$/D', $minecraft) === 1
+                && in_array($loaderType, ['forge', 'neoforge'], true)
+                && preg_match('/^[0-9]+(?:\\.[0-9]+)+(?:[-.][a-z0-9]+)?$/iD', $loaderVersion) === 1) {
+                $metadata['minecraft'] ??= $minecraft;
+                $metadata['loader'] ??= $loaderType;
+                $metadata['loader_version'] ??= $loaderVersion;
+                $starterConfig = true;
+                $result['evidence'][] = 'forge-auto-install.txt declares '.$loaderType.' '.$loaderVersion;
+            }
+        }
         foreach (['fabric-server-launcher.properties', 'quilt-server-launcher.properties'] as $file) {
             if (isset($texts[$file]) && preg_match('/^serverJar=(?:[^\r\n]*\/)?(?:minecraft_server\.|server-)(1\.[0-9]+(?:\.[0-9]+)?)\.jar\s*$/m', $texts[$file], $m)) {
                 $metadata['minecraft'] ??= $m[1];
@@ -132,9 +160,15 @@ final class RuntimeInspector
         foreach (['minecraft', 'loader', 'loader_version'] as $key) {
             if ($result[$key] === null && ! $result['warnings'] && is_string($metadata[$key] ?? null)) {
                 $result[$key] = $metadata[$key];
+                if ($key === 'loader') {
+                    $result['loader_confidence'] = $starterConfig ? 'installer_config' : 'pack_metadata';
+                }
             }
         }
         $result['pack_hint'] = isset($texts['modpack.json']) ? 'Inspect modpack.json; pack identity is unverified' : null;
+        if ($starterConfig && in_array('minecraft_server.jar', $paths, true)) {
+            $result['pack_hint'] = 'Forge Server Starter configuration detected; installed runtime still requires verification';
+        }
         if ($result['loader'] === 'crucible') {
             $result['pack_hint'] = 'Possible GTNH/Crucible; confirm the provider, exact release and Java variant manually';
         }

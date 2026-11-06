@@ -12,7 +12,8 @@ final class RuntimeEvidenceCollector
 {
     private const CONFIGS = ['modrinth.index.json', 'manifest.json', 'modpack.json', 'server.properties',
         'fabric-server-launcher.properties', 'quilt-server-launcher.properties', 'run.sh', 'startserver.sh',
-        'start.sh', 'settings.sh', 'variables.txt', 'unix_args.txt'];
+        'start.sh', 'start_server.sh', 'start_server.bat', 'settings.sh', 'variables.txt',
+        'forge-auto-install.txt', 'server_starter.conf', 'unix_args.txt'];
 
     public function collect(ServerFiles $files): array
     {
@@ -22,15 +23,18 @@ final class RuntimeEvidenceCollector
         $requests = 0;
         $entries = 0;
         $bytes = 0;
-        $list = function (string $directory) use ($files, &$requests, &$entries): array {
+        $list = function (string $directory) use ($files, &$requests, &$entries, &$warnings): array {
             if (++$requests > 64) {
-                throw new RuntimeException('Runtime inspection directory limit exceeded');
+                $warnings[] = 'Directory inspection request limit reached; results are partial';
+
+                return [];
             }
             $rows = $files->listing($directory);
-            $entries += count($rows);
-            if ($entries > 4096) {
-                throw new RuntimeException('Runtime inspection entry limit exceeded');
+            if ($entries + count($rows) > 4096) {
+                $rows = array_slice($rows, 0, max(0, 4096 - $entries));
+                $warnings[] = 'Directory inspection entry limit reached; results are partial';
             }
+            $entries += count($rows);
             foreach ($rows as $row) {
                 UpdatePlanner::assertPath($row['name'] ?? null);
             }
@@ -116,10 +120,15 @@ final class RuntimeEvidenceCollector
             }
         }
 
+        if (method_exists($files, 'inspectionWarnings')) {
+            $warnings = array_merge($warnings, $files->inspectionWarnings());
+        }
+        $warnings = array_values(array_unique($warnings));
+
         return [
             'paths' => array_values(array_unique($paths)),
             'texts' => $texts,
-            'warnings' => array_values(array_unique($warnings)),
+            'warnings' => $warnings,
             'complete' => $warnings === [],
         ];
     }

@@ -9,6 +9,7 @@ use App\Models\Node;
 use App\Models\Server;
 use Arcturus\ModpackManager\Services\AdoptionService;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Http\Client\Factory;
 
 $node = new Node;
 $node->forceFill(['scheme' => 'https', 'fqdn' => 'wings.fixture.test', 'daemon_connect' => 8080,
@@ -66,5 +67,138 @@ check($report['java_confidence'] === 'image_hint', 'Inspection pretended to exec
 foreach (Http::recorded() as [$request, $response]) {
     check(! preg_match('~world|/mods|21\\.1\\.999|/power|/reinstall~', urldecode($request->url())), 'Inspection entered world/mod trees, followed a link or controlled power');
 }
+// Some Wings builds accept "." instead of "/" for their root; only the
+// failed read-only 400/404 root listing may be retried. Still detect loader.
+Http::swap(new Factory);
+Http::preventStrayRequests();
+Http::fake(function ($request) use ($directories, $contents, $headers) {
+    check($request->method() === 'GET', 'Wings runtime fallback sent a mutating request');
+    parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+    $path = parse_url($request->url(), PHP_URL_PATH);
+    if (str_ends_with($path, '/files/list-directory')) {
+        $dir = $query['directory'] ?? '';
+        if ($dir === '/') {
+            return Http::response(['error' => 'Root spelling unsupported'], 404, $headers);
+        }
+        $key = $dir === '.' ? '' : ltrim($dir, '/');
+        check(array_key_exists($key, $directories), 'Unexpected fallback directory');
+        return Http::response($directories[$key], 200, $headers);
+    }
+    if (str_ends_with($path, '/files/contents')) {
+        $file = ltrim($query['file'] ?? '', '/');
+        check(array_key_exists($file, $contents), 'Unexpected fallback runtime file');
+        return Http::response($contents[$file], 200, $headers);
+    }
+    return Http::response(['state' => 'running'], 200, $headers);
+});
+$alternate = app(AdoptionService::class)->inspect($server);
+check($alternate['loader'] === 'neoforge' && $alternate['minecraft'] === '1.21.1',
+    'Alternate Wings root lookup lost valid runtime evidence');
+check($alternate['inspection_complete'] === false &&
+    str_contains(implode(' ', $alternate['warnings']), 'alternate directory spelling'),
+    'Root fallback must be transparent and mark results partial');
+
+// A legitimate modpack can contain a file with a colon that is outside our
+// safe inspection scope. Do not follow or operate on the file; skip it.
+Http::swap(new Factory);
+Http::preventStrayRequests();
+Http::fake(function ($request) use ($directories, $contents, $headers, $row) {
+    parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+    $path = parse_url($request->url(), PHP_URL_PATH);
+    if (str_ends_with($path, '/files/list-directory')) {
+        $key = ltrim($query['directory'] ?? '', '/');
+        check(array_key_exists($key, $directories), 'Unexpected directory in unsafe filename case');
+        $entries = $directories[$key];
+        if ($key === '') {
+            $entries[] = $row('bad:filename', false);
+        }
+        return Http::response($entries, 200, $headers);
+    }
+    if (str_ends_with($path, '/files/contents')) {
+        $key = ltrim($query['file'] ?? '', '/');
+        check(array_key_exists($key, $contents), 'Unexpected runtime file in unsafe filename case');
+        return Http::response($contents[$key], 200, $headers);
+    }
+    return Http::response(['state' => 'running'], 200, $headers);
+});
+$unusual = app(AdoptionService::class)->inspect($server);
+check($unusual['loader'] === 'neoforge' && $unusual['minecraft'] === '1.21.1',
+    'An unrelated unsafe filename blocked runtime identification');
+check($unusual['inspection_complete'] === false &&
+    str_contains(implode(' ', $unusual['warnings']), 'outside the safe inspection scope'),
+    'Ignored unsafe names must produce a visible incomplete inspection warning');
+
+// HTTP 403 must never retry an alternate path, expose node secrets, or
+// invent an installed runtime. Pelican server metadata remains available.
+Http::swap(new Factory);
+Http::preventStrayRequests();
+Http::fake(function ($request) use ($headers) {
+    check($request->method() === 'GET', 'Failed runtime lookup modified server');
+    $path = parse_url($request->url(), PHP_URL_PATH);
+    if (str_ends_with($path, '/files/list-directory')) {
+        return Http::response(['error' => 'Access denied'], 403, $headers);
+    }
+    return Http::response(['state' => 'running'], 200, $headers);
+});
+$blocked = app(AdoptionService::class)->inspect($server);
+check($blocked['loader'] === null && $blocked['minecraft'] === null &&
+    $blocked['inspection_complete'] === false, 'HTTP 403 pretended loader verification succeeded');
+check($blocked['diagnostic'] === ['stage' => 'wings_root_listing', 'code' => 'HTTP_403'] &&
+    $blocked['evidence_source'] === 'panel_settings_only' &&
+    $blocked['launch_method'] === 'script' && $blocked['image'] === 'java_21' &&
+    $blocked['java_confidence'] === 'image_hint',
+    'Wings root failure erased Panel startup/image metadata or diagnostic');
+check(! str_contains(json_encode($blocked), 'fixture-token'), 'Node token leaked into inspection report');
+check(Http::recorded()->filter(fn ($pair) =>
+    str_ends_with(parse_url($pair[0]->url(), PHP_URL_PATH), '/files/list-directory'))->count() === 1,
+    'HTTP 403 must never trigger a root retry');
+
+// TerraFirmaGreg Modern 0.13.x uses Forge Server Starter and
+// forge-auto-install.txt, not necessarily a directly launched Forge JAR.
+// Exercise the whole native Wings listing/read path, not only the parser.
+$tfgServer = new Server;
+$tfgServer->forceFill(['uuid' => $server->uuid, 'startup' => 'bash start_server.sh', 'image' => 'java_17']);
+$tfgServer->setRelation('node', $node);
+$tfgServer->setRelation('egg', $egg);
+$tfgFiles = [
+    'start_server.sh' => "#!/bin/bash\njava -Xmx6024M -jar minecraft_server.jar nogui\n",
+    'forge-auto-install.txt' => "minecraftVersion=1.20.1\nloaderType=Forge\nloaderVersion=47.4.13\n",
+    'server_starter.conf' => "java_path=java\n",
+];
+Http::swap(new Factory);
+Http::preventStrayRequests();
+Http::fake(function ($request) use ($row, $tfgFiles, $headers) {
+    check($request->method() === 'GET', 'TFG inspection attempted a mutation');
+    $path = parse_url($request->url(), PHP_URL_PATH);
+    parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+    if (str_ends_with($path, '/files/list-directory')) {
+        check(($query['directory'] ?? '') === '/', 'TFG inspection traversed an unrelated directory');
+        $files = array_map(fn ($name) => $row($name, false), array_keys($tfgFiles));
+        $files[] = $row('minecraft_server.jar', false);
+        $files[] = $row('world');
+        $files[] = $row('mods');
+
+        return Http::response($files, 200, $headers);
+    }
+    if (str_ends_with($path, '/files/contents')) {
+        $name = ltrim($query['file'] ?? '', '/');
+        check(isset($tfgFiles[$name]), 'TFG inspection accessed an unapproved file: '.$name);
+
+        return Http::response($tfgFiles[$name], 200, $headers);
+    }
+
+    return Http::response(['state' => 'running'], 200, $headers);
+});
+$tfg = app(AdoptionService::class)->inspect($tfgServer);
+check($tfg['loader'] === 'forge' && $tfg['minecraft'] === '1.20.1' &&
+    $tfg['loader_version'] === '47.4.13' && $tfg['loader_confidence'] === 'installer_config',
+    'TFG native Wings inspection did not detect Forge Server Starter');
+check($tfg['java_confidence'] === 'image_hint' && $tfg['state'] === 'running' &&
+    $tfg['inspection_complete'] === true, 'TFG runtime evidence incorrectly marked unavailable');
+foreach (Http::recorded() as [$request, $response]) {
+    check(! preg_match('~/world(?:/|$)|/mods(?:/|$)|/power|/reinstall~', urldecode($request->url())),
+        'TFG inspection traversed world/mod trees or controlled server power');
+}
+
 echo "Remote runtime inspection reads nested active arguments without worker, world access or power changes\n";
 $GLOBALS['arcturus_integration_passed'] = true;
