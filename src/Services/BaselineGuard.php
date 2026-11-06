@@ -21,6 +21,11 @@ final class BaselineGuard
                 throw new RuntimeException('Baseline artifact has no upstream integrity evidence');
             }
         }
-        (new UpdatePlanner)->plan($manifest['files'], [], []);
+        foreach ($manifest['files'] as $path => $hash) {
+            UpdatePlanner::assertPath($path);
+            if (! is_string($hash) || ! preg_match('/^[a-f0-9]{64}$/iD', $hash)) {
+                throw new RuntimeException('Baseline contains an invalid file hash');
+            }
+        }
     }
 }

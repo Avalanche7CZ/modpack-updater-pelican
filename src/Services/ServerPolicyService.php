@@ -49,7 +49,7 @@ final class ServerPolicyService
         }
         try {
             DB::transaction(function () use ($server, $rules, $disabled, $revision, $attributes): void {
-                $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
+                $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
                 if ($fresh->active_operation_id || $fresh->policy_revision !== $revision) {
                     throw new RuntimeException('Policy changed or preparation is active. Reload before editing.');
                 }
@@ -102,13 +102,35 @@ final class ServerPolicyService
         }
     }
 
+    /** One durable receipt for a policy save and its queued comparison, including HTTP retries. */
+    public function saveDirectories(ManagedServer $server, array $decisions, int $revision, string $requestId): \Arcturus\ModpackManager\Models\Operation
+    {
+        Access::requireAdmin();
+        if (! \Illuminate\Support\Str::isUuid($requestId)) { throw new RuntimeException('Invalid directory review request ID'); }
+        $decisions = (new DirectoryPolicy)->normalize($decisions);
+        $fingerprint = hash('sha256', json_encode([$server->id, $revision, $decisions], JSON_THROW_ON_ERROR));
+        return DB::transaction(function () use ($server, $decisions, $revision, $requestId, $fingerprint) {
+            $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
+            $receipt = \Arcturus\ModpackManager\Models\Operation::where('managed_server_id', $fresh->id)->find($requestId);
+            if ($receipt) {
+                if (($receipt->context['directory_review'] ?? null) !== $fingerprint) { throw new RuntimeException('Request ID belongs to a different directory review'); }
+                return $receipt;
+            }
+            $this->save($fresh, $fresh->file_rules ?? [], $fresh->disabled_mods ?? [], $revision, ['directory_decisions' => $decisions]);
+            $fresh->refresh();
+            $operation = app(QueuePreparation::class)->comparison($fresh, (bool) $fresh->target_manifest_path, $requestId);
+            $operation->update(['context' => [...$operation->context, 'directory_review' => $fingerprint]]);
+            return $operation;
+        });
+    }
+
     public function assign(ManagedServer $server, array $paths, string $action, int $revision): void
     {
         Access::requireAdmin();
         if (! $paths || count($paths) > 250 || ! isset(ProtectionPolicy::ACTIONS[$action])) {
             throw new RuntimeException('Select 1–250 files and a valid policy');
         }
-        $catalog = array_column((new FilePolicyCatalog)->rows($server), null, 'path');
+        $catalog = (new FilePolicyCatalog)->selected($server, $paths);
         $rules = (new ProtectionPolicy)->normalize($server->file_rules ?? []);
         foreach (array_unique($paths) as $path) {
             UpdatePlanner::assertPath($path);

@@ -21,30 +21,42 @@ final class QueuePreparation
         }
     }
 
-    public function comparison(ManagedServer $server): void
+    public function comparison(ManagedServer $server, bool $preview = false, ?string $requestId = null): \Arcturus\ModpackManager\Models\Operation
     {
         \Arcturus\ModpackManager\Security\Access::requireAdmin();
-        $server->refresh();
-        if ($server->baseline_status !== 'verified' || ! $server->base_manifest_path) {
-            throw new RuntimeException('Prepare the exact upstream baseline before comparing the installation');
-        }
-        $manifest = app(ReleaseStore::class)->load($server->base_manifest_path);
-        (new BaselineGuard)->require($manifest, $server->provider, $server->source, $server->installed_version);
-        if ($server->transport === 'local') { $this->requireLocalQueue(); }
-        $tracker = app(OperationTracker::class);
-        $operation = $tracker->create($server, 'comparison', ['baseline' => $server->base_manifest_path,
-            'policy_revision' => $server->policy_revision, 'provider' => $server->provider, 'source' => $server->source, 'version' => $server->installed_version]);
-        ManagedServer::whereKey($server->id)->where('active_operation_id', $operation->id)->update([
-            'comparison_status' => 'queued', 'comparison_diagnostic' => null, 'adoption_report' => null, 'file_inventory' => null]);
-        try {
-            \Arcturus\ModpackManager\Jobs\CompareInstallation::dispatch($server->id, $operation->id);
-        } catch (\Throwable) {
-            $detail = PreparationDiagnostic::normalize(['code' => 'COMPARISON_FAILED', 'phase' => 'comparing']);
-            ManagedServer::whereKey($server->id)->where('active_operation_id', $operation->id)->update([
-                'comparison_status' => 'failed', 'comparison_diagnostic' => json_encode($detail, JSON_THROW_ON_ERROR)]);
-            $tracker->fail($operation, PreparationDiagnostic::message($detail));
-            throw new PreparationException($detail);
-        }
+        $requestId ??= (string) \Illuminate\Support\Str::uuid();
+        if (! \Illuminate\Support\Str::isUuid($requestId)) { throw new RuntimeException('Invalid comparison request ID'); }
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($server, $preview, $requestId) {
+            $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
+            $existing = \Arcturus\ModpackManager\Models\Operation::where('managed_server_id', $fresh->id)->find($requestId);
+            if ($existing) {
+                if ($existing->kind !== 'comparison' || ($existing->context['mode'] ?? 'adoption') !== ($preview ? 'preview' : 'adoption')) { throw new RuntimeException('Request ID belongs to a different operation'); }
+                return $existing;
+            }
+            if ($fresh->baseline_status !== 'verified' || ! $fresh->base_manifest_path || ($preview && ! $fresh->target_manifest_path)) {
+                throw new RuntimeException('Prepare the exact upstream baseline and requested target before comparison');
+            }
+            // Enforce an asynchronous queue for every backend; validation/planning belongs to its worker.
+            if ($fresh->transport === 'local') { $this->requireLocalQueue(); }
+            elseif (! in_array(config('queue.connections.'.config('queue.default').'.driver'), ['database', 'redis'], true)) {
+                throw new RuntimeException('Installation comparison requires an asynchronous database or Redis queue');
+            }
+            $operation = app(OperationTracker::class)->create($fresh, 'comparison', ['baseline' => $fresh->base_manifest_path,
+                'policy_revision' => $fresh->policy_revision, 'provider' => $fresh->provider, 'source' => $fresh->source, 'version' => $fresh->installed_version,
+                'mode' => $preview ? 'preview' : 'adoption', 'target' => $preview ? $fresh->target_manifest_path : null,
+                'target_version' => $preview ? $fresh->targetVersion() : null], $requestId);
+            ManagedServer::whereKey($fresh->id)->where('active_operation_id', $operation->id)->update([
+                'comparison_status' => 'queued', 'comparison_diagnostic' => null]);
+            $fresh->events()->create(['kind' => 'comparison', 'status' => 'queued', 'message' => 'Read-only comparison queued', 'details' => ['operation_id' => $operation->id]]);
+            \Illuminate\Support\Facades\DB::afterCommit(function () use ($fresh, $operation): void {
+                try { \Arcturus\ModpackManager\Jobs\CompareInstallation::dispatch($fresh->id, $operation->id); }
+                catch (\Throwable $error) {
+                    // The durable queued operation is the outbox. Recovery dispatches the SAME ID.
+                    $operation->update(['error' => 'Comparison saved and awaiting queue dispatch; use Reconcile preparation or scheduled recovery.']);
+                }
+            });
+            return $operation;
+        });
     }
 
     public function queue(ManagedServer $server, bool $baseline = false): void

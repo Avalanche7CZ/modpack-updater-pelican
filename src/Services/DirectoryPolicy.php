@@ -51,15 +51,8 @@ final class DirectoryPolicy
         foreach ([$server->base_manifest_path, $server->target_manifest_path] as $path) {
             // Legacy schema-1 local manifests have no verified discovery evidence.
             if (! $path || ! is_file($path) || dirname(realpath($path)) !== realpath(storage_path('app/arcturus-modpack-manager/manifests'))) { continue; }
-            $manifest = app(ReleaseStore::class)->load($path);
-            foreach ($manifest['directory_discovery'] ?? [] as $row) {
+            foreach (app(ReleaseStore::class)->directories($path) as $row) {
                 $rows[$row['path']] = $row;
-            }
-            // Older retained manifests remain usable without a new download.
-            foreach (array_keys($manifest['files']) as $file) {
-                if (! str_contains($file, '/')) { continue; }
-                $name = explode('/', $file)[0];
-                $rows[$name] ??= ['path' => $name, 'classification' => in_array($name, ManagedPaths::ROOTS, true) ? 'standard' : 'review'];
             }
         }
         $saved = array_column($this->normalize($server->directory_decisions ?? []), 'mode', 'path');

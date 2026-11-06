@@ -51,7 +51,7 @@ final class Overview extends Page implements HasTable
 
     public function table(Table $table): Table
     {
-        return $table->query(ManagedServer::query()->with(['pelicanServer', 'latestOperationEvent']))->columns([
+        return $table->query(ManagedServer::query()->lightweight()->with(['pelicanServer', 'latestOperationEvent']))->columns([
             TextColumn::make('label')->label('Server')->searchable()->sortable(),
             TextColumn::make('pelicanServer.name')->label('Pelican server')->searchable()->placeholder('Missing server'),
             TextColumn::make('runtime_report.state')->label('Last observed state')->badge()->placeholder('Unknown'),

@@ -88,13 +88,13 @@ final class AdoptionService
         $revision = $server->policy_revision;
         $baseline = $server->base_manifest_path;
         DB::transaction(function () use ($server, $operation, $revision, $baseline): void {
-            $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
+            $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
             if (($fresh->active_operation_id && $fresh->active_operation_id !== $operation?->id) ||
                 $fresh->policy_revision !== $revision || $fresh->base_manifest_path !== $baseline) {
                 throw new PreparationException(['code' => 'COMPARISON_STALE', 'phase' => 'comparing']);
             }
             $fresh->update(['comparison_status' => 'running', 'comparison_diagnostic' => null,
-                'adoption_report' => null, 'file_inventory' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
+                'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
         });
         try {
             return $this->compareInstallation($server, $operation);
@@ -141,7 +141,7 @@ final class AdoptionService
             'world_path_unreadable' => $inventory['world_path_unreadable'] ?? false,
             'observed_at' => now()->toIso8601String(), 'notice' => $inventory['notice']];
         $saved = DB::transaction(function () use ($server, $report, $observed, $inventory, $operation): ManagedServer {
-            $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
+            $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
             if ($fresh->policy_revision !== $server->policy_revision || $fresh->base_manifest_path !== $server->base_manifest_path) {
                 throw new PreparationException(['code' => 'COMPARISON_STALE', 'phase' => 'comparing']);
             }
@@ -165,7 +165,7 @@ final class AdoptionService
             throw new RuntimeException('Enter a valid exact upstream release ID');
         }
         DB::transaction(function () use ($server, $version): void {
-            $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
+            $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
             if ($fresh->active_operation_id) {
                 throw new RuntimeException('Resolve the active operation before changing the installed release association');
             }
@@ -195,7 +195,7 @@ final class AdoptionService
         // Approve the current recorded comparison; never start a large inventory in this web action.
         // Baseline and policy edits invalidate this evidence through the model revision guard.
         DB::transaction(function () use ($server, $allowUnverified): void {
-            $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
+            $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
             if ($fresh->active_operation_id) {
                 throw new RuntimeException('Wait for baseline preparation to finish');
             }

@@ -34,7 +34,7 @@ final class ArcturusModpack extends Page
     {
         abort_unless(self::canAccess(), 403);
         $server = Filament::getTenant();
-        $record = ManagedServer::where('pelican_server_uuid', $server->uuid)->first();
+        $record = ManagedServer::lightweight()->where('pelican_server_uuid', $server->uuid)->first();
         if (! $record) {
             return null;
         }
