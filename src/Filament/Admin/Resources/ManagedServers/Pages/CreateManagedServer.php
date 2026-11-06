@@ -51,6 +51,7 @@ final class CreateManagedServer extends CreateRecord
                 Text::make(fn () => $this->inspection ? implode(' · ', array_filter([
                     $this->inspection['state'] ?? null, $this->inspection['loader'] ?? 'Loader unknown',
                     $this->inspection['minecraft'] ?? 'Minecraft unknown', $this->inspection['pack_hint'] ?? null,
+                    ! empty($this->inspection['warnings']) ? 'Warnings: '.count($this->inspection['warnings']) : null,
                 ])) : 'Inspection reads configuration through Wings. Adoption never stops or restarts the server.'),
             ]),
             Step::make('Exact upstream release')->schema([
@@ -100,7 +101,30 @@ final class CreateManagedServer extends CreateRecord
     public function inspectSelection(string $uuid): void
     {
         Access::requireAdmin();
-        $this->inspection = app(AdoptionService::class)->inspect(Server::where('uuid', $uuid)->firstOrFail());
+        $server = Server::where('uuid', $uuid)->firstOrFail();
+        try {
+            $this->inspection = app(AdoptionService::class)->inspect($server);
+        } catch (\Throwable $error) {
+            report($error);
+            $this->inspection = [
+                'state' => 'unavailable', 'inspection_complete' => false,
+                'warnings' => ['Runtime inspection failed. Check the Pelican Laravel log and Wings connectivity.'],
+            ];
+            Notification::make()
+                ->title('Runtime inspection unavailable')
+                ->body('Could not read server metadata through Wings. You can still create a monitoring-only draft.')
+                ->danger()->send();
+
+            return;
+        }
+        if (! ($this->inspection['inspection_complete'] ?? false) || ! empty($this->inspection['warnings'])) {
+            Notification::make()
+                ->title('Runtime inspection partially completed')
+                ->body('Some launcher evidence or Wings state could not be read. Runtime compatibility remains unverified.')
+                ->warning()->send();
+
+            return;
+        }
         Notification::make()->title('Read-only runtime inspection complete')->success()->send();
     }
 

@@ -23,8 +23,22 @@ final class AdoptionService
         $files = $this->files->wings($server);
         $evidence = (new RuntimeEvidenceCollector)->collect($files);
         $report = $this->runtime->inspect($evidence['paths'], $evidence['texts'], $server->startup, $server->image, $server->egg?->name);
+        $report['warnings'] = array_values(array_unique(array_merge(
+            $report['warnings'] ?? [], $evidence['warnings'] ?? []
+        )));
+        $report['inspection_complete'] = (bool) ($evidence['complete'] ?? false);
         $report['protected_roots'] = SafetyPaths::roots($evidence['texts']['server.properties'] ?? '');
-        $report['state'] = app(PelicanPowerController::class)->state($server);
+        try {
+            // Status is supplementary information. Missing power/status access
+            // must not invalidate the file inspection or return a Livewire 500.
+            $report['state'] = app(PelicanPowerController::class)->state($server);
+        } catch (\Throwable $error) {
+            $report['state'] = 'unavailable';
+            $report['inspection_complete'] = false;
+            $report['warnings'][] = 'Wings container state unavailable. Verify node connectivity and permissions.';
+            report($error);
+        }
+        $report['warnings'] = array_values(array_unique($report['warnings']));
         $report['observed_at'] = now()->toIso8601String();
 
         return $report;

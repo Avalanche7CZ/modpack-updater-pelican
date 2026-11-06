@@ -105,9 +105,32 @@ final class ViewManagedServer extends ViewRecord
                 ->action(function (): void {
                     Access::requireAdmin();
                     $record = $this->getRecord()->refresh();
-                    $report = app(AdoptionService::class)->inspect($record->pelicanServer);
-                    $record->update(['runtime_report' => $report]);
-                    $this->nodeCapabilities = (new NodeWorker($record->pelican_server_uuid))->request('capabilities');
+                    try {
+                        $report = app(AdoptionService::class)->inspect($record->pelicanServer);
+                        $record->update(['runtime_report' => $report]);
+                    } catch (\Throwable $error) {
+                        report($error);
+                        Notification::make()->title('Runtime inspection failed')
+                            ->body('Wings file metadata was unavailable. Check Pelican logs and node connectivity.')
+                            ->danger()->send();
+
+                        return;
+                    }
+                    try {
+                        // Hash/inventory capabilities require the optional node
+                        // worker. A missing worker must not invalidate runtime
+                        // evidence available through the normal Wings file API.
+                        $this->nodeCapabilities = (new NodeWorker($record->pelican_server_uuid))->request('capabilities');
+                    } catch (\Throwable $error) {
+                        $this->nodeCapabilities = ['available' => false, 'reason' => 'Node worker unavailable'];
+                    }
+                    if (! ($report['inspection_complete'] ?? false) || ! empty($report['warnings'])) {
+                        Notification::make()->title('Runtime evidence is incomplete')
+                            ->body('Some launcher files or the container state could not be verified.')
+                            ->warning()->send();
+                    } else {
+                        Notification::make()->title('Runtime inspection complete')->success()->send();
+                    }
                 }),
             Action::make('check')->button()->icon('heroicon-o-arrow-path')->label('Check releases')->color('gray')->visible(fn () => in_array($this->tab, ['overview', 'updates'], true))->action(function (): void {
                 Access::requireAdmin();
