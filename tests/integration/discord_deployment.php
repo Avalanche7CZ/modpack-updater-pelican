@@ -9,6 +9,8 @@ use Arcturus\ModpackManager\ModpackManagerPlugin;
 use Filament\Facades\Filament;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Event;
+use App\Events\ActivityLogged;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 
@@ -134,6 +136,12 @@ Http::fake(function ($request) use (&$state, &$powerCalls, $dir) {
 
     return Http::response(['state' => $state], 200, $headers);
 });
+// Native Pelican power actions write their audit rows. The ordinary Panel
+// ActivityLogged webhook listener is unrelated to Discord queue validation,
+// and would require a complete Pelican server-webhook configuration schema.
+// Isolate only that downstream listener in this disposable integration test.
+Event::fake([ActivityLogged::class]);
+
 // A queued deployment is executed without a logged-in panel user.
 // This also avoids introducing a non-canonical anonymous test User morph.
 Auth::guard()->forgetUser();
@@ -142,6 +150,7 @@ $managed->refresh();
 $delivery = DiscordDelivery::where('kind', 'updated')->first();
 check($managed->installed_version === '0.13.17' && $managed->last_success_at && $delivery && $delivery->status === 'queued', 'Verified update did not queue one success');
 check($powerCalls === ['start', 'stop'] && $state === 'exited', 'Fixture power state was not restored');
+check(DB::table('activity_logs')->count() === 2, 'Pelican native power audit actions were not recorded');
 check($delivery->sourceEvent->details['startup_verified'] === true && $delivery->sourceEvent->from_version === '0.13.5', 'Verified success evidence/old version missing');
 Http::swap(new Factory);
 Http::preventStrayRequests();
