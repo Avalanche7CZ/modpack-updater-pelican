@@ -50,18 +50,19 @@ final class CreateManagedServer extends CreateRecord
                     ->action(fn ($get) => $this->inspectSelection((string) $get('pelican_server_uuid')))]),
                 Text::make(fn () => $this->inspection ? implode(' · ', array_filter([
                     'Wings: '.($this->inspection['state'] ?? 'unavailable'),
-                    $this->inspection['loader']
+                    ($this->inspection['loader'] ?? null)
                         ? (($this->inspection['loader_confidence'] ?? '') === 'installer_config' ? 'Starter config loader: ' : 'Observed loader: ').$this->inspection['loader']
                         : 'Loader not verified',
-                    $this->inspection['minecraft'] ? 'Minecraft: '.$this->inspection['minecraft'] : 'Minecraft version not verified',
-                    $this->inspection['loader_version'] ? 'Loader version: '.$this->inspection['loader_version'] : null,
+                    ($this->inspection['minecraft'] ?? null) ? 'Minecraft: '.$this->inspection['minecraft'] : 'Minecraft version not verified',
+                    ($this->inspection['loader_version'] ?? null) ? 'Loader version: '.$this->inspection['loader_version'] : null,
                     ! empty($this->inspection['warnings']) ? 'Warnings: '.count($this->inspection['warnings']) : null,
                 ])) : 'Inspection reads configuration through Wings. Adoption never stops or restarts the server.'),
                 Text::make(fn () => $this->inspection ? implode(' · ', array_filter([
                     'Panel launch method: '.($this->inspection['launch_method'] ?? 'unknown'),
                     'Java image: '.mb_strimwidth((string) ($this->inspection['image'] ?? '(not available)'), 0, 100, '…'),
                     'Egg: '.mb_strimwidth((string) ($this->inspection['egg'] ?? '(not available)'), 0, 80, '…'),
-                    $this->inspection['diagnostic'] ? 'Wings diagnostic: '.$this->inspection['diagnostic']['stage'].' / '.$this->inspection['diagnostic']['code'] : null,
+                    isset($this->inspection['diagnostic']['stage'], $this->inspection['diagnostic']['code'])
+                        ? 'Wings diagnostic: '.$this->inspection['diagnostic']['stage'].' / '.$this->inspection['diagnostic']['code'] : null,
                 ])) : ''),
                 Text::make(fn () => $this->inspection && ! empty($this->inspection['warnings'])
                     ? 'Inspection warning: '.$this->inspection['warnings'][0] : ''),
@@ -120,6 +121,7 @@ final class CreateManagedServer extends CreateRecord
             report($error);
             $this->inspection = [
                 'state' => 'unavailable', 'inspection_complete' => false,
+                'loader' => null, 'loader_version' => null, 'minecraft' => null, 'diagnostic' => null,
                 'warnings' => ['Runtime inspection failed. Check the Pelican Laravel log and Wings connectivity.'],
             ];
             Notification::make()
@@ -133,7 +135,7 @@ final class CreateManagedServer extends CreateRecord
             $diagnostic = $this->inspection['diagnostic'] ?? null;
             Notification::make()
                 ->title('Runtime inspection incomplete')
-                ->body($diagnostic
+                ->body(isset($diagnostic['code'])
                     ? 'Wings file listing: '.$diagnostic['code'].'. Panel startup and image are shown below; the loader is not verified. Check the Pelican/Wings logs.'
                     : 'Some launcher evidence or Wings state could not be read. Runtime compatibility remains unverified.')
                 ->warning()->send();

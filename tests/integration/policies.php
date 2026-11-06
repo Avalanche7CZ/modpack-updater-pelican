@@ -77,6 +77,54 @@ DB::table('servers')->insert(['uuid' => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 
 Http::preventStrayRequests();
 $test = Livewire\Livewire::test(CreateManagedServer::class);
 $html = $test->html();
+// Reproduce the production failure through the *actual* Livewire method.
+// A server-side inspection may return partial fields, or throw and trigger
+// the page's fallback array without loader/minecraft keys.
+$partialResults = [
+    ['state' => 'unavailable', 'inspection_complete' => false,
+        'warnings' => ['Wings file inspection failed']],
+    ['state' => 'unavailable', 'inspection_complete' => false,
+        'diagnostic' => ['stage' => 'wings_root_listing', 'code' => 'HTTP_403'],
+        'warnings' => ['Wings file listing failed']],
+    ['state' => 'unavailable', 'inspection_complete' => false,
+        'diagnostic' => ['stage' => 'wings_root_listing'],
+        'warnings' => []],
+];
+foreach ($partialResults as $partial) {
+    // Test the page without creating a real Wings request.
+    app()->instance(\Arcturus\ModpackManager\Services\AdoptionService::class,
+        new class($partial) {
+            public function __construct(private array $response) {}
+            public function inspect(\App\Models\Server $server): array
+            {
+                return $this->response;
+            }
+        });
+    $test->call('inspectSelection', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    $rendered = $test->html();
+    check(str_contains($rendered, 'Loader not verified') &&
+        str_contains($rendered, 'Minecraft version not verified'),
+        'Livewire inspect action failed to render missing loader/Minecraft fields');
+    if (isset($partial['diagnostic']['code'])) {
+        check(str_contains($rendered, 'HTTP_403'),
+            'Livewire inspect action did not show sanitized diagnostic');
+    }
+}
+// A throwing inspection triggers the exact fallback array from the log.
+app()->instance(\Arcturus\ModpackManager\Services\AdoptionService::class,
+    new class {
+        public function inspect(\App\Models\Server $server): array
+        {
+            throw new RuntimeException('Fixture Wings listing unavailable');
+        }
+    });
+$test->call('inspectSelection', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+$rendered = $test->html();
+check(str_contains($rendered, 'Loader not verified') &&
+    str_contains($rendered, 'Minecraft version not verified'),
+    'Page-level inspection exception fallback caused a Livewire render failure');
+app()->forgetInstance(\Arcturus\ModpackManager\Services\AdoptionService::class);
+
 $dom = new DOMDocument;
 @$dom->loadHTML('<meta charset="utf-8">'.$html);
 $xpath = new DOMXPath($dom);
