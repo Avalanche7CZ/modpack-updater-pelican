@@ -51,7 +51,22 @@ final class AdoptionService
         $report['inspection_complete'] = (bool) ($evidence['complete'] ?? false);
         $report['diagnostic'] = $diagnostic;
         $report['evidence_source'] = $diagnostic === null ? 'wings_files_and_panel_settings' : 'panel_settings_only';
-        $report['protected_roots'] = SafetyPaths::roots($evidence['texts']['server.properties'] ?? '');
+        try {
+            // World-root parsing must not discard independently collected
+            // loader/Minecraft/Java evidence. An ambiguous level-name is a
+            // deployment safety blocker, not a failed Wings file request.
+            $report['protected_roots'] = SafetyPaths::roots($evidence['texts']['server.properties'] ?? '');
+            // A missing server.properties provides no independent verification,
+            // but is not evidence of an unsafe escaped level-name. Reserve
+            // false for known ambiguity; null means not observed.
+            $report['world_path_verified'] = isset($evidence['texts']['server.properties']) ? true : null;
+        } catch (\InvalidArgumentException $error) {
+            $report['protected_roots'] = SafetyPaths::roots();
+            $report['world_path_verified'] = false;
+            $report['inspection_complete'] = false;
+            $report['warnings'][] = 'Custom world path could not be verified from server.properties. Resolve the level-name before enabling updates.';
+            $report['world_path_diagnostic'] = 'manual_verification_required';
+        }
         try {
             // Status is supplementary information. Missing power/status access
             // must not invalidate the file inspection or return a Livewire 500.
@@ -74,6 +89,9 @@ final class AdoptionService
         (new BaselineGuard)->require($base, $server->provider, $server->source, $server->installed_version);
         $inventory = $this->files->wings($server->pelicanServer)->inventory();
         $observed = $this->inspect($server->pelicanServer);
+        if (($observed['world_path_verified'] ?? null) === false) {
+            throw new RuntimeException('Verify the custom world path in server.properties before adoption comparison');
+        }
         // Display inferred upstream fields separately; do not pretend they prove the running loader.
         $observed['upstream_runtime'] = $base['runtime'];
         $observed['observed_at'] = now()->toIso8601String();

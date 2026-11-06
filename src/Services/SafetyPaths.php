@@ -16,10 +16,15 @@ final class SafetyPaths
             if (trim($line) === '' || preg_match('/^\s*[#!]/', $line)) {
                 continue;
             }
-            if (str_contains($line, '\\')) {
-                throw new InvalidArgumentException('Escaped server.properties requires manual world-path verification');
-            }
+            // Java server.properties frequently contains escaped MOTDs, unicode
+            // codes, passwords or unrelated escaped properties. Those cannot
+            // influence the world directory. Only level-name is path-sensitive.
             if (preg_match('/^\s*level-name\s*(?:[=:]\s*|\s+)(.+?)\s*$/D', $line, $m)) {
+                if (str_contains($m[1], '\\')) {
+                    // Do not attempt to decode Java-properties escapes into a
+                    // filesystem path without independently verifying it.
+                    throw new InvalidArgumentException('Escaped level-name requires manual world-path verification');
+                }
                 UpdatePlanner::assertPath($m[1]);
                 foreach (['', '_nether', '_the_end'] as $suffix) {
                     $roots[] = $m[1].$suffix;
