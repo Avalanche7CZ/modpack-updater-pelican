@@ -51,7 +51,19 @@ final class AdoptionService
         $report['inspection_complete'] = (bool) ($evidence['complete'] ?? false);
         $report['diagnostic'] = $diagnostic;
         $report['evidence_source'] = $diagnostic === null ? 'wings_files_and_panel_settings' : 'panel_settings_only';
-        $report['protected_roots'] = SafetyPaths::roots($evidence['texts']['server.properties'] ?? '');
+        try {
+            // World-root parsing must not discard independently collected
+            // loader/Minecraft/Java evidence. An ambiguous level-name is a
+            // deployment safety blocker, not a failed Wings file request.
+            $report['protected_roots'] = SafetyPaths::roots($evidence['texts']['server.properties'] ?? '');
+            $report['world_path_verified'] = isset($evidence['texts']['server.properties']);
+        } catch (\InvalidArgumentException $error) {
+            $report['protected_roots'] = SafetyPaths::roots();
+            $report['world_path_verified'] = false;
+            $report['inspection_complete'] = false;
+            $report['warnings'][] = 'Custom world path could not be verified from server.properties. Resolve the level-name before enabling updates.';
+            $report['world_path_diagnostic'] = 'manual_verification_required';
+        }
         try {
             // Status is supplementary information. Missing power/status access
             // must not invalidate the file inspection or return a Livewire 500.
