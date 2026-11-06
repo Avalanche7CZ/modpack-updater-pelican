@@ -686,6 +686,7 @@ class Worker:
         entry = self.entry(server)
         root = Path(entry['root'])
         paths = []
+        skipped_symlinks = []
         entries_scanned = 0
         with inventory_entry('server.properties'):
             excluded = sorted(self.world_roots(server))
@@ -702,7 +703,9 @@ class Worker:
                     excluded.append(item.name)
                     continue
                 if stat.S_ISLNK(info.st_mode):
-                    raise PreparationFailure('SYMLINK_PATH', file=item.name)
+                    excluded.append(item.name)
+                    skipped_symlinks.append(item.name)
+                    continue
                 if stat.S_ISDIR(info.st_mode):
                     def walk_error(error):
                         # onerror includes an absolute path; reduce it to a logical path before classification.
@@ -726,7 +729,9 @@ class Worker:
                                 report(**with_context)
                                 info = (root / rel).lstat()
                                 if stat.S_ISLNK(info.st_mode):
-                                    raise PreparationFailure('SYMLINK_PATH', file=rel)
+                                    excluded.append(rel)
+                                    skipped_symlinks.append(rel)
+                                    continue
                                 if name in dirs:
                                     if not stat.S_ISDIR(info.st_mode):
                                         raise PreparationFailure('FILES_CHANGED', file=rel)
@@ -758,6 +763,7 @@ class Worker:
             report(state='comparing', files_done=index + 1)
         return {'complete': True, 'files': files, 'identities': identities, 'metadata': metadata,
                 'scope': 'managed-pack-files', 'excluded_roots': sorted(set(excluded)),
+                'skipped_symlinks': sorted(set(skipped_symlinks)),
                 'notice': 'World data is not hashed. A running-server inventory is a point-in-time observation.'}
 
     def hashes(self, server, paths, report=lambda **v: None, cancelled=lambda: False):

@@ -16,6 +16,16 @@
                     <x-filament::button color="warning" wire:click="cancelPreparation">Cancel preparation</x-filament::button>
                 </div>
             @endif
+            @if($record->file_inventory['skipped_symlinks'] ?? [])
+                <x-filament::section heading="Preserved symlinks">
+                    <p class="text-sm">These links and their descendants are excluded from updates. Their targets were not read. Comparison can complete without changing them.</p>
+                    <ul class="mt-2 list-inside list-disc text-sm">
+                        @foreach(\Arcturus\ModpackManager\Services\InventoryWarnings::symlinks($record->file_inventory) as $warning)
+                            <li class="break-all">{{ $warning }}</li>
+                        @endforeach
+                    </ul>
+                </x-filament::section>
+            @endif
             @if($this->tab === 'overview')
                 <x-filament::section heading="Existing installation">
                     <p class="mb-3 text-sm">Preparation / inventory backend: {{ $record->transport === 'local' ? 'Same-host local filesystem' : 'Remote node worker' }}.

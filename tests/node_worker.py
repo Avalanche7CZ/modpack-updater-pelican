@@ -63,14 +63,16 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.worker.inventory(self.server)
 
-    def test_links_are_rejected(self):
+    def test_inventory_preserves_links_but_explicit_hashes_stay_strict(self):
         self.put('mods/good.jar')
         (self.live / 'mods/link.jar').symlink_to('/etc/passwd')
         with self.assertRaises(w.PreparationFailure) as failure:
             self.worker.hashes(self.server, ['mods/link.jar'])
         self.assertEqual(failure.exception.code, 'SYMLINK_PATH')
-        with self.assertRaises(ValueError):
-            self.worker.inventory(self.server)
+        inventory = self.worker.inventory(self.server)
+        self.assertEqual(inventory['skipped_symlinks'], ['mods/link.jar'])
+        self.assertIn('mods/link.jar', inventory['excluded_roots'])
+        self.assertNotIn('mods/link.jar', inventory['files'])
 
     def test_inventory_diagnostics_and_protected_link_pruning(self):
         import errno
@@ -102,10 +104,43 @@ class WorkerTests(unittest.TestCase):
             self.worker.inventory(self.server)
         self.assertEqual(failure.exception.code, 'FILE_TYPE')
 
-    def test_directory_link_is_rejected(self):
+    def test_root_directory_link_is_preserved(self):
         (self.live / 'mods').symlink_to(self.stage)
-        with self.assertRaises(ValueError):
+        inventory = self.worker.inventory(self.server)
+        self.assertEqual(inventory['skipped_symlinks'], ['mods'])
+        self.assertIn('mods', inventory['excluded_roots'])
+        self.assertEqual(inventory['files'], {})
+
+    def test_root_nested_dangling_and_loop_links_are_never_hashed_or_traversed(self):
+        self.put('config/regular.cfg', b'regular')
+        target = self.root / 'private-target'
+        target.mkdir()
+        (target / 'private.txt').write_bytes(b'never read')
+        links = {'unix_args.txt': target / 'private.txt', 'config/linked': target,
+                 'config/dangling.json': self.root / 'missing', 'config/loop': self.live / 'config/loop'}
+        for name, destination in links.items():
+            (self.live / name).symlink_to(destination)
+        original = w.hash_file
+        with patch.object(w, 'hash_file', wraps=original) as hashes:
+            inventory = self.worker.inventory(self.server, 'f' * 32)
+        self.assertEqual(set(inventory['files']), {'config/regular.cfg'})
+        self.assertEqual(set(inventory['skipped_symlinks']), set(links))
+        self.assertTrue(set(links) <= set(inventory['excluded_roots']))
+        self.assertEqual([call.args[1] for call in hashes.call_args_list], ['config/regular.cfg'])
+        self.assertEqual((target / 'private.txt').read_bytes(), b'never read')
+        for name, destination in links.items():
+            self.assertEqual(os.readlink(self.live / name), str(destination))
+        public = json.dumps(inventory)
+        self.assertNotIn(str(target), public)
+        self.assertEqual(json.loads((self.stage / ('f' * 32) / 'comparison.json').read_text())['state'], 'completed')
+        # A regular file replaced with a link after enumeration is an inconsistency, not a skipped entry.
+        def swapped(root, path, *args, **kwargs):
+            (self.live / path).unlink()
+            (self.live / path).symlink_to(target / 'private.txt')
+            return original(root, path, *args, **kwargs)
+        with patch.object(w, 'hash_file', side_effect=swapped), self.assertRaises(w.PreparationFailure) as failure:
             self.worker.inventory(self.server)
+        self.assertEqual(failure.exception.code, 'SYMLINK_PATH')
 
     def test_world_hash_request_is_rejected(self):
         self.put('world/level.dat')

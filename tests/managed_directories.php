@@ -44,3 +44,15 @@ foreach (['config/backups/private.zip', 'scripts/playerdata/uuid.dat', 'kubejs/s
 }
 
 check(ManagedPaths::allowed('kubejs/data/pack/recipes/item.json'), 'Pack datapack content was mistaken for runtime data');
+
+// Skipped links are immutable even when upstream contains the link path or descendants.
+$links = ['unix_args.txt', 'config/linked'];
+$upstream = array_fill_keys(['unix_args.txt', 'config/linked', 'config/linked/args.txt'], $hash);
+foreach (['replace', 'remove', 'disable', 'follow'] as $mode) {
+    $plan = (new UpdatePlanner)->plan($upstream, [], $upstream, [['pattern' => '**', 'mode' => $mode]], [], [], $links);
+    foreach ($plan['changes'] as $change) {
+        check($change['action'] === 'preserve' && $change['rule'] === 'immutable', 'Policy bypassed a skipped symlink');
+    }
+}
+$warnings = \Arcturus\ModpackManager\Services\InventoryWarnings::symlinks(['skipped_symlinks' => ['unix_args.txt', '/etc/private?token=secret']]);
+check(str_contains($warnings[0], 'unix_args.txt') && ! str_contains(implode(' ', $warnings), '/etc') && ! str_contains(implode(' ', $warnings), 'token=secret'), 'Symlink information leaked unsafe worker text');

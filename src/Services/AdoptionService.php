@@ -136,6 +136,7 @@ final class AdoptionService
         $report = ['policy_revision' => $server->policy_revision, 'verified_baseline' => true, 'version' => $base['version'], 'counts' => $plan['counts'],
             'changes' => $plan['changes'],
             'scope' => $inventory['scope'], 'excluded_roots' => $inventory['excluded_roots'],
+            'skipped_symlinks' => $inventory['skipped_symlinks'] ?? [],
             'observed_at' => now()->toIso8601String(), 'notice' => $inventory['notice']];
         $saved = DB::transaction(function () use ($server, $report, $observed, $inventory, $operation): ManagedServer {
             $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
