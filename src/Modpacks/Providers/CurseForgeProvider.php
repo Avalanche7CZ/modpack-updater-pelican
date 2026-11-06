@@ -5,13 +5,14 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Modpacks\Providers;
 
 use Arcturus\ModpackManager\Contracts\ModpackProvider;
+use Arcturus\ModpackManager\Contracts\RequiredFileResolver;
 use Arcturus\ModpackManager\Modpacks\JsonClient;
 use Arcturus\ModpackManager\Modpacks\LatestRelease;
 use Arcturus\ModpackManager\Modpacks\Release;
 use InvalidArgumentException;
 use RuntimeException;
 
-final class CurseForgeProvider implements ModpackProvider
+final class CurseForgeProvider implements ModpackProvider, RequiredFileResolver
 {
     use LatestRelease;
 
@@ -71,22 +72,82 @@ final class CurseForgeProvider implements ModpackProvider
             throw new RuntimeException('Required CurseForge file has no supported upstream checksum');
         }
 
-        return ['url' => $f['downloadUrl'], 'hashes' => $hashes, 'size' => (int) $f['fileLength'], 'path' => 'mods/'.$f['fileName']];
+        return ['url' => $f['downloadUrl'], 'hashes' => $hashes, 'size' => (int) $f['fileLength'], 'path' => 'mods/'.$f['fileName'],
+            'project_id' => $source, 'file_id' => $version,
+            'required_projects' => array_map(fn ($d) => (string) $d['modId'], array_values(array_filter($f['dependencies'] ?? [], fn ($d) => ($d['relationType'] ?? null) === 3)))];
     }
 
-    /** Complete resolution: a missing/optional/blocked file is never counted as prepared. */
-    public function resolveManifest(array $manifest): array
+    public function requirements(array $manifest): array
     {
-        if (($manifest['manifestType'] ?? null) !== 'minecraftModpack' || ($manifest['manifestVersion'] ?? null) !== 1 || ! is_array($manifest['files'] ?? null)) {
-            throw new InvalidArgumentException('Unsupported CurseForge manifest');
+        if (($manifest['manifestType'] ?? null) !== 'minecraftModpack' || ($manifest['manifestVersion'] ?? null) !== 1 ||
+            ! is_array($manifest['files'] ?? null) || ! array_is_list($manifest['files']) || count($manifest['files']) > 20000) {
+            throw new InvalidArgumentException('Unsupported or oversized CurseForge manifest');
         }
-        $files = [];
-        foreach ($manifest['files'] as $f) {
-            if (($f['required'] ?? null) !== true) {
+        $requirements = [];
+        $seen = [];
+        foreach ($manifest['files'] as $file) {
+            if (($file['required'] ?? null) !== true) {
                 throw new RuntimeException('Optional CurseForge file requires explicit administrator selection');
             }
-            $files[] = $this->resolveFile((string) $f['projectID'], (string) $f['fileID']);
+            $project = $this->id((string) ($file['projectID'] ?? ''));
+            $version = $this->id((string) ($file['fileID'] ?? ''));
+            if (isset($seen[$project])) {
+                throw new RuntimeException('Duplicate CurseForge project in required manifest');
+            }
+            $seen[$project] = true;
+            $requirements[] = ['project_id' => $project, 'file_id' => $version];
         }
+
+        return $requirements;
+    }
+
+    public function resolveBatch(array $manifest, array $resolved = [], int $limit = 3): array
+    {
+        $requirements = $this->requirements($manifest);
+        if ($limit < 1 || $limit > 3 || count($resolved) > count($requirements)) {
+            throw new InvalidArgumentException('Invalid required-file resolution checkpoint');
+        }
+        foreach ($resolved as $index => $file) {
+            if (($file['project_id'] ?? null) !== $requirements[$index]['project_id'] || ($file['file_id'] ?? null) !== $requirements[$index]['file_id']) {
+                throw new RuntimeException('CurseForge resolution checkpoint does not match the required manifest');
+            }
+        }
+        $end = min(count($requirements), count($resolved) + $limit);
+        for ($index = count($resolved); $index < $end; $index++) {
+            $reference = $requirements[$index];
+            $file = $this->resolveFile($reference['project_id'], $reference['file_id']);
+            if (! str_ends_with(strtolower($file['path']), '.jar')) {
+                throw new RuntimeException('Required CurseForge artifact is not an identifiable mod JAR; explicit server normalization required');
+            }
+            $resolved[] = $file;
+        }
+        // Validate paths, duplicate filenames, checksums and hosts before sending any download recipe.
+        if ($resolved) {
+            new Release('curseforge', 'required-files', 'resolved', 'Required files', $resolved);
+        }
+        $complete = count($resolved) === count($requirements);
+        if ($complete) {
+            $projects = array_column($requirements, 'project_id');
+            foreach ($resolved as $file) {
+                foreach ($file['required_projects'] as $dependency) {
+                    if (! in_array($dependency, $projects, true)) {
+                        throw new RuntimeException('Required CurseForge dependency has no pinned file in the pack manifest: '.$dependency);
+                    }
+                }
+            }
+        }
+
+        return ['files' => $resolved, 'complete' => $complete, 'total' => count($requirements)];
+    }
+
+    /** Completeness is mandatory; queue ticks use resolveBatch to retain bounded checkpoints. */
+    public function resolveManifest(array $manifest): array
+    {
+        $files = [];
+        do {
+            $result = $this->resolveBatch($manifest, $files);
+            $files = $result['files'];
+        } while (! $result['complete']);
 
         return $files;
     }
@@ -100,8 +161,12 @@ final class CurseForgeProvider implements ModpackProvider
         $blockers = [];
         $downloads = [];
         $serverId = ($f['isServerPack'] ?? false) ? $version : (isset($f['serverPackFileId']) ? (string) $f['serverPackFileId'] : null);
+        $format = $serverId ? 'zip' : 'curseforge';
         if (! $serverId) {
-            $blockers[] = 'No official server pack. Resolve the client manifest and all required files before staging.';
+            $d = $this->resolveFile($source, $version);
+            unset($d['path']);
+            $d['archive'] = true;
+            $downloads[] = $d;
         } else {
             $d = $this->resolveFile($source, $serverId);
             unset($d['path']);
@@ -109,7 +174,7 @@ final class CurseForgeProvider implements ModpackProvider
             $downloads[] = $d;
         }
 
-        return new Release('curseforge', $source, $version, $f['displayName'] ?? $version, $downloads, [], $blockers, 'zip',
+        return new Release('curseforge', $source, $version, $f['displayName'] ?? $version, $downloads, ['runtime_prepared' => false], $blockers, $format,
             'https://www.curseforge.com/minecraft/modpacks/'.$source.'/files/'.$version);
     }
 }

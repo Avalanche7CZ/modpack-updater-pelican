@@ -77,7 +77,7 @@ final class Release
     public function bytes(): ?int
     {
         if (! $this->downloads || count(array_filter($this->downloads, fn ($f) => ! isset($f['size']))) > 0 ||
-            $this->format === 'mrpack') {
+            in_array($this->format, ['mrpack', 'curseforge'], true)) {
             return null;
         }
 

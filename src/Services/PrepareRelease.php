@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Arcturus\ModpackManager\Services;
 
+use Arcturus\ModpackManager\Contracts\RequiredFileResolver;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Models\Operation;
 use Arcturus\ModpackManager\Modpacks\ProviderRegistry;
@@ -32,6 +33,9 @@ final class PrepareRelease
             if (! $release->canPrepare()) {
                 throw new RuntimeException(implode('; ', $release->blockers) ?: 'Upstream download checksums or required files are missing');
             }
+            if ($release->format === 'curseforge' && ! ($worker->request('capabilities')['curseforge_resolution'] ?? false)) {
+                throw new RuntimeException('This node worker needs the CurseForge required-file resolution capability; upgrade the worker first');
+            }
             $context['recipe'] = $release->recipe();
             $context['recipe']['limits'] = ['max_archive_bytes' => (int) config('arcturus-modpack-manager.max_archive_bytes', 8589934592)];
             $context['release_name'] = $release->name;
@@ -41,6 +45,33 @@ final class PrepareRelease
         }
         $context = $operation->context;
         $status = $worker->request('prepare', ['operation_id' => $operation->node_operation_id, 'recipe' => $context['recipe']]);
+        if (($status['operation_id'] ?? null) !== $operation->node_operation_id) {
+            throw new RuntimeException('Node returned a mismatched operation ID');
+        }
+        if (($status['state'] ?? null) === 'awaiting_resolution') {
+            $provider = $this->providers->get($server->provider);
+            if (! $provider instanceof RequiredFileResolver) {
+                throw new RuntimeException('This provider cannot resolve the archived required-file manifest');
+            }
+            $resolution = $context['required_files'] ?? $worker->request('requirements', ['operation_id' => $operation->node_operation_id]);
+            if (($resolution['sha256'] ?? null) !== ($status['requirements_sha256'] ?? null)) {
+                throw new RuntimeException('CurseForge resolution checkpoint refers to a different archive manifest');
+            }
+            $batch = $provider->resolveBatch($resolution['manifest'], $resolution['files'] ?? []);
+            $resolution['files'] = $batch['files'];
+            $context['required_files'] = $resolution;
+            $operation->update(['context' => $context, 'heartbeat_at' => now()]);
+            if ($operation->phase !== 'preparing') {
+                $this->tracker->transition($operation, 'preparing');
+            }
+            $operation->update(['context' => [...$context, 'progress' => ['state' => 'resolving required files',
+                'files_resolved' => count($batch['files']), 'required_files' => $batch['total']]]]);
+            if (! $batch['complete']) {
+                return false;
+            }
+            $status = $worker->request('resolve', ['operation_id' => $operation->node_operation_id,
+                'requirements_sha256' => $resolution['sha256'], 'files' => $batch['files']]);
+        }
         $state = $status['state'] ?? null;
         if (($status['operation_id'] ?? null) !== $operation->node_operation_id || ! in_array($state, ['queued', 'downloading', 'extracting', 'hashing', 'completed', 'failed', 'cancelled', 'interrupted'], true)) {
             throw new RuntimeException('Node returned an unknown or mismatched preparation state');
@@ -48,7 +79,13 @@ final class PrepareRelease
         if ($state === 'completed' && ! preg_match('/^[a-f0-9]{64}$/D', $status['manifest_sha256'] ?? '')) {
             throw new RuntimeException('Node completion has no verified manifest digest');
         }
-        if (in_array($state, ['failed', 'cancelled', 'interrupted'], true)) {
+        if (in_array($state, ['cancelled', 'interrupted'], true)) {
+            $operation->update(['error' => $status['error'] ?? 'Node preparation '.$state]);
+            $this->tracker->transition($operation, $state);
+
+            return true;
+        }
+        if ($state === 'failed') {
             throw new RuntimeException('Node preparation '.$state.': '.($status['error'] ?? 'inspect node operation'));
         }
         if ($state !== 'completed') {

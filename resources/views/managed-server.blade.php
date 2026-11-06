@@ -14,7 +14,11 @@
                 <x-filament::section heading="Background operation">
                     <p class="font-medium">{{ str_replace('_', ' ', ucfirst($operation?->phase ?? 'Unknown')) }}</p>
                     @if($operation?->context['progress'] ?? null)
-                        <p class="text-sm text-gray-500 dark:text-gray-400">{{ number_format($operation->context['progress']['bytes_downloaded'] ?? 0) }} bytes downloaded · {{ $operation->context['progress']['files_verified'] ?? 0 }} files verified</p>
+                        <p class="text-sm text-gray-500 dark:text-gray-400">@if(isset($operation->context['progress']['files_resolved']))
+                            {{ $operation->context['progress']['files_resolved'] }} / {{ $operation->context['progress']['required_files'] }} required files resolved
+                        @else
+                            {{ number_format($operation->context['progress']['bytes_downloaded'] ?? 0) }} bytes downloaded · {{ $operation->context['progress']['files_verified'] ?? 0 }} files verified
+                        @endif</p>
                     @endif
                     <p class="text-sm text-gray-500 dark:text-gray-400">Last recorded event: {{ $operation?->heartbeat_at?->diffForHumans() ?? 'Unknown' }}</p>
                     <div class="mt-3 flex flex-wrap gap-2">

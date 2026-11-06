@@ -301,7 +301,7 @@ class Worker:
             # Interrupted requests are retained, never replayed on restart.
             for path in stage.glob('*/operation.json'):
                 data = json.loads(path.read_text())
-                if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted'):
+                if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution'):
                     data.update(state='interrupted', error='Node worker restarted; explicit retry with a new operation is required')
                     atomic_json(path, data)
 
@@ -462,6 +462,16 @@ class Worker:
                         unpack = base / 'unpacked'
                         unpack.mkdir(mode=0o700)
                         extract_zip(dest, unpack, maximum, cancelled)
+                        if recipe.get('format') == 'curseforge':
+                            manifest_path = unpack / 'manifest.json'
+                            if manifest_path.stat().st_size > MAX_REQUEST:
+                                raise ValueError('CurseForge manifest exceeds metadata limit')
+                            manifest = json.loads(manifest_path.read_text())
+                            self.curseforge_requirements(manifest)
+                            atomic_json(base / 'requirements.json', manifest)
+                            atomic_json(base / 'input.json', {'recipe': recipe, 'artifacts': artifacts, 'bytes': total})
+                            update(state='awaiting_resolution', requirements_sha256=hashlib.sha256((base / 'requirements.json').read_bytes()).hexdigest())
+                            return
                         if recipe.get('format') == 'mrpack':
                             recipe['runtime'] = {**recipe.get('runtime', {}), **self._mrpack(server, unpack, files, maximum, cancelled, update)}
                         else:
@@ -479,29 +489,7 @@ class Worker:
                         target.parent.mkdir(parents=True, exist_ok=True)
                         os.rename(dest, target)
                     update(files_verified=i + 1)
-                update(state='hashing')
-                manifest, identities, bytes_hashed = {}, {}, 0
-                for directory, dirs, names in os.walk(files):
-                    for name in names:
-                        rel = str((Path(directory) / name).relative_to(files))
-                        if not self.managed(server, rel):
-                            raise ValueError('Upstream release contains runtime or unmanaged paths; explicit normalization required')
-                        digest, size = hash_file(files, rel, maximum - bytes_hashed)
-                        bytes_hashed += size
-                        manifest[rel] = digest
-                        if len(manifest) > MAX_FILES:
-                            raise ValueError('Prepared file limit exceeded')
-                        identity = mod_identity(files, rel)
-                        if identity:
-                            identities[rel] = identity
-                if not manifest:
-                    raise ValueError('Prepared server pack is empty')
-                result = {'schema': 2, 'provider': recipe['provider'], 'project': recipe['project'],
-                          'version': recipe['version'], 'files': manifest, 'identities': identities,
-                          'runtime': recipe.get('runtime', {}), 'artifacts': artifacts,
-                          'verification': 'upstream-checksums', 'bytes': bytes_hashed}
-                atomic_json(base / 'manifest.json', result)
-                update(state='completed', manifest_sha256=hashlib.sha256((base / 'manifest.json').read_bytes()).hexdigest())
+                self._finalize(server, base, recipe, artifacts, maximum, update)
             finally:
                 self.locks[server].release()
         except InterruptedError:
@@ -509,6 +497,154 @@ class Worker:
         except Exception as error:
             # Never log signed URLs, request payloads, or credentials.
             update(state='failed', error=str(error) if isinstance(error, ValueError) else type(error).__name__)
+
+    def _finalize(self, server, base, recipe, artifacts, maximum, update):
+        files = base / 'files'
+        update(state='hashing')
+        manifest, identities, bytes_hashed = {}, {}, 0
+        for directory, dirs, names in os.walk(files):
+            for name in names:
+                rel = str((Path(directory) / name).relative_to(files))
+                if not self.managed(server, rel):
+                    raise ValueError('Upstream release contains runtime or unmanaged paths; explicit normalization required')
+                digest, size = hash_file(files, rel, maximum - bytes_hashed)
+                bytes_hashed += size
+                manifest[rel] = digest
+                if len(manifest) > MAX_FILES:
+                    raise ValueError('Prepared file limit exceeded')
+                identity = mod_identity(files, rel)
+                if identity:
+                    identities[rel] = identity
+        if not manifest:
+            raise ValueError('Prepared server pack is empty')
+        result = {'schema': 2, 'provider': recipe['provider'], 'project': recipe['project'],
+                  'version': recipe['version'], 'files': manifest, 'identities': identities,
+                  'runtime': recipe.get('runtime', {}), 'artifacts': artifacts,
+                  'verification': 'upstream-checksums', 'bytes': bytes_hashed}
+        atomic_json(base / 'manifest.json', result)
+        update(state='completed', manifest_sha256=hashlib.sha256((base / 'manifest.json').read_bytes()).hexdigest())
+
+    def curseforge_requirements(self, manifest):
+        if (not isinstance(manifest, dict) or manifest.get('manifestType') != 'minecraftModpack'
+                or manifest.get('manifestVersion') != 1 or not isinstance(manifest.get('files'), list)
+                or len(manifest['files']) > 20000):
+            raise ValueError('Unsupported CurseForge manifest')
+        requirements = {}
+        for item in manifest['files']:
+            project, file_id = str(item.get('projectID', '')), str(item.get('fileID', ''))
+            if (item.get('required') is not True or not re.fullmatch('[1-9][0-9]{0,10}', project)
+                    or not re.fullmatch('[1-9][0-9]{0,10}', file_id) or project in requirements):
+                raise ValueError('Optional, duplicated or invalid CurseForge requirement needs explicit selection')
+            requirements[project] = file_id
+        overrides = relative(manifest.get('overrides', 'overrides'))
+        if overrides.split('/')[0] in RUNTIME:
+            raise ValueError('Unsafe CurseForge overrides directory')
+        return requirements
+
+    def requirements(self, server, operation_id):
+        status = self.status(server, operation_id)
+        if status['state'] != 'awaiting_resolution':
+            raise ValueError('Operation is not waiting for required-file resolution')
+        path = self.operation_path(server, operation_id) / 'requirements.json'
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != status['requirements_sha256']:
+            raise ValueError('CurseForge requirements integrity changed')
+        return {'manifest': json.loads(path.read_text()), 'sha256': digest}
+
+    def resolve(self, server, operation_id, requirements_sha256, downloads):
+        base = self.operation_path(server, operation_id)
+        fingerprint = hashlib.sha256(json.dumps({'requirements': requirements_sha256, 'files': downloads}, sort_keys=True).encode()).hexdigest()
+        with self.mutex:
+            data = self.status(server, operation_id)
+            if 'resolution_sha256' in data:
+                if data['resolution_sha256'] != fingerprint:
+                    raise ValueError('Required-file resolution is already pinned to another payload')
+                return data
+            requirements = self.requirements(server, operation_id)
+            if requirements['sha256'] != requirements_sha256:
+                raise ValueError('Required-file resolution refers to another archive manifest')
+            expected = self.curseforge_requirements(requirements['manifest'])
+            if not isinstance(downloads, list) or len(downloads) != len(expected):
+                raise ValueError('Required-file resolution is incomplete')
+            actual, paths = {}, set()
+            for item in downloads:
+                project, file_id = str(item.get('project_id', '')), str(item.get('file_id', ''))
+                path = relative(item.get('path'))
+                if (project in actual or path in paths or not path.startswith('mods/') or '/' in path[5:]
+                        or not path.lower().endswith('.jar') or not item.get('hashes') or item.get('archive')):
+                    raise ValueError('Invalid or duplicate required-file download')
+                actual[project] = file_id
+                paths.add(path)
+            if actual != expected:
+                raise ValueError('Resolved downloads do not exactly match required project/file IDs')
+            atomic_json(base / 'resolution.json', downloads)
+            data.update(state='downloading', resolution_sha256=fingerprint, files_verified=0, total_files=len(downloads), updated_at=time.time())
+            atomic_json(base / 'operation.json', data)
+            thread = threading.Thread(target=self._resolve, args=(server, base, downloads), daemon=True)
+            self.threads[(server, operation_id)] = thread
+            thread.start()
+            return data
+
+    def _resolve(self, server, base, downloads):
+        path = base / 'operation.json'
+        data = json.loads(path.read_text())
+        def update(**values):
+            data.update(values, updated_at=time.time())
+            atomic_json(path, data)
+        cancelled = lambda: (base / 'cancel').exists()
+        acquired = False
+        try:
+            acquired = self.locks[server].acquire(timeout=2)
+            if not acquired:
+                raise ValueError('Another node operation is active for this server')
+            entry = self.entry(server)
+            saved = json.loads((base / 'input.json').read_text())
+            recipe, artifacts, total = saved['recipe'], saved['artifacts'], saved['bytes']
+            maximum = min(entry.get('max_archive_bytes', 8 * 1024**3), recipe.get('limits', {}).get('max_archive_bytes', 8 * 1024**3))
+            files = base / 'files'
+            for index, item in enumerate(downloads):
+                if cancelled():
+                    raise InterruptedError('Operation cancelled')
+                target = files / relative(item['path'])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # No artifact can become visible in a completed manifest before its hash is verified.
+                sha, size = fetch(item['url'], target, entry.get('allowed_hosts', []), item['hashes'], maximum - total,
+                                  item.get('size'), lambda n: update(bytes_downloaded=total + n), cancelled)
+                total += size
+                artifacts.append({'sha256': sha, 'bytes': size, 'path': item['path'], 'hashes': item['hashes'],
+                                  'project_id': item['project_id'], 'file_id': item['file_id']})
+                update(files_verified=index + 1)
+            update(state='extracting')
+            manifest = json.loads((base / 'requirements.json').read_text())
+            overrides = base / 'unpacked' / relative(manifest.get('overrides', 'overrides'))
+            if overrides.exists():
+                for directory, dirs, names in os.walk(overrides):
+                    for name in names:
+                        source = Path(directory) / name
+                        rel = relative(str(source.relative_to(overrides)))
+                        if not self.managed(server, rel):
+                            raise ValueError('Unsafe CurseForge override path')
+                        target = files / rel
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(source, target)
+            runtime = {'runtime_prepared': False, 'minecraft': manifest.get('minecraft', {}).get('version')}
+            loaders = manifest.get('minecraft', {}).get('modLoaders', [])
+            chosen = [loader for loader in loaders if loader.get('primary') is True]
+            if len(chosen) == 1:
+                loader_id = chosen[0].get('id', '')
+                for loader in ('neoforge', 'forge', 'fabric', 'quilt'):
+                    if loader_id.startswith(loader + '-'):
+                        runtime.update(loader=loader, loader_version=loader_id[len(loader) + 1:])
+                        break
+            recipe['runtime'] = runtime
+            self._finalize(server, base, recipe, artifacts, maximum, update)
+        except InterruptedError:
+            update(state='cancelled', error='Preparation cancelled; partial stage retained')
+        except Exception as error:
+            update(state='failed', error=str(error) if isinstance(error, ValueError) else type(error).__name__)
+        finally:
+            if acquired:
+                self.locks[server].release()
 
     def _mrpack(self, server, unpack, files, maximum, cancelled, update):
         index_path = unpack / 'modrinth.index.json'
@@ -565,7 +701,7 @@ class Worker:
 
     def handle(self, server, operation, payload):
         if operation == 'capabilities':
-            return {'protocol': 1, 'hashes': True, 'inventory': True, 'prepare': True,
+            return {'protocol': 1, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
                     'deploy': False, 'preserve_exclusions': False,
                     'reason': 'Remote destructive transactions and restore verification require a disposable Pelican/Wings integration qualification'}
         if operation == 'hashes':
@@ -574,6 +710,10 @@ class Worker:
             return self.inventory(server)
         if operation == 'prepare':
             return self.prepare(server, payload['recipe'], payload['operation_id'])
+        if operation == 'requirements':
+            return self.requirements(server, payload['operation_id'])
+        if operation == 'resolve':
+            return self.resolve(server, payload['operation_id'], payload['requirements_sha256'], payload['files'])
         if operation == 'status':
             return self.status(server, payload['operation_id'])
         if operation == 'cancel':
@@ -581,6 +721,9 @@ class Worker:
             data = self.status(server, payload['operation_id'])
             if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted'):
                 (base / 'cancel').touch(mode=0o600)
+                if data['state'] == 'awaiting_resolution':
+                    data.update(state='cancelled', error='Preparation cancelled before required-file resolution')
+                    atomic_json(base / 'operation.json', data)
             return data
         if operation == 'stage_file':
             data = self.status(server, payload['operation_id'])

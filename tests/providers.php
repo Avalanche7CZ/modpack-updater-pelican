@@ -4,6 +4,7 @@ declare(strict_types=1);
 require __DIR__.'/bootstrap.php';
 use Arcturus\ModpackManager\Modpacks\JsonClient;
 use Arcturus\ModpackManager\Modpacks\Providers\CurseForgeProvider;
+use Arcturus\ModpackManager\Modpacks\Providers\CustomProvider;
 use Arcturus\ModpackManager\Modpacks\Providers\FtbProvider;
 use Arcturus\ModpackManager\Modpacks\Providers\GitHubProvider;
 use Arcturus\ModpackManager\Modpacks\Providers\ModrinthProvider;
@@ -73,3 +74,44 @@ rejects(fn () => $mr->release('testpack', 'ver1'), 'Wrong project baseline accep
 rejects(fn () => new Release('custom', 'x', 'v', 'v', [['url' => 'https://localhost/file', 'hashes' => ['sha256' => str_repeat('a', 64)], 'path' => '../bad']]), 'Unsafe custom release accepted');
 rejects(fn () => new Release('custom', 'x', 'v', 'v', [['url' => 'https://github.com/file', 'hashes' => ['md5' => str_repeat('a', 32)], 'path' => 'mods/a.jar']]), 'Unsupported checksum accepted');
 echo "Provider discovery, exact releases and complete-file resolution tests passed\n";
+
+// Client archives become preparable only as an explicit two-stage recipe.
+$http->responses['https://api.curseforge.com/v1/mods/123/files/20'] = ['data' => $cfFile];
+$client = $cfFile;
+$client['fileName'] = 'pack.zip';
+$client['displayName'] = 'Exact client manifest';
+$http->responses['https://api.curseforge.com/v1/mods/123/files/20'] = ['data' => $client];
+$recipe = $cf->release('123', '20');
+check($recipe->canPrepare() && $recipe->format === 'curseforge' && $recipe->bytes() === null, 'Client archive incorrectly treated as a finished server pack');
+$manifest = ['manifestType' => 'minecraftModpack', 'manifestVersion' => 1, 'files' => []];
+for ($i = 1; $i <= 4; $i++) {
+    $file = $cfFile;
+    $file['modId'] = 1000 + $i;
+    $file['id'] = 2000 + $i;
+    $file['fileName'] = 'mod-'.$i.'.jar';
+    $http->responses['https://api.curseforge.com/v1/mods/'.$file['modId'].'/files/'.$file['id']] = ['data' => $file];
+    $manifest['files'][] = ['projectID' => $file['modId'], 'fileID' => $file['id'], 'required' => true];
+}
+$batch = $cf->resolveBatch($manifest);
+check(! $batch['complete'] && count($batch['files']) === 3, 'Required-file resolution exceeded its bounded queue tick');
+$batch = $cf->resolveBatch($manifest, $batch['files']);
+check($batch['complete'] && count($batch['files']) === 4, 'Required-file checkpoint did not resume completely');
+$http->responses['https://api.curseforge.com/v1/mods/1001/files/2001']['data']['dependencies'] = [['modId' => 9999, 'relationType' => 3]];
+rejects(fn () => $cf->resolveManifest($manifest), 'Unpinned required dependency was silently skipped');
+$manifest['files'][] = $manifest['files'][0];
+rejects(fn () => $cf->requirements($manifest), 'Duplicate required project accepted');
+echo "CurseForge bounded resolution, client recipe and dependency-completeness checks passed\n";
+
+$custom = new CustomProvider($http);
+$customSource = 'https://recipes.example.net/pack.json';
+$GLOBALS['test_config']['arcturus-modpack-manager.allowed_custom_hosts'] = ['recipes.example.net'];
+$download = ['artifact_id' => 'fixture', 'path' => 'mods/example.jar', 'hashes' => ['sha256' => str_repeat('a', 64)]];
+$http->responses[$customSource] = ['schema' => 2, 'latest' => '2.0', 'releases' => [
+    ['version' => '1.0', 'downloads' => [$download]], ['version' => '2.0', 'downloads' => [$download]],
+]];
+check($custom->latest($customSource)->version === '2.0', 'Custom catalog ignored its exact latest pointer');
+check($custom->release($customSource, '1.0')->canPrepare(), 'Old custom baseline release cannot be independently selected');
+rejects(fn () => $custom->release($customSource, 'missing'), 'Unknown custom release accepted');
+$http->responses[$customSource]['releases'][] = $http->responses[$customSource]['releases'][0];
+rejects(fn () => $custom->versions($customSource), 'Ambiguous duplicate custom release accepted');
+echo "Custom release catalogs retain exact old baselines and reject ambiguity\n";

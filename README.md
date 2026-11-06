@@ -46,7 +46,7 @@ The wizard never fabricates provenance by hashing live files. Existing startup c
 | FTB | Numeric pack ID | Official exact server file manifest, supported hashes, targets and permitted dependency downloads; generated loader runtime requires separate qualification |
 | GitHub / GTNH | `owner/repository` | Exact tag and one explicitly selected server ZIP with GitHub SHA-256 digest; otherwise use a pinned custom recipe |
 | Modrinth | Project slug/ID | `.mrpack`, index checksums, server environments and server overrides; optional files require explicit normalization |
-| CurseForge | Numeric project ID | API key required; official server packs and full required-file resolver; client archive staging currently blocked |
+| CurseForge | Numeric project ID | API key required; official server packs and checkpointed client-manifest resolution with complete verified downloads; unknown server runtime remains blocked |
 | ATLauncher | Pack safe name | Metadata and permitted checksummed mods; unsigned config archives, browser-only downloads and bot protection fail closed |
 | Custom | Approved HTTPS recipe or operator-owned JSON path | Schema-2 recipes with exact URLs or configured node-local artifact IDs and independent checksums |
 

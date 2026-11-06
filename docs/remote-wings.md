@@ -60,6 +60,8 @@ Create a separate operator-owned mode-`0600` JSON file on the Panel host:
 
 Set `ARCTURUS_MODPACK_MANAGER_NODE_CONFIG=/etc/pelican/arcturus-node-workers.json` in the Panel environment. Clear/rebuild Pelican's normal config cache as appropriate and restart its queue workers. TLS verification is required; no insecure-TLS toggle is offered. Worker endpoints are operator-controlled and may be private addresses; modpack download URLs must resolve to public addresses and match an exact allowlist.
 
+For CurseForge client manifests, update the worker as well as the plugin: its capabilities must advertise `curseforge_resolution=true`. The worker can retain `awaiting_resolution` across restarts without treating a manifest-only stage as complete.
+
 The Panel and node each enforce their own limits. Use the stricter effective limit. The node performs one preparation at a time per server; concurrency settings do not invent parallel progress.
 
 ## Integrity and scope

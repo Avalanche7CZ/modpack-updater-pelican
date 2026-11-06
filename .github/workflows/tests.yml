@@ -47,6 +47,7 @@ jobs:
           php tests/integration/filament.php
           php tests/integration/livewire.php
           php tests/integration/adoption.php
+          php tests/integration/curseforge.php
   package:
     needs: [regression, pelican]
     runs-on: ubuntu-latest

@@ -6,6 +6,7 @@ $source = dirname(__DIR__, 2);
 use App\Models\User;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer;
 use Arcturus\ModpackManager\Models\ManagedServer;
+use Arcturus\ModpackManager\Models\Operation;
 use Arcturus\ModpackManager\ModpackManagerPlugin;
 use Filament\Facades\Filament;
 use Illuminate\Database\Schema\Blueprint;
@@ -13,6 +14,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 Schema::create('webhook_configurations', function (Blueprint $t) {
     $t->id();
@@ -69,6 +71,14 @@ foreach (['overview', 'updates', 'changes', 'protection', 'backups', 'history'] 
         file_put_contents($snapshotDir.'/'.$tab.'.html', '<!doctype html><html lang="en" class="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/build/'.$css.'"></head><body class="bg-gray-50 text-gray-950 dark:bg-gray-950 dark:text-white" style="padding:16px">'.Blade::render('@filamentStyles').$html.'</body></html>');
     }
 }
+$progressOperation = Operation::create([
+    'id' => (string) Str::uuid(), 'managed_server_id' => $record->id, 'kind' => 'baseline',
+    'phase' => 'preparing', 'heartbeat_at' => now(),
+    'context' => ['progress' => ['files_resolved' => 3, 'required_files' => 4]],
+]);
+$record->update(['active_operation_id' => $progressOperation->id]);
+$test->call('selectTab', 'overview');
+check((bool) preg_match('~3\s*/\s*4 required files resolved~', $test->html()), 'Required-file progress counters were not rendered');
 Auth::guard()->forgetUser();
 rejects(fn () => Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]), 'Guest mounted the managed-server review page');
 echo "All native Livewire detail tabs rendered; destructive control and guest access guards passed\n";

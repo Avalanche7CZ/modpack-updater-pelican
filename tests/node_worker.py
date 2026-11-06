@@ -238,6 +238,99 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(json.loads(response.read())['deploy'])
         client.close()
 
+    def begin_curseforge(self):
+        manifest = {'manifestType': 'minecraftModpack', 'manifestVersion': 1, 'overrides': 'overrides',
+                    'minecraft': {'version': '1.20.1', 'modLoaders': [{'id': 'forge-47.4.0', 'primary': True}]},
+                    'files': [{'projectID': 123, 'fileID': 20, 'required': True}]}
+        artifact = self.archive([('manifest.json', json.dumps(manifest)), ('overrides/config/a.cfg', b'upstream config')])
+        recipe = self.recipe(artifact)
+        recipe.update(provider='curseforge', project='123', version='999', format='curseforge')
+        operation = 'd' * 32
+        self.worker.prepare(self.server, recipe, operation)
+        self.worker.threads[(self.server, operation)].join(5)
+        self.assertEqual(self.worker.status(self.server, operation)['state'], 'awaiting_resolution')
+        return operation, self.worker.requirements(self.server, operation)
+
+    def resolved_mod(self):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, 'w') as jar:
+            jar.writestr('mcmod.info', '[{"modid":"fixture"}]')
+        data = payload.getvalue()
+        return data, [{'project_id': '123', 'file_id': '20', 'path': 'mods/fixture.jar',
+                       'url': 'https://github.com/fixture.jar', 'hashes': {'sha1': w.hashlib.sha1(data).hexdigest()}, 'size': len(data)}]
+
+    def test_curseforge_waits_for_complete_pinned_api_resolution(self):
+        operation, requirements = self.begin_curseforge()
+        with self.assertRaises(ValueError):
+            self.worker.handle(self.server, 'manifest', {'operation_id': operation})
+        with self.assertRaises(ValueError):
+            self.worker.resolve(self.server, operation, requirements['sha256'], [])
+        data, files = self.resolved_mod()
+        wrong = [dict(files[0], file_id='21')]
+        with self.assertRaises(ValueError):
+            self.worker.resolve(self.server, operation, requirements['sha256'], wrong)
+        with self.assertRaises(ValueError):
+            self.worker.resolve(self.server, operation, '0' * 64, files)
+        self.assertEqual(self.worker.status(self.server, operation)['state'], 'awaiting_resolution')
+
+    def test_curseforge_downloads_all_mods_applies_overrides_and_verifies_manifest(self):
+        operation, requirements = self.begin_curseforge()
+        data, files = self.resolved_mod()
+        response = unittest.mock.MagicMock()
+        response.status = 200
+        response.getheader.side_effect = lambda key, default=None: str(len(data)) if key == 'Content-Length' else default
+        response.read.side_effect = io.BytesIO(data).read
+        with patch.object(w, 'public_address', return_value='1.1.1.1'), patch.object(w, 'PinnedHTTPS') as transport:
+            transport.return_value.getresponse.return_value = response
+            self.worker.resolve(self.server, operation, requirements['sha256'], files)
+            self.worker.threads[(self.server, operation)].join(5)
+        result = self.worker.status(self.server, operation)
+        self.assertEqual(result['state'], 'completed', result)
+        upstream = self.worker.handle(self.server, 'manifest', {'operation_id': operation})
+        self.assertEqual(upstream['files']['mods/fixture.jar'], w.hashlib.sha256(data).hexdigest())
+        self.assertEqual(upstream['files']['config/a.cfg'], w.hashlib.sha256(b'upstream config').hexdigest())
+        self.assertEqual(upstream['identities']['mods/fixture.jar'], 'fixture')
+        self.assertEqual(upstream['runtime']['loader_version'], '47.4.0')
+        self.assertEqual(len(upstream['artifacts']), 2)
+        self.assertFalse(any(self.live.iterdir()))
+        self.assertEqual(self.worker.resolve(self.server, operation, requirements['sha256'], files)['state'], 'completed')
+        with self.assertRaises(ValueError):
+            self.worker.resolve(self.server, operation, requirements['sha256'], [])
+
+    def test_curseforge_failed_required_transfer_never_completes(self):
+        operation, requirements = self.begin_curseforge()
+        data, files = self.resolved_mod()
+        response = unittest.mock.MagicMock()
+        response.status = 200
+        response.getheader.return_value = None
+        response.read.side_effect = io.BytesIO(b'truncated or changed artifact').read
+        with patch.object(w, 'public_address', return_value='1.1.1.1'), patch.object(w, 'PinnedHTTPS') as transport:
+            transport.return_value.getresponse.return_value = response
+            self.worker.resolve(self.server, operation, requirements['sha256'], files)
+            self.worker.threads[(self.server, operation)].join(5)
+        self.assertEqual(self.worker.status(self.server, operation)['state'], 'failed')
+        with self.assertRaises(ValueError):
+            self.worker.handle(self.server, 'manifest', {'operation_id': operation})
+        self.assertFalse(any(self.live.iterdir()))
+
+    def test_curseforge_waiting_resolution_survives_restart_and_cancels(self):
+        operation, requirements = self.begin_curseforge()
+        restarted = w.Worker(self.settings)
+        self.assertEqual(restarted.requirements(self.server, operation)['sha256'], requirements['sha256'])
+        status = restarted.handle(self.server, 'cancel', {'operation_id': operation})
+        self.assertEqual(status['state'], 'cancelled')
+        with self.assertRaises(ValueError):
+            restarted.resolve(self.server, operation, requirements['sha256'], self.resolved_mod()[1])
+
+    def test_curseforge_rejects_optional_and_duplicate_projects(self):
+        bad = {'manifestType': 'minecraftModpack', 'manifestVersion': 1,
+               'files': [{'projectID': 123, 'fileID': 20, 'required': False}]}
+        with self.assertRaises(ValueError):
+            self.worker.curseforge_requirements(bad)
+        bad['files'] = [{'projectID': 123, 'fileID': 20, 'required': True}] * 2
+        with self.assertRaises(ValueError):
+            self.worker.curseforge_requirements(bad)
+
 
 class DownloadTests(unittest.TestCase):
     def response(self, body=b'content', status=200, headers=None):

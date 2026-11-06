@@ -13,7 +13,7 @@ final class NodeWorker
 
     public function request(string $operation, array $payload = []): array
     {
-        if (! in_array($operation, ['capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file'], true)) {
+        if (! in_array($operation, ['capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'requirements', 'resolve'], true)) {
             throw new CapabilityUnavailable('Unsupported node capability');
         }
         $entry = config('arcturus-modpack-manager.nodes.'.$this->uuid);
