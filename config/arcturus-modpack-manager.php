@@ -33,6 +33,7 @@ return [
     'nodes' => $nodes,
     'local_servers' => $localServers,
     'local_config_error' => $localConfigError,
+    'default_filesystem_backend' => 'wings',
     'local_server_roots' => [],
     'default_policy' => 'approve',
     'default_backup_exclusions' => ['backup', 'backups'],

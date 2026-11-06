@@ -15,11 +15,11 @@ Identity is permanently isolated from cosmii02's Modpack Manager:
 
 Both plugins can coexist. Arcturus never reads, migrates or modifies cosmii02's tables, files or configuration.
 
-For a same-host Ubuntu installation, use the [local filesystem setup](docs/local-filesystem.md): explicit UUID-to-volume mapping, private staging, unprivileged Python subprocess and the existing Laravel queue. No separate node-worker service, HTTPS proxy or tokens are needed for local preparation. Select **Filesystem backend → Same-host local filesystem** on the managed server. Remote deployments retain the [remote worker setup](docs/remote-wings.md).
+For a same-host Ubuntu installation, use the [local filesystem setup](docs/local-filesystem.md): one-time administrator approval of the local Wings node, automatic UUID discovery and private staging on adoption. Open **Local filesystem setup**, run its host command once, then enable the local default. No separate node-worker service, HTTPS proxy, tokens, per-server JSON or environment edits are needed. Remote deployments retain the [remote worker setup](docs/remote-wings.md).
 
 ## Requirements and installation
 
-Target: Pelican Panel **1.0.0-rc.1**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. Keep queue `retry_after` above this plugin's 150-second preparation tick timeout; 180 seconds or more is appropriate for these short ticks. Native legacy deployment jobs have a much longer timeout and are not enabled by this release.
+Target: Pelican Panel **1.0.0-rc.1**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. For remote preparation, keep queue `retry_after` above its 150-second tick timeout (180 seconds or more). Approved local-node setup configures a longer effective retry window for bounded local preparation; see the local setup guide. Native legacy deployment jobs have a much longer timeout and are not enabled by this release.
 
 1. Download `arcturus-modpack-manager.zip` and `SHA256SUMS.txt` from a successful [GitHub Release](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases).
 2. Verify `sha256sum -c SHA256SUMS.txt`.

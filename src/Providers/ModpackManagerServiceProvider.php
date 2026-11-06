@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Providers;
 
 use Arcturus\ModpackManager\Services\PluginSettings;
+use Arcturus\ModpackManager\Local\LocalNode;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
@@ -18,6 +19,7 @@ final class ModpackManagerServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        $this->app->make(LocalNode::class)->configureQueue();
         $this->loadViewsFrom(plugin_path('arcturus-modpack-manager', 'resources/views'), 'arcturus-modpack-manager');
         // Configuration is refreshed on each job in long-lived workers as well as web requests.
         $loadSettings = function (): void {

@@ -1,104 +1,85 @@
-# Same-host local filesystem setup (Ubuntu / Pelican)
+# One-time local Wings node setup (Ubuntu / Pelican)
 
-Use this backend when Panel PHP-FPM, `pelican-queue`, Wings and the managed volumes are on the **same machine and filesystem namespace**. Containerized Panels must explicitly expose the selected volumes read-only and staging read-write. There is no automatic path discovery or fallback from remote to local.
+Target flow: **One-time host setup → Adopt a local server → Prepare installed baseline**.
 
-Local preparation runs the shipped Python archive/inventory implementation as an unprivileged, fixed stdio subprocess of the Laravel job. It needs **Python 3.11+** at `/usr/bin/python3` and PHP process execution (`proc_open`). No Python service, listener, HTTPS proxy, API token, sudo permission or Docker socket is needed. Archives, installers and pack scripts are never executed. Native Pelican/Wings APIs still supply runtime observations, image/egg/startup hints and power status; their existing credentials and settings are unchanged.
+Use this backend when Panel PHP-FPM, `pelican-queue`, Wings and the server volumes share the same Ubuntu host/filesystem namespace. The existing Python staging implementation runs as a fixed, unprivileged subprocess of the Laravel job. There is no Python daemon, HTTPS proxy, API token, per-server SSH configuration or privileged web request. Remote nodes retain their existing remote backend.
 
-## 1. Provision explicit paths and permissions
+## 1. Approve the local node once
 
-These are **operator-run examples**, not an automatic installer. Substitute the actual UUID and Panel service account; check both PHP-FPM and `pelican-queue` run unprivileged as that account (commonly `www-data`). Root execution is refused. Keep plugin code and the mapping file owned by the operator and unwritable by the PHP account.
+Import the current plugin ZIP and open **Arcturus Modpack Manager → Local filesystem setup**. The page shows readiness checks, the Pelican node IDs and the setup command for each node. Choose the node physically running on this host and verify its volume root against Wings. Its database `daemon_base` must exactly match the explicitly approved canonical path.
 
-```sh
-ARCTURUS_UUID='11111111-1111-4111-8111-111111111111'
-ARCTURUS_VOLUME="/var/lib/pelican/volumes/$ARCTURUS_UUID"
-sudo install -d -o root -g www-data -m 0750 /var/lib/arcturus-modpack-manager
-sudo install -d -o www-data -g www-data -m 0700 "/var/lib/arcturus-modpack-manager/$ARCTURUS_UUID"
-```
+Requirements: Python **3.11+** at `/usr/bin/python3`, Ubuntu's `acl` and `util-linux` tools, PHP process execution (`proc_open`), and an existing asynchronous database/Redis queue. PHP-FPM and `pelican-queue` must use the **same unprivileged account**, commonly `www-data`. The Panel account must be separate from the writable Wings volume/file owner. No Docker socket, sudo permission or setuid helper is granted to the Panel.
 
-All configured root/staging directories must already exist at canonical absolute paths without symlinks or `..`. Each server needs a separate staging directory **outside every live volume**, with mode `0700` owned by the PHP/queue user. Neither live roots nor staging scopes may overlap other servers' corresponding roots. Provide enough staging disk for the downloaded archives and extracted files; nothing is deleted automatically.
-
-Grant only read/traverse access to the live root and managed pack directories. For example, if using ACLs, inspect existing ACLs first, grant traverse access to otherwise inaccessible parent directories, and then grant access to the selected volume and existing pack directories:
+Install dependencies if needed:
 
 ```sh
-sudo setfacl -m u:www-data:rx "$ARCTURUS_VOLUME"
-sudo setfacl -R -m u:www-data:r-X "$ARCTURUS_VOLUME/mods" "$ARCTURUS_VOLUME/config"
-sudo setfacl -m u:www-data:r-- "$ARCTURUS_VOLUME/server.properties"
+sudo apt-get install acl python3 util-linux
 ```
 
-Add only other existing managed directories/files actually used by the pack (for TFG these can include `libraries`, `kubejs`, `scripts`, `defaultconfigs` and launcher configuration). Grant directory traversal on inaccessible parents individually with `u:www-data:--x`. Do not apply recursive ACLs to the entire volume or worlds. Preparation never requires write permission to live files. Arrange the same read access for replacement pack files after manual updates; do not give the Panel broad write access or use `chmod 777`. Changing ownership of the live volume is unnecessary.
-
-## 2. Configure the UUID mapping
-
-Create `/etc/pelican/arcturus-local-filesystems.json`, owned by `root:www-data`, mode `0640`, with this shape. The file must be readable, regular, not a symlink, and not group/world-writable. Replace the example UUID **in both places**. Paths must match the real Wings volume, not a similarly named server.
-
-```json
-{
-  "11111111-1111-4111-8111-111111111111": {
-    "root": "/var/lib/pelican/volumes/11111111-1111-4111-8111-111111111111",
-    "staging": "/var/lib/arcturus-modpack-manager/11111111-1111-4111-8111-111111111111",
-    "max_archive_bytes": 8589934592,
-    "max_inventory_bytes": 34359738368,
-    "allowed_hosts": [
-      "github.com",
-      "release-assets.githubusercontent.com",
-      "objects.githubusercontent.com"
-    ]
-  }
-}
-```
-
-Only add exact upstream/CDN hostnames needed by the selected provider. Downloads retain HTTPS verification, public-IP checks, redirect allowlisting, streaming limits and upstream checksum verification. Do not add wildcard hosts or disable TLS. The optional `managed_directories`, `excluded_directories` and operator-reviewed `artifacts` map have the same semantics as [the existing worker](remote-wings.md). World detection always overrides these options. A local recipe cannot request arbitrary local artifact paths.
-
-Set this in the Panel `.env`:
-
-```dotenv
-ARCTURUS_MODPACK_MANAGER_LOCAL_CONFIG=/etc/pelican/arcturus-local-filesystems.json
-```
-
-## 3. Configure the existing asynchronous queue
-
-Large server ZIPs can take much longer than a normal short queue tick. A local preparation step can run for up to **14400 seconds**; its job timeout is **14430 seconds** and the operation lock lasts **14460 seconds**. Heartbeats refresh every 30 seconds. The local helper runs inside that job; no detached installation or daemon is started.
-
-Use Pelican's existing database or Redis queue. The connection's `retry_after` must exceed 14460 seconds; **14520** is recommended. Set the variable for your actual Laravel queue connection, preserving the existing connection, database and credentials:
-
-```dotenv
-# For the database queue:
-DB_QUEUE_RETRY_AFTER=14520
-# For the Redis queue:
-REDIS_QUEUE_RETRY_AFTER=14520
-```
-
-The framework defaults use these names. If your Panel overrides queue configuration, inspect the effective `config('queue.connections.'.config('queue.default'))` and set `retry_after` there. Do not switch to `sync`: the preflight refuses synchronous, unsupported or short-visibility queues rather than running downloads in a web request. Other jobs on this connection also inherit the longer retry visibility after a worker crash; account for that operational tradeoff. Normal execution is unaffected.
-
-Ensure the queue service manager allows a running preparation to finish before forcing shutdown (for systemd, a suitable `TimeoutStopSec`; for Supervisor, `stopwaitsecs`). Restart/import while no preparation is running whenever possible. If a process is killed, retained stage state is interrupted on reconciliation rather than silently replayed.
-
-## 4. Reload the Panel and select local mode
-
-After importing/upgrading the plugin or changing the mapping/environment, rebuild the Panel configuration and **restart long-lived queue workers**. Example commands from your Panel directory, using its actual PHP binary/account:
+Copy the setup script from your verified plugin release into a root-owned location, then run it once. The status page supplies commands using your actual Panel path and database node/root. Example only:
 
 ```sh
-sudo -u www-data php artisan optimize:clear
-sudo -u www-data php artisan config:cache
-sudo systemctl restart pelican-queue
-sudo systemctl status pelican-queue --no-pager
+sudo install -o root -g root -m 0755 \
+  /var/www/pelican/plugins/arcturus-modpack-manager/node-worker/setup-local-node.py \
+  /usr/local/sbin/arcturus-local-node-setup
+
+sudo /usr/bin/python3 /usr/local/sbin/arcturus-local-node-setup \
+  --panel /var/www/pelican \
+  --user www-data \
+  --node 1 \
+  --volume-root /var/lib/pelican/volumes
 ```
 
-A newly imported plugin's classes are discovered when Laravel boots. A web request seeing the plugin does not prove an already-running queue process can autoload its jobs. Restarting `pelican-queue` resolves that separate autoloading issue; it does not grant filesystem permissions. This follows [Laravel's queue deployment requirement](https://laravel.com/docs/12.x/queues#queue-workers-and-deployment). Run your usual PHP-FPM reload if its OPcache/deployment configuration requires one. No queue service is restarted by this plugin.
+Use your actual PHP-FPM/queue account instead of `www-data`; use `--php /usr/bin/php8.4` if necessary. Append `--dry-run` to preview node identity and scope without changing ACLs, files, approval or queue state. The command is **administrator-only**; never give the Panel permission to invoke it through sudo. It refuses a root service account and always drops privileges through a fixed `runuser` invocation **before** executing any Panel PHP.
 
-In **Arcturus Modpack Manager → Managed servers → your server**:
+The administrator explicitly approves one local node and volume root. The script then:
 
-1. Open **Filesystem backend**, choose **Same-host local filesystem**, and save. The plugin validates the UUID mapping, Python runtime, canonical paths, readable root and private writable staging, then pins those paths to this managed server. Changing backend/paths invalidates baseline/plan evidence while preserving installed version, saved policies, protected mods, server files and runtime settings.
-2. Use **Test filesystem access**. This reads configuration/capability and directory-permission metadata; it does not scan worlds, download a pack or create a stage.
-3. For the existing TFG-Modern server, confirm the saved installed upstream release is exactly **0.13.5** and the existing GitHub source/asset pattern resolves its verified server pack. Then choose **Prepare installed baseline**. Queue and filesystem preflight failures appear as actionable notifications before dispatch. An upstream release without supported checksums still blocks preparation.
-4. Review **File Changes** and protected/local-only mods. Baseline evidence comes from the staged upstream archive, never from the customized live installation. Preparation does not finish adoption or deploy an update automatically.
+- Reads node ID, node UUID, `daemon_base`, server UUIDs, queue driver and active-operation count from Pelican through an unprivileged, read-only Artisan command. Node credentials are not exported. Active operations must be resolved first.
+- Rejects noncanonical paths, symlinks, overlapping staging, mutable volume ancestors and nested mounts beneath the approved root. The volume parent and its ancestors must be root-owned and not group/world-writable.
+- Grants the Panel account **read/traverse only**, using descriptor-pinned POSIX ACL operations. Existing database servers receive access to regular top-level pack files and managed pack directories. Actual/custom worlds, world markers, logs, backups, unknown directories, symlinks and special files are excluded from recursive provisioning. Hard links are rejected so granting an ACL cannot expose a shared inode outside the approved volume.
+- Preserves other ACL subjects' effective permissions when expanding an ACL mask. It does not change live file contents, ownership, startup commands, Java settings, server configuration or saved protection policies. It never grants new write permission to live files, runs pack scripts or uses `chmod 777`.
+- Sets default read/traverse ACLs at the approved volume parent and managed directories so normally created future UUID volumes and pack files inherit access. Existing worlds are not traversed or recursively ACL-modified. **The OS permission boundary is the approved node volume tree; newly created descendants, including worlds, can inherit read ACLs.** Application-level UUID eligibility and world exclusions remain stricter: the plugin never inventories worlds or scans non-database servers. File creators explicitly removing ACLs or creating owner-only files can still block later access; the plugin reports that instead of fixing permissions from the web.
+- Creates one shared staging parent, default `/var/lib/arcturus-modpack-manager/staging`, owned by the service account with mode `0700`. It must be outside the entire live volume root. Individual UUID staging directories are not created by the privileged command.
+- Writes a protected root-owned approval file at `/etc/arcturus-modpack-manager/local-node.json`. It is generated automatically, contains node-wide identity/paths and official download hosts, and needs **no per-server entries or environment variable**. The application reads it afresh, including when Laravel config is cached.
+- Requests a graceful `queue:restart` as the unprivileged Panel account and verifies host readiness. A normal queue service manager must already be keeping `pelican-queue` alive. No service/agent is installed automatically.
 
-## Diagnosis and recovery
+A failed setup can leave partial **read-only ACL grants** or the shared staging parent. It does not roll them back blindly or delete stages. Correct the reported issue and rerun the same command; it is idempotent. Changing the approved node/root/account requires explicit `--replace`; old ACLs and stages are retained for operator review. Replacing an approval is not a migration of existing managed-server evidence.
 
-- **Missing mapping:** check the exact Pelican server UUID, environment path, file ownership/mode, effective config cache and queue restart. Remote mode continues to require its separate worker; select local explicitly.
-- **Root/staging permissions:** test as both actual service accounts. The quick capability check covers root/staging permissions; unreadable managed children can still fail a later inventory. Grant only their required read/traverse ACLs. Staging must be owned by the executing account and mode `0700`.
-- **Changed mapping:** re-select local mode to validate/pin the new paths. Wait for active preparation to finish before changing paths. Retain old stages referenced by baselines or merge reviews.
-- **Python/process unavailable:** install Python 3.11+ and allow `proc_open` for the Panel's trusted plugin process. Run the queue as an unprivileged account. Check AppArmor/systemd filesystem restrictions if Unix ACLs appear correct.
-- **Archive/checksum/download/scope failure:** retain the stage and the Panel/node operation IDs. Correct the reviewed upstream recipe or permissions, then explicitly retry with a new operation. Do not manually replace a manifest with live files.
-- **Queue interruption:** inspect the actual process and stage first, then use the existing preparation reconciliation/recovery actions. A live subprocess is protected by both the Panel operation lock and a staging file lock; a duplicate cannot prepare concurrently. Cancellation writes only the stage cancellation marker. Lock expiry after a hard worker crash is conservative; never clear an operation lock while its process is still running.
+## 2. Enable the native default
 
-The local backend provides **read-only live inventory and isolated preparation only**. New local baselines cannot pass the deployment gate; no local apply/restore capability is enabled. Remote workers and existing legacy offline tests remain supported. This feature does not prove a full TFG runtime/world migration or modify production server files.
+Return to **Local filesystem setup → Refresh readiness**. Checks cover:
+
+- protected host approval and its node identity/root matching current Pelican database metadata;
+- unprivileged Python/process execution, root access and private writable staging parent;
+- the asynchronous queue and safe retry visibility;
+- discovered database servers on that node, with canonical UUID volumes and per-server staging state.
+
+Choose **Use local for new eligible servers**. This saves a native plugin setting. Existing managed-server backends, verified baselines, policies and installed versions are unchanged. **Use remote default** reverses only the new-server preference.
+
+## 3. Adopt and prepare
+
+In **Adopt Existing Server**, select any server on the approved node and leave **Preparation backend → Use node default**. The plugin derives `<approved-volume-root>/<database-server-UUID>`; neither the form nor HTTP payload supplies a host path. It verifies node membership, node UUID/root, the real UUID directory and permissions, then creates `<shared-staging-parent>/<UUID>` unprivileged with mode `0700`. Existing unsafe stages are rejected rather than chmodded or replaced.
+
+Remote-node servers use the remote backend even with the local default. A missing local volume or failed local permission check is shown as a form error; it is not silently treated as a remote server. You can also explicitly choose local or remote in the wizard. Existing managed servers can select **Filesystem backend → Same-host local filesystem** on their detail page; selection validates/creates staging and invalidates previous baseline/plan verification without rewriting policies or live files.
+
+For the existing TFG-Modern server, preserve the exact installed release **0.13.5**, source and server ZIP pattern. Choose **Prepare installed baseline**. Downloads, upstream checksums, archive/path limits, world exclusion, manifests, inventory, planner and protection rules use the existing implementation. A customized live installation is never substituted for the upstream baseline. Unsupported/missing checksums still block preparation. Review File Changes and finish verified adoption separately.
+
+## Queue behavior and restarts
+
+Local preparation remains an existing Laravel job with a bounded Python subprocess. Each local step allows 14400 seconds; job timeout is 14430 seconds, operation lock 14460 seconds, and heartbeats update every 30 seconds. Once a valid host approval exists, the plugin sets the current database/Redis connection's effective `retry_after` to **at least 14520 seconds at application boot**. No `.env` or Panel-core edits are made; credentials and queue connection remain unchanged. This increases failed-worker retry visibility for other jobs on the same connection too.
+
+Synchronous or unsupported queue drivers fail readiness/preflight; the plugin does not switch production queue connections automatically. A configured database/Redis queue is a normal Pelican prerequisite. Ensure your service manager allows a running preparation to finish before forcibly stopping it (`TimeoutStopSec` / Supervisor `stopwaitsecs`).
+
+Long-lived workers must restart after plugin import/upgrade so they can autoload new classes. The one-time command requests a graceful restart; restart `pelican-queue` through your normal service manager if it was not already supervising workers. Later plugin imports still need the usual queue restart. A fresh web request seeing a plugin does not prove an old queue process loaded it. See [Laravel queue deployment](https://laravel.com/docs/12.x/queues#queue-workers-and-deployment).
+
+## Diagnosis, scope and compatibility
+
+Use **Refresh readiness** on the setup page and **Test filesystem access** on a managed server. These checks do not download a pack, create stages, scan pack/world files or grant permissions. Readiness covers roots/parents and stage metadata; a later inventory can still encounter a child whose ACL was removed. Re-run the same node-wide administrator command after correcting destructive ACL/chmod changes, rather than adding per-server configuration. Unsupported nested mounts, hard-linked pack files and separately isolated service accounts need independent operator review; no unsafe fallback is offered.
+
+Missing/foreign node metadata, changed node roots, unknown UUIDs, symlinked or missing volumes, unsafe stage ownership/modes and unavailable Python/process permissions block local use. After node transfers or volume-root changes, reapprove the correct host scope and explicitly reselect affected backends; retained old stages/baselines are not silently rebound.
+
+Keep retained stages referenced by active operations, baselines and text-merge reviews. Existing cancellation and reconciliation actions use the selected backend. Concurrent subprocesses are excluded by the existing Panel operation lock and staging lock; interrupted stages are not silently replayed. No stage/world deletion or production repair is performed by setup/status actions.
+
+Existing manually configured `ARCTURUS_MODPACK_MANAGER_LOCAL_CONFIG` mappings remain supported for already configured installations. They take precedence for their UUIDs and retain pinned paths/evidence; they are not required for node-wide discovery. Do not delete old mappings/stages while operations or merge reviews reference them. The optional node-wide approval `artifacts` map retains the existing operator-reviewed custom-artifact capability; no recipe may supply arbitrary local source paths.
+
+Local preparation and remote preparation both retain their deployment restrictions. This change enables neither live application nor automatic restore/rollback, and does not prove a full TFG runtime/world migration.

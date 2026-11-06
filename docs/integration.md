@@ -1,6 +1,6 @@
 # Validation and disposable integration
 
-Run from the plugin checkout with PHP 8.4/8.5, ZIP/mbstring and Python 3.11+:
+Run from the plugin checkout with PHP 8.4/8.5, ZIP/mbstring, Python 3.11+ and Ubuntu POSIX ACL tools (`apt-get install acl`):
 
 ```sh
 bash scripts/test.sh
@@ -25,6 +25,7 @@ php tests/integration/filament.php
 php tests/integration/livewire.php
 php tests/integration/adoption.php
 php tests/integration/local.php
+php tests/integration/local_node.php
 php tests/integration/curseforge.php
 php tests/integration/runtime.php
 php tests/integration/policies.php
@@ -69,3 +70,5 @@ Set `ARCTURUS_UI_SNAPSHOTS=/tmp/arcturus-policy-ui` while running `tests/integra
 The three new policy screens passed 18 Chromium viewport/theme fixture checks (390, 768, 1440 pixels in light/dark). The final adoption action was explicitly checked for visibility on the final step. Snapshots reflect the native last-step/modal and idle loading state; they do not replace the actual Livewire submission and rule-action tests.
 
 The local suite invokes the real Python stdio helper against private temporary directories. It covers verified baseline/target manifests, complete local-only inventory, world exclusion, queue preflight, policy/runtime preservation, path/permission rejection, and unchanged remote selection. Native Livewire tests exercise backend selection, capability testing, and refusing a missing mapping before dispatch. Python tests additionally cover extraction/checksum failure, cross-process locks and interrupted state without replay. These are fixture tests; no production TFG files or server runtime are used.
+
+Node setup fixtures exercise actual POSIX ACL inheritance, preservation of other subjects' effective permissions, world/symlink/special-file exclusion, hard-link and nested-mount rejection, and privilege dropping before Panel PHP. The native node suite tests read-only discovery/status, forged/writable approval rejection, node membership and root changes, future UUIDs, private staging on wizard adoption, persisted defaults, remote isolation and a real fixture baseline through the existing local helper. Root host installation is not performed during CI or development; the privileged tool itself is never invoked by a web request.

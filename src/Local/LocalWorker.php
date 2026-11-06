@@ -32,12 +32,16 @@ final class LocalWorker implements IntegrityWorker
         }
         $entries = config('arcturus-modpack-manager.local_servers', []);
         $entry = $entries[$this->server->pelican_server_uuid] ?? null;
+        if ($entry === null) {
+            $entry = app(LocalNode::class)->entry($this->server->pelican_server_uuid);
+            $entries = [$this->server->pelican_server_uuid => $entry];
+        }
         if (! is_array($entry) || ! is_string($entry['root'] ?? null) || ! is_string($entry['staging'] ?? null)) {
-            throw new CapabilityUnavailable('Local filesystem is not configured for this server UUID. Add root and staging to ARCTURUS_MODPACK_MANAGER_LOCAL_CONFIG, rebuild config cache and restart pelican-queue. See docs/local-filesystem.md.');
+            throw new CapabilityUnavailable('The legacy per-server filesystem override is invalid. Repair or retire that override, then use Local filesystem setup for node-wide discovery.');
         }
         if (($this->server->local_root && $this->server->local_root !== $entry['root']) ||
             ($this->server->staging_parent && $this->server->staging_parent !== $entry['staging'])) {
-            throw new CapabilityUnavailable('Saved local paths differ from the operator mapping. Re-select the local backend to validate the new paths.');
+            throw new CapabilityUnavailable('Saved local paths differ from the approved configuration. Re-select the local backend to validate and pin the new paths.');
         }
 
         return $entries;
@@ -45,14 +49,21 @@ final class LocalWorker implements IntegrityWorker
 
     public function request(string $operation, array $payload = []): array
     {
-        if (! in_array($operation, ['capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'requirements', 'resolve'], true)) {
+        if (! in_array($operation, ['provision', 'capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'requirements', 'resolve'], true)) {
             throw new CapabilityUnavailable('Unsupported local capability');
         }
         $entries = $this->configuration();
+
+        return self::execute(['servers' => $entries, 'server' => $this->server->pelican_server_uuid,
+            'operation' => $operation, 'payload' => $payload],
+            in_array($operation, ['prepare', 'resolve'], true) ? self::TIMEOUT : 120, $this->heartbeat);
+    }
+
+    public static function execute(array $request, int $timeout, ?\Closure $heartbeat = null): array
+    {
         $process = new Process(['/usr/bin/python3', '-B', dirname(__DIR__, 2).'/node-worker/local.py']);
-        $process->setInput(json_encode(['servers' => $entries, 'server' => $this->server->pelican_server_uuid,
-            'operation' => $operation, 'payload' => $payload], JSON_THROW_ON_ERROR));
-        $process->setTimeout(in_array($operation, ['prepare', 'resolve'], true) ? self::TIMEOUT : 120);
+        $process->setInput(json_encode($request, JSON_THROW_ON_ERROR));
+        $process->setTimeout($timeout);
         $output = '';
         try {
             $process->start(function (string $type, string $chunk) use (&$output, $process): void {
@@ -70,8 +81,8 @@ final class LocalWorker implements IntegrityWorker
             $lastHeartbeat = 0;
             while ($process->isRunning()) {
                 $process->checkTimeout();
-                if ($this->heartbeat && time() - $lastHeartbeat >= 30) {
-                    ($this->heartbeat)();
+                if ($heartbeat && time() - $lastHeartbeat >= 30) {
+                    $heartbeat();
                     $lastHeartbeat = time();
                 }
                 usleep(100000);
@@ -88,7 +99,7 @@ final class LocalWorker implements IntegrityWorker
         if (! $process->isSuccessful() || ! is_array($data)) {
             // Only fixed error codes cross the subprocess boundary; never raw exception text.
             $message = match ($data['code'] ?? '') {
-                'permissions' => 'Local filesystem permission check failed. Run PHP-FPM and pelican-queue as an unprivileged account with read/traverse access to this volume and ownership of mode-0700 staging. Never use root or chmod 777.',
+                'permissions' => 'Local filesystem permission check failed. Re-run the one-time node setup as an administrator and verify PHP-FPM and pelican-queue use the same unprivileged account. The Panel will not change existing permissions. Never use root PHP or chmod 777.',
                 'paths' => 'Local paths must be canonical existing directories without symlinks. Staging must be private, outside all live volumes, and separate for every server.',
                 'busy' => 'Another local preparation is active. Inspect the current operation before retrying.',
                 'runtime' => 'Local preparation requires Python 3.11+ and an unprivileged Panel/queue account. Root execution is refused.',

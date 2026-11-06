@@ -30,7 +30,55 @@ def settings_for(request):
     return {'servers': servers}
 
 
+def node_capabilities(node):
+    if sys.version_info < (3, 11) or os.geteuid() == 0 or node['uid'] != os.geteuid():
+        raise LocalError('runtime')
+    live, stage = Path(node['volume_root']), Path(node['staging_parent'])
+    for path in (live, stage):
+        if not path.is_absolute() or path == Path('/') or not path.is_dir() or path.resolve() != path:
+            raise LocalError('paths')
+    if live == stage or live in stage.parents or stage in live.parents:
+        raise LocalError('paths')
+    if (stage.stat().st_uid != os.geteuid() or stage.stat().st_mode & 0o077
+            or not os.access(stage, os.R_OK | os.W_OK | os.X_OK)
+            or not os.access(live, os.R_OK | os.X_OK)):
+        raise LocalError('permissions')
+    return {'configuration_ready': True, 'backend': 'local', 'deploy': False}
+
+
+def provision(request):
+    server = request['server']
+    import uuid
+    if str(uuid.UUID(server)) != server:
+        raise LocalError('paths')
+    entry = request['servers'][server]
+    root, stage = Path(entry['root']), Path(entry['staging'])
+    if stage.name != server or root.name != server:
+        # Legacy operator mappings already contain an existing private stage; never create arbitrary paths.
+        if stage.is_dir():
+            return
+        raise LocalError('paths')
+    node_capabilities({'uid': os.geteuid(), 'volume_root': str(root.parent), 'staging_parent': str(stage.parent)})
+    if root.resolve() != root or not root.is_dir() or not os.access(root, os.R_OK | os.X_OK):
+        raise LocalError('permissions')
+    fd = os.open(stage.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.mkdir(server, 0o700, dir_fd=fd)
+        except FileExistsError:
+            pass  # settings_for below rejects existing symlinks, wrong owners and loose modes.
+    finally:
+        os.close(fd)
+
+
 def run(request):
+    if request['operation'] == 'node_capabilities':
+        return node_capabilities(request['node'])
+    if request['operation'] == 'provision':
+        if os.geteuid() == 0:
+            raise LocalError('runtime')
+        provision(request)
+        request = {**request, 'operation': 'capabilities'}
     settings = settings_for(request)
     server, operation, payload = request['server'], request['operation'], request.get('payload', {})
     if operation not in {'capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'requirements', 'resolve'}:
