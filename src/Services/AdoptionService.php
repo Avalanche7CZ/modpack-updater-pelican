@@ -56,7 +56,10 @@ final class AdoptionService
             // loader/Minecraft/Java evidence. An ambiguous level-name is a
             // deployment safety blocker, not a failed Wings file request.
             $report['protected_roots'] = SafetyPaths::roots($evidence['texts']['server.properties'] ?? '');
-            $report['world_path_verified'] = isset($evidence['texts']['server.properties']);
+            // A missing server.properties provides no independent verification,
+            // but is not evidence of an unsafe escaped level-name. Reserve
+            // false for known ambiguity; null means not observed.
+            $report['world_path_verified'] = isset($evidence['texts']['server.properties']) ? true : null;
         } catch (\InvalidArgumentException $error) {
             $report['protected_roots'] = SafetyPaths::roots();
             $report['world_path_verified'] = false;
