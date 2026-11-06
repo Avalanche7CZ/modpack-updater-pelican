@@ -71,6 +71,9 @@ final class PreviewService
         if (! $verified) {
             $gateReasons[] = 'Unverified upstream baseline';
         }
+        if (($server->runtime_report['world_path_verified'] ?? null) === false) {
+            $gateReasons[] = 'World path could not be verified; resolve server.properties level-name before approval';
+        }
         if (! $server->adopted_at) {
             $gateReasons[] = 'Complete Adopt Existing Server first';
         }
