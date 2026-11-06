@@ -106,12 +106,27 @@ class LocalTests(unittest.TestCase):
                 recipe['downloads'][0]['hashes']['sha256'] = '0' * 64
             result = local.run(self.request('prepare', recipe=recipe, operation_id=str(i) * 32))
             self.assertEqual(result['state'], 'failed')
+            saved = json.loads((self.stage / (str(i) * 32) / 'operation.json').read_text())
+            self.assertNotEqual(saved['error'], result['error'], 'Display fallback destroyed original failed-operation evidence')
         self.assertEqual((self.live / 'config/a.cfg').read_bytes(), b'local')
         self.assertFalse((self.root / 'escape').exists())
         with self.assertRaises(ValueError):
             local.run(self.request('hashes', paths=['world/level.dat']))
         with self.assertRaises(ValueError):
             local.run(self.request('status', operation_id='../escape'))
+
+    def test_scope_diagnostic_is_reconstructed_and_unknown_diagnostic_cannot_leak(self):
+        unsafe = {'state': 'failed', 'error': 'https://private?token=secret',
+            'diagnostic': {'schema': 1, 'code': 'UNAPPROVED_MANAGED_DIRECTORY', 'directories': ['tacz'],
+                'description': 'Bearer secret', 'action': '/etc/private'}}
+        text = json.dumps(local.public_result(unsafe))
+        self.assertIn('tacz', text)
+        self.assertNotIn('Bearer', text)
+        self.assertNotIn('/etc', text)
+        unsafe['diagnostic']['code'] = 'UNKNOWN'
+        text = json.dumps(local.public_result(unsafe))
+        self.assertNotIn('https', text)
+        self.assertNotIn('secret', text)
 
     def test_cross_process_lock_and_interrupted_recovery(self):
         recipe = self.recipe(self.archive([('config/a.cfg', b'upstream')]))

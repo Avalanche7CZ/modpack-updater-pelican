@@ -17,6 +17,8 @@ Both plugins can coexist. Arcturus never reads, migrates or modifies cosmii02's 
 
 For a same-host Ubuntu installation, use the [local filesystem setup](docs/local-filesystem.md): one-time administrator approval of the local Wings node, automatic UUID discovery and private staging on adoption. Open **Local filesystem setup**, run its host command once, then enable the local default. No separate node-worker service, HTTPS proxy, tokens, per-server JSON or environment edits are needed. Remote deployments retain the [remote worker setup](docs/remote-wings.md).
 
+Modpack-specific roots require explicit operator review. For the reported TFG-Modern 0.13.5 `DiscordIntegration-Data` and `tacz` directories, see [reviewed directory setup](docs/local-filesystem.md#reviewed-modpack-specific-directories-tfg-modern-0135). Unknown archive folders are never automatically trusted.
+
 ## Requirements and installation
 
 Target: Pelican Panel **1.0.0-rc.1**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. For remote preparation, keep queue `retry_after` above its 150-second tick timeout (180 seconds or more). Approved local-node setup configures a longer effective retry window for bounded local preparation; see the local setup guide. Native legacy deployment jobs have a much longer timeout and are not enabled by this release.

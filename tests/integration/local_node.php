@@ -57,12 +57,21 @@ check(! $local->status()['ready'], 'Missing host approval passed');
 $zip = new ZipArchive;
 $zip->open($dir.'/fixture.zip', ZipArchive::CREATE);
 $zip->addFromString('config/example.cfg', 'verified upstream');
+$zip->addFromString('tacz/guns.json', 'verified pack data');
+$zip->addFromString('DiscordIntegration-Data/locale.json', 'verified pack locale');
 $zip->close();
 $approval = ['schema' => 1, 'node_id' => 1, 'node_uuid' => $uuid, 'volume_root' => $dir.'/volumes',
-    'staging_parent' => $dir.'/stages', 'uid' => fileowner($dir), 'allowed_hosts' => ['github.com'], 'artifacts' => ['fixture' => $dir.'/fixture.zip']];
+    'staging_parent' => $dir.'/stages', 'uid' => fileowner($dir), 'allowed_hosts' => ['github.com'],
+    'additional_managed_directories' => ['DiscordIntegration-Data', 'tacz'], 'artifacts' => ['fixture' => $dir.'/fixture.zip']];
 file_put_contents($dir.'/approval.json', json_encode($approval)); chmod($dir.'/approval.json', 0644);
 config(['queue.default' => 'database', 'queue.connections.database' => ['driver' => 'database', 'retry_after' => 90]]);
 check($local->status()['ready'], 'Host readiness failed');
+check($local->entry($uuid)['additional_managed_directories'] === ['DiscordIntegration-Data', 'tacz'], 'Root-owned directory approval was not forwarded');
+mkdir($dir.'/volumes/'.$uuid.'/tacz', 0700);
+file_put_contents($dir.'/volumes/'.$uuid.'/tacz/local.json', 'preserved local data');
+chmod($dir.'/volumes/'.$uuid.'/tacz', 0); clearstatcache();
+rejects(fn () => $local->entry($uuid), 'Approved but unreadable pack directory did not require administrator provisioning');
+chmod($dir.'/volumes/'.$uuid.'/tacz', 0700); clearstatcache();
 check(config('queue.connections.database.retry_after') === 14520, 'Host queue visibility was not configured without env edits');
 check(count($local->status()['servers']) === 3, 'Remote-node server appeared in discovery');
 check(! is_dir($dir.'/stages/'.$uuid), 'Readiness created per-server staging');
@@ -157,8 +166,27 @@ $record = ManagedServer::findOrFail($record->id);
 check($record->baseline_status === 'verified' && $record->baseline_provenance['transport'] === 'local', 'Automatically provisioned baseline was not verified');
 $manifest = app(Arcturus\ModpackManager\Services\ReleaseStore::class)->load($record->base_manifest_path);
 check($manifest['files']['config/example.cfg'] === hash('sha256', 'verified upstream'), 'Automatically provisioned baseline lost upstream checksum verification');
+check(isset($manifest['files']['tacz/guns.json'], $manifest['files']['DiscordIntegration-Data/locale.json'], $record->file_inventory['files']['tacz/local.json']), 'Approved directories were omitted from manifests or inventory');
+check(file_get_contents($dir.'/volumes/'.$uuid.'/tacz/local.json') === 'preserved local data', 'Baseline modified live additional-directory content');
 check(! $record->deploy_enabled && count($record->file_rules) === 1, 'Baseline changed deployment restrictions or saved policies');
 
+// Reproduce the rejected pack through the real queue handler and native failure UI.
+$approvedContents = file_get_contents($dir.'/approval.json');
+$unapproved = json_decode($approvedContents, true);
+$unapproved['additional_managed_directories'] = [];
+file_put_contents($dir.'/approval.json', json_encode($unapproved));
+$failed = app(Arcturus\ModpackManager\Services\OperationTracker::class)->create($record, 'baseline',
+    ['provider' => $record->provider, 'source' => $record->source, 'version' => $record->installed_version]);
+$job = new Arcturus\ModpackManager\Jobs\PrepareUpdate($record->id, true, $failed->id);
+rejects(fn () => $job->handle(app(Arcturus\ModpackManager\Services\PrepareRelease::class), app(Arcturus\ModpackManager\Services\OperationTracker::class)), 'Unreviewed directories did not fail queue preparation');
+$failed->refresh();
+check($failed->phase === 'failed' && $failed->context['diagnostic']['directories'] === ['DiscordIntegration-Data', 'tacz'], 'Queue failure lost structured managed-directory evidence');
+check(is_file($record->staging_parent.'/'.$failed->node_operation_id.'/download-0') && ! is_file($record->staging_parent.'/'.$failed->node_operation_id.'/manifest.json'), 'Failed preparation evidence was deleted or a manifest was accepted');
+$event = $record->events()->where('status', 'failed')->latest()->firstOrFail();
+check($event->details['diagnostic']['code'] === 'UNAPPROVED_MANAGED_DIRECTORY', 'History did not retain an actionable error code');
+$failureScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
+check(str_contains($failureScreen->html(), 'Unapproved managed directories: DiscordIntegration-Data, tacz') && str_contains($failureScreen->html(), '--additional-managed-directory'), 'Native failed-operation UI did not explain the required administrator action');
+file_put_contents($dir.'/approval.json', $approvedContents);
 $remote = $local->adoptionAttributes($other, 'default');
 check($remote === ['transport' => 'wings'], 'Local default changed remote-node selection');
 check(app(ServerFilesFactory::class)->worker(new ManagedServer(['transport' => 'wings', 'pelican_server_uuid' => $other])) instanceof NodeWorker, 'Remote worker behavior changed');

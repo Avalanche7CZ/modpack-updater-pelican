@@ -42,7 +42,7 @@ final class OperationTracker
                 'heartbeat_at' => now(), 'completed_at' => in_array($phase, self::TERMINAL, true) ? now() : null]);
             ManagedServer::findOrFail($current->managed_server_id)->events()->create([
                 'kind' => $current->kind, 'status' => $phase, 'message' => $current->error ?: str_replace('_', ' ', ucfirst($phase)),
-                'details' => ['operation_id' => $current->id],
+                'details' => ['operation_id' => $current->id, 'diagnostic' => $current->context['diagnostic'] ?? null],
             ]);
             $requiresRecovery = $phase === 'manual_intervention' ||
                 ($current->kind === 'deploy' && in_array($phase, ['failed', 'interrupted'], true));

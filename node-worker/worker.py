@@ -28,12 +28,42 @@ MAX_REQUEST = 16 * 1024 * 1024
 MAX_FILES = 100000
 
 
+def additional_directories(values):
+    reserved = {s.lower() for s in RUNTIME | DEFAULT_EXCLUDED} | {'region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock'}
+    if not isinstance(values, list) or len(values) > 128:
+        raise ValueError('Additional managed directories must be a bounded list')
+    for value in values:
+        if (not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', value)
+                or value.lower() in reserved or re.fullmatch(r'DIM-?[0-9]+', value, re.I)):
+            raise ValueError('Additional managed directory is unsafe or reserved for runtime data')
+    return sorted(set(values))
+
+
+class ManagedPathFailure(ValueError):
+    def __init__(self, paths, protected=False):
+        names = sorted(set(path.split('/')[0] for path in paths))
+        safe = [name if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', name)
+                and not re.search(r'[A-Za-z0-9_-]{40,}|token|secret|password|credential', name, re.I)
+                else '[redacted-name]' for name in names[:16]]
+        code = 'PROTECTED_MANAGED_PATH' if protected else 'UNAPPROVED_MANAGED_DIRECTORY'
+        description = ('Protected runtime/world paths cannot enter a baseline: ' if protected else 'Unapproved managed directories: ') + ', '.join(safe)
+        action = ('World/runtime exclusions cannot be overridden.' if protected else
+                  'Review the official pack contents, then have an administrator approve these names through local node setup (or the remote worker configuration). PHP cannot grant filesystem permissions.')
+        self.diagnostic = {'schema': 1, 'phase': 'hashing', 'code': code,
+                           'directories': safe, 'description': description, 'action': action}
+        super().__init__(description + '. ' + action)
+
+
 def relative(value):
     if not isinstance(value, str) or not value or len(value) > 1024 or '\\' in value or ':' in value:
         raise ValueError('Unsafe relative path')
     if value.startswith('/') or any(x in ('', '.', '..') for x in value.split('/')) or any(ord(x) < 32 or ord(x) == 127 for x in value):
         raise ValueError('Unsafe relative path')
     return value
+
+
+def fail_walk(error):
+    raise error
 
 
 def atomic_json(path, value):
@@ -294,6 +324,7 @@ class Worker:
                     raise ValueError('Staging must be outside every configured server volume')
         for server_id, entry in settings['servers'].items():
             uuid.UUID(server_id)
+            additional_directories(entry.get('additional_managed_directories', []))
             for option in ('managed_directories', 'excluded_directories'):
                 values = entry.get(option, [])
                 if not isinstance(values, list) or len(values) > 128:
@@ -357,8 +388,15 @@ class Worker:
         markers = ('region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock')
         if any(p in markers or re.fullmatch(r'DIM-?[0-9]+', p) for p in path.split('/')):
             return False
-        allowed = self.entry(server).get('managed_directories', MANAGED_DIRS)
+        allowed = self.managed_directories(server)
+        if path.split('/')[0] in self.entry(server).get('additional_managed_directories', []) and any(
+                p.lower() in ('logs', 'crash-reports', 'backups', 'backup') for p in path.split('/')):
+            return False
         return not any(path == r or path.startswith(r + '/') for r in (self.world_roots(server) if excluded is None else excluded)) and not path.startswith('.arcturus-modpack-manager') and (len(path.split('/')) == 1 or path.split('/')[0] in allowed)
+
+    def managed_directories(self, server):
+        entry = self.entry(server)
+        return set(entry.get('managed_directories', MANAGED_DIRS)) | set(additional_directories(entry.get('additional_managed_directories', [])))
 
     def inventory(self, server):
         entry = self.entry(server)
@@ -374,10 +412,10 @@ class Worker:
             if item.is_symlink():
                 raise ValueError('Symlink in managed inventory')
             if item.is_dir():
-                if item.name not in self.entry(server).get('managed_directories', MANAGED_DIRS):
+                if item.name not in self.managed_directories(server):
                     excluded.append(item.name)
                     continue
-                for directory, dirs, names in os.walk(item, followlinks=False):
+                for directory, dirs, names in os.walk(item, followlinks=False, onerror=fail_walk):
                     entries_scanned += len(dirs) + len(names)
                     if entries_scanned > MAX_FILES or len(Path(directory).relative_to(root).parts) > 32:
                         raise ValueError('Managed inventory directory/count limit exceeded')
@@ -401,7 +439,10 @@ class Worker:
                         raise ValueError('Inventory file limit exceeded')
             else:
                 paths.append(item.name)
-        files = self.hashes(server, paths)['files']
+        hashed = self.hashes(server, paths)
+        if hashed['missing']:
+            raise ValueError('Managed files disappeared during inventory; no partial result accepted')
+        files = hashed['files']
         identities, metadata = {}, {}
         for path in paths:
             item = mod_metadata(root, path)
@@ -514,7 +555,7 @@ class Worker:
                             recipe['runtime'] = {**recipe.get('runtime', {}), **self._mrpack(server, unpack, files, maximum, cancelled, update)}
                         else:
                             children = list(unpack.iterdir())
-                            content = children[0] if len(children) == 1 and children[0].is_dir() and children[0].name not in MANAGED_DIRS else unpack
+                            content = children[0] if len(children) == 1 and children[0].is_dir() and children[0].name not in self.managed_directories(server) else unpack
                             # A manifest-only CurseForge pack must never be mistaken for a ready server.
                             if (content / 'manifest.json').exists():
                                 manifest = json.loads((content / 'manifest.json').read_text())
@@ -534,17 +575,23 @@ class Worker:
             update(state='cancelled', error='Preparation cancelled; partial stage retained')
         except Exception as error:
             # Never log signed URLs, request payloads, or credentials.
-            update(state='failed', error=str(error) if isinstance(error, ValueError) else type(error).__name__)
+            update(state='failed', error=str(error) if isinstance(error, ValueError) else type(error).__name__,
+                   **({'diagnostic': error.diagnostic} if isinstance(error, ManagedPathFailure) else {}))
 
     def _finalize(self, server, base, recipe, artifacts, maximum, update):
         files = base / 'files'
         update(state='hashing')
+        excluded = self.world_roots(server)
+        unknown = [child.name for child in files.iterdir() if child.is_dir() and child.name not in self.managed_directories(server)]
+        if unknown:
+            protected = any(not self.managed(server, name, excluded) for name in unknown)
+            raise ManagedPathFailure(unknown, protected=protected)
         manifest, identities, metadata, bytes_hashed = {}, {}, {}, 0
-        for directory, dirs, names in os.walk(files):
+        for directory, dirs, names in os.walk(files, onerror=fail_walk):
             for name in names:
                 rel = str((Path(directory) / name).relative_to(files))
                 if not self.managed(server, rel):
-                    raise ValueError('Upstream release contains runtime or unmanaged paths; explicit normalization required')
+                    raise ManagedPathFailure([rel], protected=True)
                 digest, size = hash_file(files, rel, maximum - bytes_hashed)
                 bytes_hashed += size
                 manifest[rel] = digest
@@ -558,6 +605,7 @@ class Worker:
         result = {'schema': 2, 'provider': recipe['provider'], 'project': recipe['project'],
                   'version': recipe['version'], 'files': manifest, 'identities': identities, 'metadata': metadata,
                   'runtime': recipe.get('runtime', {}), 'artifacts': artifacts,
+                  'managed_directories': sorted(self.managed_directories(server)),
                   'verification': 'upstream-checksums', 'bytes': bytes_hashed}
         atomic_json(base / 'manifest.json', result)
         update(state='completed', manifest_sha256=hashlib.sha256((base / 'manifest.json').read_bytes()).hexdigest())
@@ -679,7 +727,8 @@ class Worker:
         except InterruptedError:
             update(state='cancelled', error='Preparation cancelled; partial stage retained')
         except Exception as error:
-            update(state='failed', error=str(error) if isinstance(error, ValueError) else type(error).__name__)
+            update(state='failed', error=str(error) if isinstance(error, ValueError) else type(error).__name__,
+                   **({'diagnostic': error.diagnostic} if isinstance(error, ManagedPathFailure) else {}))
         finally:
             if acquired:
                 self.locks[server].release()

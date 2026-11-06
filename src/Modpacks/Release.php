@@ -13,6 +13,7 @@ use InvalidArgumentException;
 final class Release
 {
     public readonly array $blockers;
+    private readonly array $sourceBlockers;
 
     public function __construct(
         public readonly string $provider, public readonly string $project,
@@ -20,7 +21,10 @@ final class Release
         public readonly array $downloads = [], public readonly array $runtime = [],
         array $blockers = [], public readonly string $format = 'files',
         public readonly ?string $url = null, public readonly string $notes = '',
+        array $additionalManagedDirectories = [],
     ) {
+        $this->sourceBlockers = $blockers;
+        $additionalManagedDirectories = ManagedPaths::reviewedAdditions($additionalManagedDirectories);
         if ($project === '' || $version === '' || strlen($version) > 120 || count($downloads) > 100000) {
             throw new InvalidArgumentException('Invalid normalized release identity');
         }
@@ -42,7 +46,7 @@ final class Release
                     throw new InvalidArgumentException('Duplicate normalized download path');
                 }
                 $paths[$file['path']] = true;
-                if (! ManagedPaths::allowed($file['path'])) {
+                if (! ManagedPaths::allowed($file['path'], $additionalManagedDirectories)) {
                     $blockers[] = 'File is outside the managed pack scope: '.$file['path'];
                 }
             } elseif (! ($file['archive'] ?? false)) {
@@ -59,6 +63,12 @@ final class Release
             }
         }
         $this->blockers = array_values(array_unique($blockers));
+    }
+
+    public function withManagedDirectories(array $directories): self
+    {
+        return new self($this->provider, $this->project, $this->version, $this->name, $this->downloads,
+            $this->runtime, $this->sourceBlockers, $this->format, $this->url, $this->notes, $directories);
     }
 
     public function canPrepare(): bool

@@ -107,6 +107,25 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(command[:6], ['/usr/sbin/runuser', '-u', 'www-data', '--', '/usr/bin/php', '/var/www/pelican/artisan'])
         self.assertNotIn('shell', run.call_args.kwargs)
 
+    def test_additional_directories_require_explicit_review_and_keep_runtime_exclusions(self):
+        self.assertNotIn('tacz', setup.PACK_DIRS)
+        for name in ['world', 'backups', 'logs', 'playerdata', 'DIM1', 'data', '../private', 'a/b']:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                setup.approved_additions([name])
+        volume = self.root / 'volume'; volume.mkdir(mode=0o700)
+        (volume / 'tacz/backups').mkdir(parents=True, mode=0o700)
+        (volume / 'tacz/guns.json').write_bytes(b'pack data')
+        (volume / 'tacz/backups/runtime.zip').write_bytes(b'backup')
+        fd = os.open(volume, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            setup.provision_volume(fd, self.uid)
+            self.assertNotIn('user:%s:' % self.uid, self.acl(volume / 'tacz/guns.json'))
+            setup.provision_volume(fd, self.uid, ['tacz'])
+        finally:
+            os.close(fd)
+        self.assertIn('user:%s:r--' % self.uid, self.acl(volume / 'tacz/guns.json'))
+        self.assertNotIn('user:%s:' % self.uid, self.acl(volume / 'tacz/backups/runtime.zip'))
+
 
 if __name__ == '__main__':
     unittest.main()

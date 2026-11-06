@@ -64,6 +64,29 @@ Remote-node servers use the remote backend even with the local default. A missin
 
 For the existing TFG-Modern server, preserve the exact installed release **0.13.5**, source and server ZIP pattern. Choose **Prepare installed baseline**. Downloads, upstream checksums, archive/path limits, world exclusion, manifests, inventory, planner and protection rules use the existing implementation. A customized live installation is never substituted for the upstream baseline. Unsupported/missing checksums still block preparation. Review File Changes and finish verified adoption separately.
 
+
+## Reviewed modpack-specific directories (TFG-Modern 0.13.5)
+
+The default managed-directory list intentionally does not trust arbitrary directories from a downloaded ZIP. The reported TFG-Modern 0.13.5 serverpack contains `DiscordIntegration-Data/` and `tacz/`; without explicit approval, its verified download and extraction succeed but final manifest validation rejects these roots. The failed stage remains available, and the Panel shows both unapproved names with an administrator action.
+
+Review these directories in the official server pack first. Update the root-owned setup-script copy from the installed plugin (the `sudo install` command shown on Local filesystem setup), then rerun that node's setup command with the following **additional** arguments:
+
+```sh
+--additional-managed-directory DiscordIntegration-Data \
+--additional-managed-directory tacz \
+--replace
+```
+
+For example, append those arguments to the existing command containing your actual `--panel`, `--user`, `--node` and `--volume-root`. Use `--dry-run` to inspect the proposed scope first, and ensure no preparation is active. `--replace` confirms the changed administrator approval. Existing reviewed additions and optional operator settings are retained when rerunning setup; omitted flags do not silently remove prior approval.
+
+This generates the node-wide `additional_managed_directories` configuration and provisions restricted read/traverse ACLs for those approved roots on existing eligible UUID volumes. It extends the default scope; it does not replace it or change the global whitelist. New stages, manifests, local inventory, comparisons and file-based recipes use that same explicit approval. Readiness reports the approved names and rejects inaccessible additional roots with an administrator-only provisioning instruction. PHP never changes ACLs.
+
+Worlds (including a custom `level-name` matching an approved name), player data, dimensions, backups, logs, internal recovery paths, symlinks, traversal and reserved runtime roots remain protected. Nested backups/logs within an additional root remain excluded too. A third unknown directory still blocks preparation; archive contents never add permissions themselves.
+
+After updating the plugin/worker and approving the scope, start a **new** baseline preparation. A previously failed operation is immutable evidence and is not silently replayed or deleted. Keep its ZIP/extraction and operation IDs for investigation. The narrow managed-path diagnostic contains only reviewed/sanitized logical root names, phase and error code; raw URLs, credentials and host paths are not displayed.
+
+For remote workers, the existing operator-owned per-server configuration supports the same `additional_managed_directories` list. Update/restart the worker and provision the required read permissions as its administrator; Panel approval does not grant remote OS privileges. Legacy `managed_directories` replacement settings remain compatible, and reviewed additions extend that selected base.
+
 ## Queue behavior and restarts
 
 Local preparation remains an existing Laravel job with a bounded Python subprocess. Each local step allows 14400 seconds; job timeout is 14430 seconds, operation lock 14460 seconds, and heartbeats update every 30 seconds. Once a valid host approval exists, the plugin sets the current database/Redis connection's effective `retry_after` to **at least 14520 seconds at application boot**. No `.env` or Panel-core edits are made; credentials and queue connection remain unchanged. This increases failed-worker retry visibility for other jobs on the same connection too.

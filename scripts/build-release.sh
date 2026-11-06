@@ -63,6 +63,7 @@ php -r '
       "arcturus-modpack-manager/node-worker/local.py",
       "arcturus-modpack-manager/node-worker/setup-local-node.py",
       "arcturus-modpack-manager/src/Local/LocalNode.php",
+      "arcturus-modpack-manager/src/Services/ManagedPathDiagnostic.php",
       "arcturus-modpack-manager/src/Filament/Admin/Pages/LocalFilesystem.php",
       "arcturus-modpack-manager/docs/local-filesystem.md",
       "arcturus-modpack-manager/src/Local/LocalWorker.php",

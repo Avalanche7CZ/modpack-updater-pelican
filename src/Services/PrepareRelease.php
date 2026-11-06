@@ -34,6 +34,10 @@ final class PrepareRelease
         }
         if ($operation->phase === 'queued') {
             $release = $this->providers->get($server->provider)->release($server->source, $context['version'], $server->asset_pattern);
+            if ($worker instanceof LocalWorker) {
+                $entry = $worker->configuration()[$server->pelican_server_uuid];
+                $release = $release->withManagedDirectories($entry['additional_managed_directories'] ?? []);
+            }
             if (! $release->canPrepare()) {
                 throw new RuntimeException(implode('; ', $release->blockers) ?: 'Upstream download checksums or required files are missing');
             }
@@ -90,6 +94,11 @@ final class PrepareRelease
             return true;
         }
         if ($state === 'failed') {
+            $diagnostic = ManagedPathDiagnostic::normalize($status['diagnostic'] ?? null);
+            if ($diagnostic) {
+                $operation->update(['context' => [...$operation->context, 'diagnostic' => $diagnostic]]);
+                throw new RuntimeException(ManagedPathDiagnostic::message($diagnostic));
+            }
             throw new RuntimeException('Node preparation '.$state.': '.($status['error'] ?? 'inspect node operation'));
         }
         if ($state !== 'completed') {

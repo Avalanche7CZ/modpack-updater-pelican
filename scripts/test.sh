@@ -8,6 +8,7 @@ done
 python3 tests/node_worker.py
 python3 tests/local_worker.py
 python3 tests/setup_local_node.py
+python3 tests/tfg_managed_paths.py
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 mkdir -p "$TEMP_DIR/base/mods" "$TEMP_DIR/target/mods" "$TEMP_DIR/live/mods"
