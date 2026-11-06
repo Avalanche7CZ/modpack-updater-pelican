@@ -153,5 +153,52 @@ check(Http::recorded()->filter(fn ($pair) =>
     str_ends_with(parse_url($pair[0]->url(), PHP_URL_PATH), '/files/list-directory'))->count() === 1,
     'HTTP 403 must never trigger a root retry');
 
+// TerraFirmaGreg Modern 0.13.x uses Forge Server Starter and
+// forge-auto-install.txt, not necessarily a directly launched Forge JAR.
+// Exercise the whole native Wings listing/read path, not only the parser.
+$tfgServer = new Server;
+$tfgServer->forceFill(['uuid' => $server->uuid, 'startup' => 'bash start_server.sh', 'image' => 'java_17']);
+$tfgServer->setRelation('node', $node);
+$tfgServer->setRelation('egg', $egg);
+$tfgFiles = [
+    'start_server.sh' => "#!/bin/bash\njava -Xmx6024M -jar minecraft_server.jar nogui\n",
+    'forge-auto-install.txt' => "minecraftVersion=1.20.1\nloaderType=Forge\nloaderVersion=47.4.13\n",
+    'server_starter.conf' => "java_path=java\n",
+];
+Http::swap(new Factory);
+Http::preventStrayRequests();
+Http::fake(function ($request) use ($row, $tfgFiles, $headers) {
+    check($request->method() === 'GET', 'TFG inspection attempted a mutation');
+    $path = parse_url($request->url(), PHP_URL_PATH);
+    parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+    if (str_ends_with($path, '/files/list-directory')) {
+        check(($query['directory'] ?? '') === '/', 'TFG inspection traversed an unrelated directory');
+        $files = array_map(fn ($name) => $row($name, false), array_keys($tfgFiles));
+        $files[] = $row('minecraft_server.jar', false);
+        $files[] = $row('world');
+        $files[] = $row('mods');
+
+        return Http::response($files, 200, $headers);
+    }
+    if (str_ends_with($path, '/files/contents')) {
+        $name = ltrim($query['file'] ?? '', '/');
+        check(isset($tfgFiles[$name]), 'TFG inspection accessed an unapproved file: '.$name);
+
+        return Http::response($tfgFiles[$name], 200, $headers);
+    }
+
+    return Http::response(['state' => 'running'], 200, $headers);
+});
+$tfg = app(AdoptionService::class)->inspect($tfgServer);
+check($tfg['loader'] === 'forge' && $tfg['minecraft'] === '1.20.1' &&
+    $tfg['loader_version'] === '47.4.13' && $tfg['loader_confidence'] === 'installer_config',
+    'TFG native Wings inspection did not detect Forge Server Starter');
+check($tfg['java_confidence'] === 'image_hint' && $tfg['state'] === 'running' &&
+    $tfg['inspection_complete'] === true, 'TFG runtime evidence incorrectly marked unavailable');
+foreach (Http::recorded() as [$request, $response]) {
+    check(! preg_match('~/world(?:/|$)|/mods(?:/|$)|/power|/reinstall~', urldecode($request->url())),
+        'TFG inspection traversed world/mod trees or controlled server power');
+}
+
 echo "Remote runtime inspection reads nested active arguments without worker, world access or power changes\n";
 $GLOBALS['arcturus_integration_passed'] = true;
