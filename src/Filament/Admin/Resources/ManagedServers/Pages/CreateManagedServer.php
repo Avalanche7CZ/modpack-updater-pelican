@@ -135,7 +135,7 @@ final class CreateManagedServer extends CreateRecord
             $diagnostic = $this->inspection['diagnostic'] ?? null;
             Notification::make()
                 ->title('Runtime inspection incomplete')
-                ->body($diagnostic
+                ->body(isset($diagnostic['code'])
                     ? 'Wings file listing: '.$diagnostic['code'].'. Panel startup and image are shown below; the loader is not verified. Check the Pelican/Wings logs.'
                     : 'Some launcher evidence or Wings state could not be read. Runtime compatibility remains unverified.')
                 ->warning()->send();
