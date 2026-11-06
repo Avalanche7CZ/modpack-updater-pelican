@@ -27,6 +27,16 @@ HOSTS = ['github.com', 'release-assets.githubusercontent.com', 'objects.githubus
 UUID = re.compile(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}')
 
 
+def approved_additions(values):
+    if not isinstance(values, list) or len(values) > 128:
+        raise ValueError('Additional managed directories must be a bounded list')
+    for value in values:
+        if (not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', value)
+                or value.lower() in {s.lower() for s in PROTECTED} or re.fullmatch(r'DIM-?[0-9]+', value, re.I)):
+            raise ValueError('Additional managed directory is unsafe or reserved for runtime data')
+    return sorted(set(values))
+
+
 def canonical(value, existing=True):
     path = Path(value)
     if not path.is_absolute() or path == Path('/') or str(path) != value or path.resolve() != path:
@@ -120,11 +130,12 @@ def world_roots(fd):
     return excluded
 
 
-def provision_volume(fd, uid):
+def provision_volume(fd, uid, additional=None):
+    additions = set(approved_additions(additional or []))
     excluded = world_roots(fd)
     grant(fd, uid, True)
     count = 0
-    def visit(directory, top=False, depth=0):
+    def visit(directory, top=False, depth=0, custom=False):
         nonlocal count
         if depth > 64:
             raise ValueError('Managed directory depth exceeds provisioning limit')
@@ -135,11 +146,12 @@ def provision_volume(fd, uid):
                 if count > 100000:
                     raise ValueError('Managed entry count exceeds provisioning limit')
                 if ((top and name in excluded) or name in WORLD_MARKERS or name.startswith('.arcturus-modpack-manager') or
+                        (custom and name.lower() in ('logs', 'crash-reports', 'backups', 'backup')) or
                         re.fullmatch(r'DIM-?[0-9]+', name)):
                     continue
                 info = os.stat(name, dir_fd=directory, follow_symlinks=False)
                 is_dir = stat.S_ISDIR(info.st_mode)
-                if not (is_dir or stat.S_ISREG(info.st_mode)) or (top and is_dir and name not in PACK_DIRS):
+                if not (is_dir or stat.S_ISREG(info.st_mode)) or (top and is_dir and name not in PACK_DIRS | additions):
                     continue
                 if not is_dir and info.st_nlink != 1:
                     raise ValueError('Hard-linked pack files require independently reviewed permissions; no ACL is granted to shared inodes')
@@ -153,7 +165,7 @@ def provision_volume(fd, uid):
                         raise ValueError('File link count changed during setup; no ACL granted')
                     grant(child, uid, is_dir)
                     if is_dir:
-                        visit(child, depth=depth + 1)
+                        visit(child, depth=depth + 1, custom=custom or (top and name in additions))
                 finally:
                     os.close(child)
     visit(fd, top=True)
@@ -221,6 +233,8 @@ def main():
     parser.add_argument('--node', required=True, type=int)
     parser.add_argument('--volume-root', required=True)
     parser.add_argument('--staging-parent', default=str(STAGING))
+    parser.add_argument('--additional-managed-directory', action='append', default=[],
+        help='Explicitly approve a reviewed top-level pack directory (repeatable; never inferred from archives)')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--replace', action='store_true', help='Explicitly replace a previous node/root approval (retains old stages/ACLs)')
     args = parser.parse_args()
@@ -246,17 +260,22 @@ def main():
             if parent.stat().st_uid != 0 or parent.stat().st_mode & 0o022:
                 raise ValueError('Volume ancestors must be root-owned and not group/world writable')
         reject_nested_mounts(root, Path('/proc/self/mountinfo').read_text())
-        config = {'schema': 1, 'node_id': args.node, 'node_uuid': snapshot['node_uuid'], 'uid': account.pw_uid,
-            'volume_root': str(root), 'staging_parent': str(stage), 'allowed_hosts': HOSTS}
+        previous = {}
         if CONFIG.exists() or CONFIG.is_symlink():
             info = CONFIG.lstat()
             if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
                 raise ValueError('Existing approval file is unsafe; inspect it before setup')
             previous = json.loads(CONFIG.read_text())
-            if previous != config and not args.replace:
-                raise ValueError('Approval changed; inspect existing operations and explicitly use --replace')
+        additions = approved_additions(previous.get('additional_managed_directories', []) + args.additional_managed_directory)
+        config = {**previous, 'schema': 1, 'node_id': args.node, 'node_uuid': snapshot['node_uuid'], 'uid': account.pw_uid,
+            'volume_root': str(root), 'staging_parent': str(stage), 'allowed_hosts': previous.get('allowed_hosts', HOSTS)}
+        if additions:
+            config['additional_managed_directories'] = additions
+        if previous and previous != config and not args.replace:
+            raise ValueError('Approval changed; inspect existing operations and explicitly use --replace')
         print('Approve node %s (%s); volume root %s; staging %s; account %s; %s database servers' % (
             args.node, snapshot['node_uuid'], root, stage, account.pw_name, len(servers)))
+        print('Explicit additional managed directories: ' + (', '.join(additions) or '(none)'))
         if args.dry_run:
             print('Dry run: no ACLs, files, configuration or queue state changed')
             return 0
@@ -289,7 +308,7 @@ def main():
                 except FileNotFoundError:
                     continue  # Not provisioned by Wings yet; inherited ACL covers future directories.
                 try:
-                    provision_volume(volume, account.pw_uid)
+                    provision_volume(volume, account.pw_uid, additions)
                 finally:
                     os.close(volume)
         finally:

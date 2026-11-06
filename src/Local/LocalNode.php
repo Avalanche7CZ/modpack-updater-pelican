@@ -49,6 +49,11 @@ final class LocalNode
         if (self::overlap($data['volume_root'], $data['staging_parent'])) {
             throw new CapabilityUnavailable('Local staging parent must be outside the approved Wings volume root.');
         }
+        try {
+            $data['additional_managed_directories'] = \Arcturus\ModpackManager\Security\ManagedPaths::reviewedAdditions($data['additional_managed_directories'] ?? []);
+        } catch (\Throwable) {
+            throw new CapabilityUnavailable('Approved additional managed directories are unsafe or reserved for runtime data. Re-run administrator node setup.');
+        }
 
         return $data;
     }
@@ -102,9 +107,16 @@ final class LocalNode
         if (realpath($root) !== $root || ! is_dir($root) || ! is_readable($root) || ! is_executable($root)) {
             throw new CapabilityUnavailable('The real UUID volume is missing, a symlink, or unreadable. Check Wings provisioning and re-run node setup if existing ACLs were replaced.');
         }
+        foreach ($config['additional_managed_directories'] as $directory) {
+            $path = $root.'/'.$directory;
+            if ((file_exists($path) || is_link($path)) && (realpath($path) !== $path || ! is_dir($path) || ! is_readable($path) || ! is_executable($path))) {
+                throw new CapabilityUnavailable('Approved pack directory needs canonical read/traverse access: '.$directory.'. An administrator must re-run node setup with --additional-managed-directory; PHP cannot grant permissions.');
+            }
+        }
 
         return ['root' => $root, 'staging' => $config['staging_parent'].'/'.$uuid,
-            'allowed_hosts' => $config['allowed_hosts'] ?? [], 'artifacts' => $config['artifacts'] ?? []];
+            'allowed_hosts' => $config['allowed_hosts'] ?? [], 'artifacts' => $config['artifacts'] ?? [],
+            'additional_managed_directories' => $config['additional_managed_directories']];
     }
 
     public function adoptionAttributes(string $uuid, string $selection): array
@@ -148,6 +160,7 @@ final class LocalNode
         try {
             $config = $this->configuration();
             $report['checks'][] = 'Root-owned host approval: valid';
+            $report['checks'][] = 'Approved additional pack directories: '.(implode(', ', $config['additional_managed_directories']) ?: 'None; archives cannot add permissions');
             $node = $this->node();
             $report['checks'][] = 'Pelican node identity and volume root: matched';
             LocalWorker::execute(['operation' => 'node_capabilities', 'node' => $config], 10);

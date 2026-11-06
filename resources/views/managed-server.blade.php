@@ -9,6 +9,16 @@
             @endforeach
         </x-filament::tabs>
         <div class="mt-4 space-y-4">
+            @php($lastPreparationEvent = $record->events()->whereIn('kind', ['baseline', 'prepare'])->latest('id')->first())
+            @php($lastPreparation = !$record->active_operation_id && $lastPreparationEvent?->status === 'failed' ? $record->operations()->find($lastPreparationEvent->details['operation_id'] ?? '') : null)
+            @php($pathDiagnostic = $lastPreparation?->phase === 'failed' ? \Arcturus\ModpackManager\Services\ManagedPathDiagnostic::normalize($lastPreparation->context['diagnostic'] ?? null) : null)
+            @if($pathDiagnostic)
+                <x-filament::section heading="Preparation blocked by managed-path validation">
+                    <p class="break-words">{{ $pathDiagnostic['description'] }}</p>
+                    <p class="mt-2 text-sm">{{ $pathDiagnostic['action'] }}</p>
+                    <p class="mt-2 break-all text-sm">{{ $pathDiagnostic['code'] }} · {{ $pathDiagnostic['phase'] }} · Panel operation: {{ $lastPreparation->id }} · Worker operation: {{ $lastPreparation->node_operation_id }}</p>
+                </x-filament::section>
+            @endif
             @if($record->active_operation_id)
                 @php($operation = $record->operations()->find($record->active_operation_id))
                 <x-filament::section heading="Background operation">

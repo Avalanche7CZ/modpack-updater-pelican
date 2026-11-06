@@ -6,11 +6,28 @@ import os
 from pathlib import Path
 import sys
 
-from worker import Worker, MAX_REQUEST, atomic_json
+from worker import Worker, MAX_REQUEST, ManagedPathFailure
 
 
 class LocalError(Exception):
     pass
+
+
+def public_result(result):
+    if result.get('state') != 'failed':
+        return result
+    result = dict(result)
+    detail = result.pop('diagnostic', None)
+    if (isinstance(detail, dict) and detail.get('schema') == 1
+            and detail.get('code') in ('UNAPPROVED_MANAGED_DIRECTORY', 'PROTECTED_MANAGED_PATH')
+            and isinstance(detail.get('directories'), list) and len(detail['directories']) <= 16
+            and all(isinstance(s, str) for s in detail['directories'])):
+        safe = ManagedPathFailure(detail['directories'], protected=detail['code'] == 'PROTECTED_MANAGED_PATH').diagnostic
+        result.update(diagnostic=safe, error=safe['description'])
+    else:
+        result['error'] = 'Local preparation failed checksum, download, archive, permissions or managed-path validation. Check the reviewed recipe and retained stage; live files were not changed.'
+    # Preserve the original private worker record; never replace evidence with a display fallback.
+    return result
 
 
 def settings_for(request):
@@ -89,7 +106,7 @@ def run(request):
     if operation == 'capabilities':
         return {**worker.handle(server, operation, payload), 'configuration_ready': True, 'backend': 'local'}
     if operation not in {'prepare', 'resolve'}:
-        return worker.handle(server, operation, payload)
+        return public_result(worker.handle(server, operation, payload))
 
     stage = Path(settings['servers'][server]['staging'])
     # Cross-process lock supplements the existing durable Panel operation exclusion.
@@ -106,11 +123,7 @@ def run(request):
         if thread:
             thread.join()
             result = worker.status(server, payload['operation_id'])
-        # Error text from downloads/ZIPs can contain private URLs; expose a fixed diagnosis.
-        if result.get('state') == 'failed':
-            result['error'] = 'Local preparation failed checksum, download, archive, permissions or managed-path validation. Check the reviewed recipe and retained stage; live files were not changed.'
-            atomic_json(worker.operation_path(server, payload['operation_id']) / 'operation.json', result)
-        return result
+        return public_result(result)
     finally:
         os.close(fd)
 
