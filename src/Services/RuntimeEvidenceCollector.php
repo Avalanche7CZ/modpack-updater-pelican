@@ -18,6 +18,7 @@ final class RuntimeEvidenceCollector
     {
         $paths = [];
         $texts = [];
+        $warnings = [];
         $requests = 0;
         $entries = 0;
         $bytes = 0;
@@ -36,13 +37,22 @@ final class RuntimeEvidenceCollector
 
             return $rows;
         };
-        $read = function (string $path) use ($files, &$texts, &$bytes): void {
-            $content = $files->read($path, 1048576);
-            $bytes += strlen($content);
-            if ($bytes > 4194304) {
-                throw new RuntimeException('Runtime inspection configuration limit exceeded');
+        $read = function (string $path) use ($files, &$texts, &$bytes, &$warnings): void {
+            try {
+                $content = $files->read($path, 1048576);
+                if ($bytes + strlen($content) > 4194304) {
+                    $warnings[] = 'Skipped optional runtime file (read budget reached): '.$path;
+
+                    return;
+                }
+                $bytes += strlen($content);
+                $texts[$path] = $content;
+            } catch (\Throwable $error) {
+                // Individual startup/config files may be unreadable, removed
+                // during a restart or exceed the read cap. Record incomplete
+                // evidence rather than breaking the administrator's Livewire page.
+                $warnings[] = 'Could not read optional runtime file: '.$path;
             }
-            $texts[$path] = $content;
         };
         $root = $list('');
         foreach ($root as $row) {
@@ -76,7 +86,15 @@ final class RuntimeEvidenceCollector
                     continue;
                 }
                 $path = $directory === '' ? $name : $directory.'/'.$name;
-                $rowsBelow = $list($path);
+                try {
+                    $rowsBelow = $list($path);
+                } catch (\Throwable $error) {
+                    // A stale library directory or an older Wings API response
+                    // must not turn read-only inspection into an HTTP 500.
+                    $warnings[] = 'Could not inspect optional launcher directory: '.$path;
+
+                    continue;
+                }
                 if (isset($children[$path]) || isset($children[$directory])) {
                     $todo[] = [$path, $rowsBelow];
 
@@ -98,6 +116,11 @@ final class RuntimeEvidenceCollector
             }
         }
 
-        return ['paths' => array_values(array_unique($paths)), 'texts' => $texts];
+        return [
+            'paths' => array_values(array_unique($paths)),
+            'texts' => $texts,
+            'warnings' => array_values(array_unique($warnings)),
+            'complete' => $warnings === [],
+        ];
     }
 }
