@@ -22,6 +22,7 @@ final class FilePolicyCatalog
                 $targetsById[$change['identity']][] = $change;
             }
         }
+        $directoryRoots = (new DirectoryPolicy)->protectedRoots($server, ['files' => array_fill_keys($paths, '')]);
         $rows = [];
         foreach ($paths as $path) {
             $change = $byPath[$path] ?? [];
@@ -29,7 +30,7 @@ final class FilePolicyCatalog
             $meta = $change['metadata'] ?? $snapshot['metadata'][$path] ?? [];
             $classification = $change['file_state'] ?? $change['classification'] ?? 'not_compared';
             $decision = (new ProtectionPolicy)->effective($path, $rules, $identity, $meta['loader'] ?? null, $classification);
-            $invariant = SafetyPaths::reason($path, $snapshot['excluded_roots'] ?? []);
+            $invariant = SafetyPaths::reason($path, array_merge($snapshot['excluded_roots'] ?? [], $directoryRoots));
             $targetCandidates = $targetsById[$identity ?? ''] ?? [];
             $targetChange = count($targetCandidates) === 1 ? $targetCandidates[0] : null;
             $rows[] = [...$decision, 'path' => $path, 'identity' => $identity, 'is_mod' => str_starts_with($path, 'mods/') && preg_match('/\.jar(?:\.disabled)?$/i', $path) === 1,

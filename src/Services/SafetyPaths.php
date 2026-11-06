@@ -41,12 +41,15 @@ final class SafetyPaths
 
     public static function reason(string $path, array $roots = []): ?string
     {
+        if (preg_match('~(?:^|/)(?:world|world_nether|world_the_end|saves|dimensions|logs|crash-reports|backups?|data|\.env(?:\.[^/]*)?|\.ssh|\.aws|\.git|secrets|credentials|tokens|passwords)(?:/|$)|(?:\.pem|\.key|\.p12|\.keystore)$~i', $path)) {
+            return 'Protected runtime data or secrets';
+        }
         foreach (self::roots('', $roots) as $root) {
             if ($path === $root || str_starts_with($path, $root.'/')) {
                 return 'World or unscanned protected directory: '.$root;
             }
         }
-        if (str_starts_with($path, '.arcturus-modpack-manager') || preg_match('~(?:^|/)(?:level\.dat(?:_old)?|session\.lock|region|playerdata|entities|poi|DIM-?[0-9]+)(?:/|$)~', $path)) {
+        if (str_starts_with($path, '.arcturus-modpack-manager') || preg_match('~(?:^|/)(?:level\.dat(?:_old)?|session\.lock|region|playerdata|entities|poi|DIM-?[0-9]+)(?:/|$)~i', $path)) {
             return 'World data or internal recovery metadata';
         }
 

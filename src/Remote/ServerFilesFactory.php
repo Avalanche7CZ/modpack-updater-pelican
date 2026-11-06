@@ -19,7 +19,7 @@ final class ServerFilesFactory
     {
         return match ($server->transport ?? 'wings') {
             'local' => new LocalWorker($server),
-            'wings' => new NodeWorker($server->pelican_server_uuid),
+            'wings' => new NodeWorker($server->pelican_server_uuid, (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->scope($server)),
             default => throw new RuntimeException('Unknown server filesystem backend; select an explicit backend in server settings'),
         };
     }

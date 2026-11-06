@@ -231,6 +231,35 @@ check($applied['plan']['changes'] === $secondPreview['changes'] && file_get_cont
 check(file_get_contents($dir.'/live/custom-world/region/r.0.0.mca') === 'world-data', 'Offline fixture changed a custom world');
 rejects(fn () => $deployer->apply($dir.'/live', $dir.'/stage', $dir.'/backups', $makeManifest('1234', 'value=old')['files'], $makeManifest('1235', 'value=new')['files'],
     [], true, null, $secondPreview['policy_context'], $secondPreview['changes']), 'Deployer accepted decisions different from preview');
+// Review a discovered directory through the native adoption action, preserving upstream evidence.
+$originalBase = $record->base_manifest_path;
+$originalTarget = $record->target_manifest_path;
+$withDirectory = function ($version, $value) use ($makeManifest, $hash) {
+    $manifest = $makeManifest($version, $value);
+    $manifest['files']['tacz/assets/gun.json'] = $hash('{}');
+    $manifest['directory_discovery'] = [['path' => 'config', 'classification' => 'standard'], ['path' => 'tacz', 'classification' => 'review'], ['path' => 'world', 'classification' => 'protected']];
+    return $manifest;
+};
+$record->update(['base_manifest_path' => $store->put($withDirectory('1234', 'value=old')),
+    'target_manifest_path' => $store->put($withDirectory('1235', 'value=new'))]);
+$directoryPolicy = new \Arcturus\ModpackManager\Services\DirectoryPolicy;
+check($directoryPolicy->pending($record) === ['tacz'], 'Unknown upstream directory was auto-approved');
+$directoryView = Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->getRouteKey()])->call('mountAction', 'directoryDecisions');
+$formRows = $directoryView->get('mountedActions')[0]['data']['directories'];
+foreach ($formRows as &$row) {
+    if ($row['path'] === 'tacz') { $row['mode'] = 'keep'; }
+}
+unset($row);
+$beforeRevision = $record->policy_revision;
+$directoryView->set('mountedActions.0.data.directories', $formRows)->call('callMountedAction')->assertHasNoErrors();
+$record->refresh();
+check($record->policy_revision === $beforeRevision + 1 && ! $record->approved_plan_sha256, 'Directory review did not invalidate approval');
+check($directoryPolicy->pending($record) === [] && in_array('tacz', $directoryPolicy->scope($record)['exclude'], true), 'Keep-local decision was not persisted');
+$plan = $previewer->generate($record);
+check(array_column($plan['changes'], 'action', 'path')['tacz/assets/gun.json'] === 'preserve', 'Directory protection did not override missing-local planning');
+check($store->load($record->base_manifest_path)['files']['tacz/assets/gun.json'] === $hash('{}'), 'Directory review changed immutable evidence');
+rejects(fn () => app(ServerPolicyService::class)->save($record, [], [], $record->policy_revision, ['directory_decisions' => [['path' => 'unobserved', 'mode' => 'manage']]]), 'Unobserved directory was approved');
+$record->update(['directory_decisions' => [], 'base_manifest_path' => $originalBase, 'target_manifest_path' => $originalTarget]);
 $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
 foreach ($iterator as $item) {
     $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());

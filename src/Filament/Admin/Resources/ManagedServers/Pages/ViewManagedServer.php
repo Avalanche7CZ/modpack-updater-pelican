@@ -104,6 +104,27 @@ final class ViewManagedServer extends ViewRecord
                         Notification::make()->title('Filesystem access unavailable')->body($error->getMessage())->danger()->send();
                     }
                 }),
+            Action::make('directoryDecisions')->label('Review upstream directories')->button()->color('gray')
+                ->visible(fn () => (bool) $this->getRecord()->base_manifest_path)
+                ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
+                ->modalDescription('Verified upstream structure. Standard folders default to Manage. Unfamiliar folders require a decision. Keep local and Exclude prevent inventory reads and updates. Protected runtime paths cannot be managed. Saving invalidates previous approval; compare again without downloading.')
+                ->fillForm(fn () => ['directories' => (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->rows($this->getRecord()), 'revision' => $this->getRecord()->policy_revision])
+                ->schema([
+                    \Filament\Forms\Components\Repeater::make('directories')->addable(false)->deletable(false)->reorderable(false)
+                        ->itemLabel(fn (array $state) => ($state['path'] ?? '').' · '.($state['classification'] ?? ''))
+                        ->schema([
+                            Hidden::make('path'), Hidden::make('classification'),
+                            Select::make('mode')->options(['review' => 'Choose a decision', 'manage' => 'Manage', 'keep' => 'Keep local', 'exclude' => 'Exclude'])
+                                ->disabled(fn ($get) => $get('classification') === 'protected')->required(),
+                        ]),
+                    Hidden::make('revision'),
+                ])->action(function (array $data): void {
+                    $server = $this->getRecord()->refresh();
+                    $decisions = array_values(array_map(fn ($row) => ['path' => $row['path'], 'mode' => $row['mode']],
+                        array_filter($data['directories'] ?? [], fn ($row) => ($row['classification'] ?? '') !== 'protected' && ($row['mode'] ?? 'review') !== 'review')));
+                    app(ServerPolicyService::class)->save($server, $server->file_rules ?? [], $server->disabled_mods ?? [], (int) $data['revision'], ['directory_decisions' => $decisions]);
+                    $this->recompare();
+                }),
             Action::make('editPolicies')->label('Edit protection rules')->button()->color('gray')
                 ->visible(fn () => $this->tab === 'protection')->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->fillForm(fn () => ['file_rules' => (new ProtectionPolicy)->normalize($this->getRecord()->file_rules ?? []), 'disabled_mods' => $this->getRecord()->disabled_mods ?? [], 'revision' => $this->getRecord()->policy_revision])

@@ -39,7 +39,7 @@ final class PreviewService
             throw new RuntimeException('Upstream manifest identity or version mismatch');
         }
         $rules = $server->file_rules ?? [];
-        $safetyRoots = $server->runtime_report['protected_roots'] ?? [];
+        $safetyRoots = array_merge($server->runtime_report['protected_roots'] ?? [], (new DirectoryPolicy)->protectedRoots($server, $base, $target));
         $metadata = [];
         if ($server->transport === 'local' && ! isset($server->baseline_provenance['transport'])) {
             $root = realpath((string) $server->local_root);
@@ -47,7 +47,7 @@ final class PreviewService
             if (! $mapping || ! $root || is_link($server->local_root) || realpath($mapping) !== $root) {
                 throw new RuntimeException('Local root must match the operator-configured UUID-to-volume mapping');
             }
-            $safetyRoots = $this->inventory->safetyRoots($root);
+            $safetyRoots = array_merge($safetyRoots, $this->inventory->safetyRoots($root));
             // Only managed paths are scanned; world trees never enter the preview pipeline.
             $paths = array_filter(array_unique(array_merge(array_keys($base['files']), array_keys($target['files']))),
                 fn ($p) => SafetyPaths::reason($p, $safetyRoots) === null);
@@ -70,6 +70,9 @@ final class PreviewService
         }
         $compatibility = $this->runtime->preflight($server->runtime_report ?? [], $target['runtime'] ?? []);
         $gateReasons = [];
+        if ((new DirectoryPolicy)->pending($server)) {
+            $gateReasons[] = 'Review newly discovered upstream directories';
+        }
         if (! $verified) {
             $gateReasons[] = 'Unverified upstream baseline';
         }
@@ -90,7 +93,7 @@ final class PreviewService
         }
         $binding = ['uuid' => $server->pelican_server_uuid, 'from' => $base['version'], 'to' => $target['version'],
             'base' => $base['files'], 'local' => $local, 'target' => $target['files'], 'rules' => $rules,
-            'decisions' => $plan['changes'], 'identities' => $identities, 'safety_roots' => $safetyRoots, 'disabled' => $server->disabled_mods, 'runtime' => $compatibility, 'backup_mode' => $server->backup_mode,
+            'directory_decisions' => $server->directory_decisions ?? [], 'decisions' => $plan['changes'], 'identities' => $identities, 'safety_roots' => $safetyRoots, 'disabled' => $server->disabled_mods, 'runtime' => $compatibility, 'backup_mode' => $server->backup_mode,
             'exclusions' => $server->backup_excluded_directories];
         $digest = hash('sha256', json_encode($binding, JSON_THROW_ON_ERROR));
         $preview = ['policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],

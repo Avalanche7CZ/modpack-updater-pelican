@@ -24,7 +24,7 @@ final class ManagedPathDiagnostic
         return ['schema' => 1, 'phase' => 'hashing', 'code' => $value['code'], 'directories' => array_values(array_unique($names)),
             'description' => ($protected ? 'Protected runtime/world paths cannot enter a baseline: ' : 'Unapproved managed directories: ').implode(', ', $names),
             'action' => $protected ? 'World/runtime exclusions cannot be overridden. Retain the stage and review the official pack contents.'
-                : 'Review these directories in the official pack. An administrator must approve them with --additional-managed-directory through node setup (or remote worker configuration). PHP cannot grant permissions. Then start a new preparation; keep the failed stage for evidence.'];
+                : 'Upgrade the plugin and worker for per-server directory discovery. Review upstream directories in adoption. Retain the failed archive; a matching preparation can reuse it after checksum verification. The Panel cannot grant OS read permissions.'];
     }
 
     public static function message(array $diagnostic): string

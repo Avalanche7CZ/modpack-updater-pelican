@@ -11,13 +11,17 @@ use Arcturus\ModpackManager\Services\PreparationException;
 /** Requests are scoped by a per-server secret in operator-owned config. No shell operations. */
 final class NodeWorker implements IntegrityWorker
 {
-    public function __construct(private readonly string $uuid) {}
+    public function __construct(private readonly string $uuid, private readonly ?array $scope = null) {}
 
     public function request(string $operation, array $payload = []): array
     {
         if (! in_array($operation, ['capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'requirements', 'resolve'], true)) {
             throw new CapabilityUnavailable('Unsupported node capability');
         }
+        if ((! empty($this->scope['manage']) || ! empty($this->scope['exclude'])) && in_array($operation, ['inventory', 'hashes', 'prepare'], true) && ($this->request('capabilities')['directory_policy'] ?? null) !== 1) {
+            throw new CapabilityUnavailable('Upgrade the remote worker for per-server directory discovery and policy support');
+        }
+        if ($this->scope !== null) { $payload['directory_scope'] = $this->scope; }
         $entry = config('arcturus-modpack-manager.nodes.'.$this->uuid);
         if (! is_array($entry) || empty($entry['url']) || strlen($entry['token'] ?? '') < 32) {
             throw new CapabilityUnavailable('Configure a server-scoped Arcturus node worker for remote SHA-256 inventory');

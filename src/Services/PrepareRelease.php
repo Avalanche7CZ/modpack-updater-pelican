@@ -41,10 +41,6 @@ final class PrepareRelease
         }
         if ($operation->phase === 'queued') {
             $release = $this->providers->get($server->provider)->release($server->source, $context['version'], $server->asset_pattern);
-            if ($worker instanceof LocalWorker) {
-                $entry = $worker->configuration()[$server->pelican_server_uuid];
-                $release = $release->withManagedDirectories($entry['additional_managed_directories'] ?? []);
-            }
             if (! $release->canPrepare()) {
                 $missing = count(array_filter($release->downloads, fn ($d) => empty($d['hashes']))) > 0;
                 throw new PreparationException(['code' => $missing ? 'CHECKSUM_MISSING' : 'RELEASE_UNVERIFIED', 'phase' => 'queued']);

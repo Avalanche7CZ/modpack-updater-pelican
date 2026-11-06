@@ -30,7 +30,7 @@ final class ManagedServer extends Model
             'enabled' => 'boolean',
             'discord_enabled' => 'boolean', 'discord_webhook' => 'encrypted', 'discord_notify_events' => 'array',
             'deploy_enabled' => 'boolean',
-            'file_rules' => 'array', 'file_inventory' => 'array', 'policy_revision' => 'integer',
+            'directory_decisions' => 'array', 'file_rules' => 'array', 'file_inventory' => 'array', 'policy_revision' => 'integer',
             'backup_excluded_directories' => 'array',
             'preview_summary' => 'array',
             'last_preview_at' => 'datetime',
@@ -42,7 +42,9 @@ final class ManagedServer extends Model
     protected static function booted(): void
     {
         self::updating(function (self $server): void {
-            if ($server->isDirty(['file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
+            if ($server->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
+                if ($server->isDirty('directory_decisions')) { $server->file_inventory = null; }
+                (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->normalize($server->directory_decisions ?? []);
                 (new UpdatePlanner)->plan([], [], [], $server->file_rules ?? [], [], $server->disabled_mods ?? []);
                 $server->forceFill(['approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null,
                     'preview_summary' => null, 'adoption_report' => null, 'policy_revision' => ($server->policy_revision ?? 0) + 1]);
@@ -50,7 +52,7 @@ final class ManagedServer extends Model
         });
         self::updated(function (self $server): void {
             if ($server->wasChanged('policy_revision')) {
-                $fields = array_intersect_key($server->getChanges(), array_flip(['file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories']));
+                $fields = array_intersect_key($server->getChanges(), array_flip(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories']));
                 $before = [];
                 $after = [];
                 foreach ($fields as $key => $value) {

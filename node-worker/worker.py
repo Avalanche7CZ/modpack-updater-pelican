@@ -2,6 +2,7 @@
 """Arcturus's server-scoped integrity/staging worker. No subprocess or shell API."""
 import argparse
 import contextlib
+import copy
 import hashlib
 import hmac
 import http.client
@@ -34,9 +35,20 @@ def additional_directories(values):
         raise ValueError('Additional managed directories must be a bounded list')
     for value in values:
         if (not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', value)
-                or value.lower() in reserved or re.fullmatch(r'DIM-?[0-9]+', value, re.I)):
+                or value.lower() in reserved or protected_path(value)):
             raise ValueError('Additional managed directory is unsafe or reserved for runtime data')
     return sorted(set(values))
+
+
+# Identical invariants apply inside standard and reviewed roots, at every depth.
+def protected_path(path):
+    parts = path.lower().split('/')
+    reserved = {v.lower() for v in RUNTIME | DEFAULT_EXCLUDED} | {
+        'region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock',
+        '.env', '.ssh', '.aws', '.git', 'secrets', 'credentials', 'tokens', 'passwords'}
+    return any(part in reserved or part.startswith('.arcturus-') or part.startswith('.env.')
+               or re.fullmatch(r'dim-?[0-9]+', part) or part.endswith(('.pem', '.key', '.p12', '.keystore'))
+               for part in parts)
 
 
 class ManagedPathFailure(ValueError):
@@ -70,7 +82,7 @@ FAILURES = {
     'ARCHIVE_INVALID': ('The downloaded archive is corrupt or uses an unsupported format.', 'Verify the official server ZIP and retain the downloaded evidence.'),
     'ARCHIVE_UNSAFE': ('An archive entry is unsafe, duplicated, encrypted or unsupported.', 'Inspect the numbered entry in the retained archive; use a reviewed normalized server pack.'),
     'ARCHIVE_LIMIT': ('The archive exceeds file-count or expansion safety limits.', 'Review the archive and configured staging limits; do not bypass ZIP safety checks.'),
-    'PERMISSION_DENIED': ('A required file or directory could not be accessed.', 'Re-run node setup for managed-file read access and check private staging ownership. Do not grant live write access.'),
+    'PERMISSION_DENIED': ('A selected managed directory is not readable by the unprivileged worker.', 'Verified staging is retained. Choose Keep local/Exclude or have the host operator provision read access for this server. The Panel cannot change POSIX ACLs; no download is needed to compare an existing baseline.'),
     'DISK_FULL': ('The staging filesystem has no available space or quota.', 'Free operator-reviewed staging space without deleting active evidence, or provision more capacity.'),
     'IO_ERROR': ('A filesystem operation failed.', 'Check filesystem health, mount state, staging capacity and permissions.'),
     'MISSING_FILE': ('A required file disappeared or was not present.', 'Inspect retained staging and release contents; do not substitute live files for upstream evidence.'),
@@ -604,14 +616,10 @@ class Worker:
 
     def managed(self, server, path, excluded=None):
         relative(path)
-        markers = ('region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock')
-        if any(p in markers or re.fullmatch(r'DIM-?[0-9]+', p) for p in path.split('/')):
+        if protected_path(path):
             return False
         allowed = self.managed_directories(server)
-        if path.split('/')[0] in self.entry(server).get('additional_managed_directories', []) and any(
-                p.lower() in ('logs', 'crash-reports', 'backups', 'backup') for p in path.split('/')):
-            return False
-        return not any(path == r or path.startswith(r + '/') for r in (self.world_roots(server) if excluded is None else excluded)) and not path.startswith('.arcturus-modpack-manager') and (len(path.split('/')) == 1 or path.split('/')[0] in allowed)
+        return not any(path == r or path.startswith(r + '/') for r in (self.world_roots(server) if excluded is None else excluded)) and (len(path.split('/')) == 1 or path.split('/')[0] in allowed)
 
     def managed_directories(self, server):
         entry = self.entry(server)
@@ -748,6 +756,17 @@ class Worker:
             thread.start()
         return data
 
+    def cached_artifact(self, server, fingerprint, index, current):
+        for record in Path(self.entry(server)['staging']).glob('*/operation.json'):
+            if record.parent == current or record.is_symlink():
+                continue
+            previous = json.loads(record.read_text())
+            candidate = record.parent / ('download-%d' % index)
+            if (previous.get('recipe_sha256') == fingerprint and previous.get('state') in ('completed', 'failed', 'cancelled', 'interrupted')
+                    and previous.get('files_verified', 0) > index and candidate.is_file() and not candidate.is_symlink()):
+                return candidate
+        return None
+
     def _prepare(self, server, base, recipe):
         path = base / 'operation.json'
         data = json.loads(path.read_text())
@@ -775,7 +794,14 @@ class Worker:
                         raise InterruptedError('Operation cancelled')
                     update(state='downloading', current_file=i + 1, total_files=len(items))
                     dest = base / ('download-%d' % i)
-                    if 'artifact_id' in item:
+                    cached = self.cached_artifact(server, data['recipe_sha256'], i, base)
+                    if cached is not None:
+                        sha, size = local_artifact('retained', dest,
+                            {'root': entry['root'], 'artifacts': {'retained': str(cached)}}, item['hashes'], maximum - total,
+                            report=lambda **v: transfer_report(update, total, **v), cancelled=cancelled)
+                        if item.get('size') is not None and item['size'] != size:
+                            raise PreparationFailure('TRANSFER_SIZE')
+                    elif 'artifact_id' in item:
                         sha, size = local_artifact(item['artifact_id'], dest, entry, item['hashes'], maximum - total, report=lambda **v: transfer_report(update, total, **v), cancelled=cancelled)
                         if item.get('size') is not None and item['size'] != size:
                             raise PreparationFailure('TRANSFER_SIZE')
@@ -806,7 +832,7 @@ class Worker:
                             recipe['runtime'] = {**recipe.get('runtime', {}), **self._mrpack(server, unpack, files, maximum, cancelled, update)}
                         else:
                             children = list(unpack.iterdir())
-                            content = children[0] if len(children) == 1 and children[0].is_dir() and children[0].name in entry.get('archive_roots', []) and self.managed(server, children[0].name) else unpack
+                            content = children[0] if len(children) == 1 and children[0].is_dir() and not protected_path(children[0].name) and (children[0].name in entry.get('archive_roots', []) or (children[0].name not in MANAGED_DIRS and (children[0] / 'mods').is_dir() and any((children[0] / n).exists() for n in ('server.properties', 'config', 'libraries')))) else unpack
                             # A manifest-only CurseForge pack must never be mistaken for a ready server.
                             if (content / 'manifest.json').exists():
                                 manifest = json.loads((content / 'manifest.json').read_text())
@@ -832,18 +858,28 @@ class Worker:
         files = base / 'files'
         update(state='hashing')
         excluded = self.world_roots(server)
-        unknown = [child.name for child in files.iterdir() if child.is_dir() and child.name not in self.managed_directories(server)]
-        if unknown:
-            protected = any(not self.managed(server, name, excluded) for name in unknown)
-            raise ManagedPathFailure(unknown, protected=protected)
+        upstream = copy.copy(self)
+        upstream.settings = {**self.settings, 'servers': {**self.settings['servers'], server: {**self.entry(server), 'root': str(files)}}}
+        excluded |= upstream.world_roots(server)
+        # Discover from verified staging, independently of live inventory approvals.
+        discovery = []
+        for child in sorted(files.iterdir()):
+            if child.is_dir():
+                name = child.name
+                protected = protected_path(name) or name in excluded
+                discovery.append({'path': name, 'classification': 'protected' if protected else
+                                  ('standard' if name in MANAGED_DIRS else 'review'),
+                                  'default': 'exclude' if protected else ('manage' if name in MANAGED_DIRS else 'review')})
         manifest, identities, metadata, bytes_hashed = {}, {}, {}, 0
         planned, total_bytes = [], 0
         cancelled = lambda: (base / 'cancel').exists()
         for directory, dirs, names in os.walk(files, onerror=fail_walk):
+            dirs[:] = [name for name in dirs if not protected_path(str((Path(directory) / name).relative_to(files)))
+                       and str((Path(directory) / name).relative_to(files)).split('/')[0] not in excluded]
             for name in names:
                 rel = str((Path(directory) / name).relative_to(files))
-                if not self.managed(server, rel):
-                    raise ManagedPathFailure([rel], protected=True)
+                if protected_path(rel) or rel.split('/')[0] in excluded:
+                    continue
                 info = (files / rel).lstat()
                 if not stat.S_ISREG(info.st_mode):
                     raise PreparationFailure('MANAGED_PATH', file=rel)
@@ -866,7 +902,7 @@ class Worker:
         result = {'schema': 2, 'provider': recipe['provider'], 'project': recipe['project'],
                   'version': recipe['version'], 'files': manifest, 'identities': identities, 'metadata': metadata,
                   'runtime': recipe.get('runtime', {}), 'artifacts': artifacts,
-                  'managed_directories': sorted(self.managed_directories(server)),
+                  'managed_directories': sorted(self.managed_directories(server)), 'directory_discovery': discovery,
                   'verification': 'upstream-checksums', 'bytes': bytes_hashed}
         atomic_json(base / 'manifest.json', result)
         update(state='completed', manifest_sha256=hashlib.sha256((base / 'manifest.json').read_bytes()).hexdigest())
@@ -969,8 +1005,8 @@ class Worker:
                     for name in names:
                         source = Path(directory) / name
                         rel = relative(str(source.relative_to(overrides)))
-                        if not self.managed(server, rel):
-                            raise ValueError('Unsafe CurseForge override path')
+                        if protected_path(rel):
+                            continue
                         target = files / rel
                         target.parent.mkdir(parents=True, exist_ok=True)
                         os.replace(source, target)
@@ -1013,7 +1049,7 @@ class Worker:
             if item.get('env', {}).get('server') == 'optional':
                 raise ValueError('Optional server mod requires an explicit normalized selection')
             path = relative(item['path'])
-            if path in seen or not self.managed(server, path):
+            if path in seen or protected_path(path):
                 raise ValueError('Duplicate or unsafe Modrinth path')
             seen.add(path)
             dest = files / path
@@ -1035,8 +1071,8 @@ class Worker:
                 for name in names:
                     origin = Path(directory) / name
                     path = relative(str(origin.relative_to(src)))
-                    if not self.managed(server, path):
-                        raise ValueError('Unsafe Modrinth override')
+                    if protected_path(path):
+                        continue
                     dest = files / path
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     os.replace(origin, dest)
@@ -1051,8 +1087,26 @@ class Worker:
 
     def handle(self, server, operation, payload):
         payload = payload or {}  # PHP serializes an empty request array as [].
+        if 'directory_scope' in payload:
+            scope = payload['directory_scope']
+            if not isinstance(scope, dict) or set(scope) != {'manage', 'exclude'}:
+                raise ValueError('Invalid directory scope')
+            manage = additional_directories(scope['manage'])
+            exclude = scope['exclude']
+            if not isinstance(exclude, list) or len(exclude) > 256:
+                raise ValueError('Invalid excluded scope')
+            for name in exclude:
+                relative(name)
+                if '/' in name:
+                    raise ValueError('Invalid excluded root')
+            scoped = copy.copy(self)
+            entry = {**self.entry(server), 'additional_managed_directories': manage,
+                     'managed_directories': sorted(set(MANAGED_DIRS) - set(exclude)),
+                     'excluded_directories': sorted(set(self.entry(server).get('excluded_directories', DEFAULT_EXCLUDED)) | set(exclude))}
+            scoped.settings = {**self.settings, 'servers': {**self.settings['servers'], server: entry}}
+            return scoped.handle(server, operation, {k: v for k, v in payload.items() if k != 'directory_scope'})
         if operation == 'capabilities':
-            return {'protocol': 1, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
+            return {'protocol': 1, 'directory_policy': 1, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
                     'deploy': False, 'preserve_exclusions': False,
                     'reason': 'Remote destructive transactions and restore verification require a disposable Pelican/Wings integration qualification'}
         if operation == 'hashes':

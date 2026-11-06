@@ -19,8 +19,8 @@ PACK_DIRS = frozenset(('mods', 'config', 'configs', 'scripts', 'kubejs', 'librar
     'shaderpacks', 'global_packs', 'paxi', 'openloader', 'schematics', 'assets', 'structures'))
 PROTECTED = frozenset(('world', 'world_nether', 'world_the_end', 'saves', 'dimensions', 'DIM-1', 'DIM1',
     'logs', 'crash-reports', 'backups', 'backup', 'data', 'region', 'playerdata', 'entities', 'poi',
-    'level.dat', 'level.dat_old', 'session.lock'))
-WORLD_MARKERS = frozenset(('region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock'))
+    'level.dat', 'level.dat_old', 'session.lock', '.env', '.ssh', '.aws', '.git', 'secrets', 'credentials', 'tokens', 'passwords'))
+WORLD_MARKERS = frozenset(('region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock', '.env', '.ssh', '.aws', '.git', 'secrets', 'credentials', 'tokens', 'passwords'))
 HOSTS = ['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com',
     'cdn.modrinth.com', 'files.feed-the-beast.com', 'edge.forgecdn.net', 'mediafilez.forgecdn.net',
     'download.nodecdn.net']
@@ -145,7 +145,7 @@ def provision_volume(fd, uid, additional=None):
                 count += 1
                 if count > 100000:
                     raise ValueError('Managed entry count exceeds provisioning limit')
-                if ((top and name in excluded) or name in WORLD_MARKERS or name.startswith('.arcturus-modpack-manager') or
+                if (name.lower() in {v.lower() for v in PROTECTED} or name.startswith('.env.') or name.endswith(('.pem', '.key', '.p12', '.keystore')) or (top and name in excluded) or name in WORLD_MARKERS or name.startswith('.arcturus-modpack-manager') or
                         (custom and name.lower() in ('logs', 'crash-reports', 'backups', 'backup')) or
                         re.fullmatch(r'DIM-?[0-9]+', name)):
                     continue
@@ -244,6 +244,7 @@ def main():
     if os.geteuid() != 0:
         parser.error('Run this one-time host setup as root; PHP is always run as the specified unprivileged account')
     os.umask(0o077)
+    phase = 'validate_host'
     try:
         account = pwd.getpwnam(args.user)
         if account.pw_uid == 0:
@@ -253,6 +254,7 @@ def main():
         php = Path(args.php).resolve(strict=True)
         if php.stat().st_uid != 0 or php.stat().st_mode & 0o022:
             raise ValueError('PHP executable must be root-owned and not group/world writable')
+        phase = 'read_panel_node_metadata'
         snapshot = json.loads(run_panel(panel, php, account, ['arcturus-modpack:describe-local-node', str(args.node)]))
         servers = approve(snapshot, args.node, root, stage)
         if root.stat().st_uid != 0 or root.stat().st_mode & 0o022:
@@ -289,6 +291,7 @@ def main():
         for executable in ('/usr/bin/setfacl', '/usr/bin/getfacl', '/usr/sbin/runuser'):
             if not os.access(executable, os.X_OK):
                 raise ValueError('Install the Ubuntu acl/util-linux packages before setup')
+        phase = 'provision_private_staging'
         protected_directory(CONFIG.parent)
         # Provision one shared parent only; UUID staging is created unprivileged on adoption.
         if not stage.parent.exists():
@@ -305,6 +308,7 @@ def main():
                 grant(fd, account.pw_uid, True, traversal=True)
             finally:
                 os.close(fd)
+        phase = 'provision_read_acls'
         fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             grant(fd, account.pw_uid, True)  # Default read/traverse ACL for future UUID volumes.
@@ -319,6 +323,7 @@ def main():
                     os.close(volume)
         finally:
             os.close(fd)
+        phase = 'persist_node_configuration'
         temp_fd, temp = tempfile.mkstemp(prefix='.local-node-', dir=CONFIG.parent)
         try:
             with os.fdopen(temp_fd, 'w') as out:
@@ -330,13 +335,24 @@ def main():
             if os.path.exists(temp):
                 os.unlink(temp)
         # Laravel exits gracefully between jobs. A fresh boot reads host approval even with config cache.
+        phase = 'restart_queue'
         run_panel(panel, php, account, ['queue:restart'])
+        phase = 'verify_node_access'
         run_panel(panel, php, account, ['arcturus-modpack:describe-local-node', str(args.node), '--check'])
         print('Host setup complete. Open Local filesystem setup, refresh checks, and enable the default. No live file content was changed.')
         return 0
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         # Do not dump subprocess stderr, Panel output, credentials or raw configuration.
         print('Setup did not complete. Check node ID/root, service account, canonical protected paths, active operations, Python/PHP and Ubuntu acl tools. Existing ACL changes may remain; rerun the same command after correcting the issue. Use --dry-run to inspect the approved scope.', file=sys.stderr)
+        print('Failed phase: ' + phase, file=sys.stderr)
+        if isinstance(error, subprocess.CalledProcessError):
+            print('Subprocess exited with code %s. Inspect the local Panel log for this phase; subprocess output is withheld because it may contain credentials.' % error.returncode, file=sys.stderr)
+        elif isinstance(error, subprocess.TimeoutExpired):
+            print('Subprocess exceeded the 120-second limit. Inspect queue and Panel state before retrying.', file=sys.stderr)
+        elif isinstance(error, OSError):
+            print('Host filesystem/tool failure (errno %s). Check ownership, ACL support, available disk space and installed tools.' % error.errno, file=sys.stderr)
+        elif isinstance(error, json.JSONDecodeError):
+            print('Expected JSON metadata was invalid. Check Panel boot errors and the operator configuration.', file=sys.stderr)
         if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError):
             print(str(error), file=sys.stderr)
         return 1

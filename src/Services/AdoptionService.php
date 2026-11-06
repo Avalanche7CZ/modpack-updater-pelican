@@ -97,7 +97,7 @@ final class AdoptionService
         $observed['upstream_runtime'] = $base['runtime'];
         $observed['observed_at'] = now()->toIso8601String();
         $rules = $server->file_rules ?? [];
-        $safetyRoots = array_merge($observed['protected_roots'] ?? [], $inventory['excluded_roots'] ?? []);
+        $safetyRoots = array_merge((new DirectoryPolicy)->protectedRoots($server, $base), $observed['protected_roots'] ?? [], $inventory['excluded_roots'] ?? []);
         $identities = (new ModIdentityMappings)->apply(
             ['base' => $base['identities'] ?? [], 'local' => $inventory['identities'] ?? [], 'target' => $base['identities'] ?? []],
             $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $inventory['files'], 'target' => $base['files']]);
@@ -154,6 +154,9 @@ final class AdoptionService
 
     public function finish(ManagedServer $server, bool $allowUnverified = false): void
     {
+        if (! $allowUnverified && (new DirectoryPolicy)->pending($server)) {
+            throw new RuntimeException('Review the discovered upstream directories before finishing adoption');
+        }
         if (! $allowUnverified) {
             $this->compare($server);
         }

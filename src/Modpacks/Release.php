@@ -46,7 +46,7 @@ final class Release
                     throw new InvalidArgumentException('Duplicate normalized download path');
                 }
                 $paths[$file['path']] = true;
-                if (! ManagedPaths::allowed($file['path'], $additionalManagedDirectories)) {
+                if (\Arcturus\ModpackManager\Services\SafetyPaths::reason($file['path']) !== null) {
                     $blockers[] = 'File is outside the managed pack scope: '.$file['path'];
                 }
             } elseif (! ($file['archive'] ?? false)) {

@@ -17,7 +17,7 @@ final class ManagedPaths
         }
         foreach ($names as $name) {
             if (! is_string($name) || ! preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/D', $name) ||
-                in_array(strtolower($name), $reserved, true) || preg_match('/^DIM-?[0-9]+$/iD', $name)) {
+                in_array(strtolower($name), $reserved, true) || \Arcturus\ModpackManager\Services\SafetyPaths::reason($name) !== null || preg_match('/^DIM-?[0-9]+$/iD', $name)) {
                 throw new \InvalidArgumentException('Additional managed directory is unsafe or reserved for runtime data');
             }
         }
@@ -29,6 +29,8 @@ final class ManagedPaths
 
     public static function allowed(string $path, array $additional = []): bool
     {
+        \Arcturus\ModpackManager\Services\UpdatePlanner::assertPath($path);
+        if (\Arcturus\ModpackManager\Services\SafetyPaths::reason($path) !== null) { return false; }
         $parts = explode('/', $path);
         $additional = self::reviewedAdditions($additional);
         if (in_array($parts[0], $additional, true)) {

@@ -26,15 +26,21 @@ class TfgManagedPaths(unittest.TestCase):
         self.worker.threads[(self.server, operation)].join(10)
         return self.worker.status(self.server, operation)
 
-    def test_reproduces_official_layout_failure_after_download_and_extraction(self):
+    def test_verified_unknown_roots_complete_without_live_approval(self):
         result = self.prepare()
-        self.assertEqual(result['state'], 'failed')
+        self.assertEqual(result['state'], 'completed', result)
         self.assertEqual(result['files_verified'], 1)
         self.assertTrue((self.stage / ('a' * 32) / 'download-0').is_file())
-        self.assertTrue((self.stage / ('a' * 32) / 'files/tacz/fixture.txt').is_file())
-        self.assertFalse((self.stage / ('a' * 32) / 'manifest.json').exists())
-        self.assertEqual(result['diagnostic']['code'], 'UNAPPROVED_MANAGED_DIRECTORY')
-        self.assertEqual(result['diagnostic']['directories'], ['DiscordIntegration-Data', 'tacz'])
+        manifest = self.worker.handle(self.server, 'manifest', {'operation_id': 'a' * 32})
+        review = [row['path'] for row in manifest['directory_discovery'] if row['classification'] == 'review']
+        self.assertEqual(review, ['DiscordIntegration-Data', 'tacz'])
+        self.put('tacz/local.json', b'local')
+        self.assertNotIn('tacz/local.json', self.worker.inventory(self.server)['files'])
+        scope = {'manage': ['tacz'], 'exclude': []}
+        inventory = self.worker.handle(self.server, 'inventory', {'directory_scope': scope})
+        self.assertIn('tacz/local.json', inventory['files'])
+        self.assertNotIn('tacz/local.json', self.worker.inventory(self.server)['files'])
+        self.assertNotIn('tacz/local.json', self.worker.handle(self.server, 'inventory', {'directory_scope': {'manage': [], 'exclude': ['tacz']}})['files'])
 
     def test_explicit_additions_complete_manifest_and_inventory_without_live_writes(self):
         self.settings['servers'][self.server]['additional_managed_directories'] = ['DiscordIntegration-Data', 'tacz']
@@ -59,15 +65,18 @@ class TfgManagedPaths(unittest.TestCase):
         self.assertEqual(result['state'], 'completed', result)
         self.assertIn('tacz/guns.json', self.worker.handle(self.server, 'manifest', {'operation_id': 'a' * 32})['files'])
         result = self.prepare('b' * 32, self.pack() + [('unreviewed/private.cfg', b'not approved')])
-        self.assertEqual(result['state'], 'failed')
-        self.assertIn('unreviewed', result['diagnostic']['directories'])
+        self.assertEqual(result['state'], 'completed')
+        manifest = self.worker.handle(self.server, 'manifest', {'operation_id': 'b' * 32})
+        self.assertIn('unreviewed/private.cfg', manifest['files'])
 
     def test_download_recipe_cannot_approve_its_own_directories(self):
         recipe = self.recipe(self.archive(self.pack()))
         recipe['additional_managed_directories'] = ['DiscordIntegration-Data', 'tacz']
         self.worker.prepare(self.server, recipe, 'c' * 32)
         self.worker.threads[(self.server, 'c' * 32)].join(10)
-        self.assertEqual(self.worker.status(self.server, 'c' * 32)['state'], 'failed')
+        self.assertEqual(self.worker.status(self.server, 'c' * 32)['state'], 'completed')
+        self.put('tacz/private.cfg', b'local')
+        self.assertNotIn('tacz/private.cfg', self.worker.inventory(self.server)['files'])
 
     def test_runtime_world_and_nested_backup_exclusions_cannot_be_overridden(self):
         for name in ['world', 'playerdata', 'logs', 'backups', 'data', 'DIM-1', '../x', '/private', '.hidden', 'a/b']:
@@ -91,6 +100,35 @@ class TfgManagedPaths(unittest.TestCase):
                 self.worker.inventory(self.server)
         finally:
             directory.chmod(0o700)
+
+    def test_gtnh_ftb_wrappers_and_nested_runtime(self):
+        for index, wrapper in enumerate(['GT_New_Horizons_Server_2.8.1', 'FTB-Evolution-Server']):
+            pack = [(wrapper + '/' + name, value) for name, value in [
+                ('mods/example.jar', b'jar'), ('config/pack.cfg', b'config'),
+                ('customcontent/assets/example.json', b'{}'), ('customcontent/backups/b.zip', b'private'),
+                ('config/secrets/private.key', b'private'), ('config/saves/session.lock', b'private'),
+                ('world/region/r.0.0.mca', b'world'), ('scripts/playerdata/user.dat', b'player'),
+                ('libraries/bootstrap.jar', b'jar')]]
+            op = str(index + 1) * 32
+            self.assertEqual(self.prepare(op, pack)['state'], 'completed')
+            manifest = self.worker.handle(self.server, 'manifest', {'operation_id': op})
+            self.assertEqual(set(manifest['files']), {'mods/example.jar', 'config/pack.cfg',
+                'customcontent/assets/example.json', 'libraries/bootstrap.jar'})
+            self.assertIn({'path': 'customcontent', 'classification': 'review', 'default': 'review'}, manifest['directory_discovery'])
+
+    def test_retained_archive_reused_and_reverified(self):
+        self.assertEqual(self.prepare()['state'], 'completed')
+        recipe = self.recipe(self.root / 'pack.zip')
+        # archive() fixtures use an operator artifact; remove the source to prove no fetch/copy from upstream.
+        with patch.object(w, 'fetch', side_effect=AssertionError('Unexpected network download')):
+            self.worker.prepare(self.server, recipe, 'd' * 32)
+            self.worker.threads[(self.server, 'd' * 32)].join(10)
+        self.assertEqual(self.worker.status(self.server, 'd' * 32)['state'], 'completed')
+        (self.stage / ('a' * 32) / 'download-0').write_bytes(b'corrupted')
+        (self.stage / ('d' * 32) / 'download-0').write_bytes(b'corrupted')
+        self.worker.prepare(self.server, recipe, 'e' * 32)
+        self.worker.threads[(self.server, 'e' * 32)].join(10)
+        self.assertEqual(self.worker.status(self.server, 'e' * 32)['diagnostic']['code'], 'CHECKSUM_MISMATCH')
 
     def test_scope_diagnostic_never_discloses_raw_urls_or_host_paths(self):
         error = w.ManagedPathFailure(['https://user:password@host/private?token=secret', '/etc/private', 'secret-token-directory/value'])

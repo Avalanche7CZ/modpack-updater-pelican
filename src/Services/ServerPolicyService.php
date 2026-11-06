@@ -19,13 +19,22 @@ final class ServerPolicyService
     public function save(ManagedServer $server, array $rules, array $disabled, int $revision, array $attributes = []): void
     {
         Access::requireAdmin();
-        $allowed = ['label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport', ...DiscordSettings::FIELDS];
+        $allowed = ['directory_decisions', 'label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport', ...DiscordSettings::FIELDS];
         if (array_diff(array_keys($attributes), $allowed)) {
             throw new RuntimeException('Invalid policy settings');
         }
         $discord = array_intersect_key($attributes, array_flip(DiscordSettings::FIELDS));
         if ($discord) {
             $attributes = array_diff_key($attributes, array_flip(DiscordSettings::FIELDS)) + (new DiscordSettings)->attributes($server, $discord);
+        }
+        if (isset($attributes['directory_decisions'])) {
+            $attributes['directory_decisions'] = (new DirectoryPolicy)->normalize($attributes['directory_decisions']);
+            $known = array_column((new DirectoryPolicy)->rows($server), null, 'path');
+            foreach ($attributes['directory_decisions'] as $row) {
+                if (! isset($known[$row['path']]) || $known[$row['path']]['classification'] === 'protected') {
+                    throw new RuntimeException('Only safe directories discovered in this server upstream may be reviewed');
+                }
+            }
         }
         $rules = (new ProtectionPolicy)->normalize($rules);
         (new UpdatePlanner)->plan([], [], [], $rules, [], $disabled);
@@ -66,14 +75,15 @@ final class ServerPolicyService
                     $fresh->forceFill(['baseline_status' => 'unverified', 'deploy_enabled' => false]);
                     // Changing the binding must never inherit a different server's runtime, backup or filesystem pins.
                     if ($rebound) {
+                        $fresh->directory_decisions = [];
                         $fresh->forceFill(array_fill_keys(['local_root', 'staging_parent', 'worker_key', 'backup_root', 'last_backup_uuid', 'runtime_report'], null));
                     }
                     // Share the policy revision guard so stale forms/comparisons cannot revive old evidence.
-                    if (! $fresh->isDirty(['file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
+                    if (! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
                         $fresh->policy_revision++;
                     }
                 }
-                if (! $associationChanged && $transport !== $fresh->transport && ! $fresh->isDirty(['file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
+                if (! $associationChanged && $transport !== $fresh->transport && ! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
                     $fresh->policy_revision++;
                 }
                 $fresh->save();

@@ -92,8 +92,8 @@ class TelemetryTests(unittest.TestCase):
         for index, root in enumerate(['tacz', 'UnknownPackRoot']):
             result = fixtures.local.run(self.request('prepare', operation_id=str(index) * 32,
                 recipe=self.recipe(self.archive([(root + '/assets/example.json', b'{}')]))))
-            self.assertEqual(result['state'], 'failed')
-            self.assertEqual(result['diagnostic']['code'], 'UNAPPROVED_MANAGED_DIRECTORY')
+            self.assertEqual(result['state'], 'completed')
+            self.assertTrue((self.stage / (str(index) * 32) / ('files/' + root + '/assets/example.json')).is_file())
         self.settings['servers'][self.server]['archive_roots'] = ['ReviewedPackRoot']
         result = fixtures.local.run(self.request('prepare', operation_id='e' * 32,
             recipe=self.recipe(self.archive([('ReviewedPackRoot/config/example.cfg', b'upstream')]))))
@@ -101,7 +101,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertTrue((self.stage / ('e' * 32) / 'files/config/example.cfg').is_file())
         result = fixtures.local.run(self.request('prepare', operation_id='f' * 32,
             recipe=self.recipe(self.archive([('ReviewedPackRoot/tacz/assets/example.json', b'{}')]))))
-        self.assertEqual(result['diagnostic']['code'], 'UNAPPROVED_MANAGED_DIRECTORY')
+        self.assertEqual(result['state'], 'completed')
         self.assertNotIn('tacz', w.MANAGED_DIRS)
 
 

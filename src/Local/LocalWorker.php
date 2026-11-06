@@ -61,6 +61,7 @@ final class LocalWorker implements IntegrityWorker
             throw new CapabilityUnavailable('Unsupported local capability');
         }
         $entries = $this->configuration();
+        $payload['directory_scope'] = (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->scope($this->server);
 
         return self::execute(['servers' => $entries, 'server' => $this->server->pelican_server_uuid,
             'operation' => $operation, 'payload' => $payload],
