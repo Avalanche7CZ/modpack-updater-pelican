@@ -8,6 +8,7 @@ use Arcturus\ModpackManager\Contracts\IntegrityWorker;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Remote\CapabilityUnavailable;
 use Symfony\Component\Process\Process;
+use Arcturus\ModpackManager\Services\PreparationException;
 
 /** Fixed, unprivileged subprocess; no shell, HTTP listener, tokens or live writes. */
 final class LocalWorker implements IntegrityWorker
@@ -15,6 +16,13 @@ final class LocalWorker implements IntegrityWorker
     public const TIMEOUT = 14400;
 
     private ?\Closure $heartbeat = null;
+    private ?\Closure $progress = null;
+
+    public function withProgress(\Closure $progress): self
+    {
+        $this->progress = $progress;
+        return $this;
+    }
 
     public function withHeartbeat(\Closure $heartbeat): self
     {
@@ -56,22 +64,41 @@ final class LocalWorker implements IntegrityWorker
 
         return self::execute(['servers' => $entries, 'server' => $this->server->pelican_server_uuid,
             'operation' => $operation, 'payload' => $payload],
-            in_array($operation, ['prepare', 'resolve'], true) ? self::TIMEOUT : 120, $this->heartbeat);
+            (in_array($operation, ['prepare', 'resolve'], true) || ($operation === 'inventory' && $this->progress !== null)) ? self::TIMEOUT : 120,
+            $operation === 'cancel' ? null : $this->heartbeat, $operation === 'cancel' ? null : $this->progress);
     }
 
-    public static function execute(array $request, int $timeout, ?\Closure $heartbeat = null): array
+    public static function execute(array $request, int $timeout, ?\Closure $heartbeat = null, ?\Closure $progress = null): array
     {
+        $streaming = $progress !== null;
+        $request['progress_stream'] = $streaming;
         $process = new Process(['/usr/bin/python3', '-B', dirname(__DIR__, 2).'/node-worker/local.py']);
         $process->setInput(json_encode($request, JSON_THROW_ON_ERROR));
         $process->setTimeout($timeout);
         $output = '';
+        $result = null;
+        $lastPhase = 'queued';
         try {
-            $process->start(function (string $type, string $chunk) use (&$output, $process): void {
+            $process->start(function (string $type, string $chunk) use (&$output, &$result, &$lastPhase, $process, $streaming, $progress): void {
                 if ($type === Process::OUT) {
                     $output .= $chunk;
                     if (strlen($output) > 33554432) {
                         $process->stop(0);
                         throw new CapabilityUnavailable('Local metadata exceeds the 32 MiB response limit');
+                    }
+                    if ($streaming) {
+                        while (($position = strpos($output, "\n")) !== false) {
+                            $line = substr($output, 0, $position);
+                            $output = substr($output, $position + 1);
+                            $frame = json_decode($line, true);
+                            if (! is_array($frame)) { throw new PreparationException(['code' => 'METADATA_INVALID']); }
+                            if (($frame['type'] ?? '') === 'progress' && $result === null) {
+                                $lastPhase = $frame['progress']['phase'] ?? $lastPhase;
+                                $progress($frame);
+                            }
+                            elseif (($frame['type'] ?? '') === 'result' && $result === null && is_array($frame['data'] ?? null)) { $result = $frame['data']; }
+                            else { throw new PreparationException(['code' => 'METADATA_INVALID']); }
+                        }
                     }
                 }
                 // Process buffers are cleared; stderr is never rendered (could contain recipe URLs).
@@ -88,15 +115,19 @@ final class LocalWorker implements IntegrityWorker
                 usleep(100000);
             }
             $process->wait();
-        } catch (CapabilityUnavailable $error) {
+        } catch (PreparationException|CapabilityUnavailable $error) {
             $process->stop(0);
             throw $error;
-        } catch (\Throwable) {
+        } catch (\Throwable $error) {
             $process->stop(0);
-            throw new CapabilityUnavailable('Local helper interrupted or unavailable. Install Python 3.11+, allow PHP process execution, and inspect retained staging state before retrying.');
+            throw new PreparationException(['code' => $error instanceof \Symfony\Component\Process\Exception\ProcessTimedOutException ? 'LOCAL_TIMEOUT' : 'LOCAL_INTERRUPTED', 'phase' => $lastPhase]);
         }
-        $data = json_decode($output, true);
+        $data = $streaming ? $result : json_decode($output, true);
+        if ($streaming && trim($output) !== '') { throw new PreparationException(['code' => 'METADATA_INVALID']); }
         if (! $process->isSuccessful() || ! is_array($data)) {
+            if (isset($data['diagnostic']) && ! in_array($request['operation'], ['capabilities', 'node_capabilities', 'provision'], true)) {
+                throw new PreparationException($data['diagnostic']);
+            }
             // Only fixed error codes cross the subprocess boundary; never raw exception text.
             $message = match ($data['code'] ?? '') {
                 'permissions' => 'Local filesystem permission check failed. Re-run the one-time node setup as an administrator and verify PHP-FPM and pelican-queue use the same unprivileged account. The Panel will not change existing permissions. Never use root PHP or chmod 777.',

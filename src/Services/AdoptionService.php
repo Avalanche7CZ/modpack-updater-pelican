@@ -83,11 +83,12 @@ final class AdoptionService
         return $report;
     }
 
-    public function compare(ManagedServer $server): array
+    public function compare(ManagedServer $server, ?\Arcturus\ModpackManager\Models\Operation $operation = null): array
     {
         $base = $this->store->load($server->base_manifest_path);
         (new BaselineGuard)->require($base, $server->provider, $server->source, $server->installed_version);
-        $inventory = $this->files->managed($server)->inventory();
+        $inventory = $this->files->managed($server, $operation)->inventory();
+        if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning'); }
         $observed = $this->inspect($server->pelicanServer);
         if (($observed['world_path_verified'] ?? null) === false) {
             throw new RuntimeException('Verify the custom world path in server.properties before adoption comparison');
@@ -102,6 +103,7 @@ final class AdoptionService
             $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $inventory['files'], 'target' => $base['files']]);
         $plan = $this->planner->plan($base['files'], $inventory['files'], $base['files'], $rules, $identities,
             $server->disabled_mods ?? [], $safetyRoots, $inventory['metadata'] ?? []);
+        if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning', count($plan['changes']), count($plan['changes'])); }
         $report = ['policy_revision' => $server->policy_revision, 'verified_baseline' => true, 'version' => $base['version'], 'counts' => $plan['counts'],
             'changes' => $plan['changes'],
             'scope' => $inventory['scope'], 'excluded_roots' => $inventory['excluded_roots'],

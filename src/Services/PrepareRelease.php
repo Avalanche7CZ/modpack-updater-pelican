@@ -30,7 +30,14 @@ final class PrepareRelease
         }
         $worker = app(ServerFilesFactory::class)->worker($server);
         if ($worker instanceof LocalWorker) {
-            $worker->withHeartbeat(fn () => $operation->update(['heartbeat_at' => now()]));
+            $worker->withProgress(fn (array $snapshot) => PreparationProgress::record($operation, $snapshot));
+            $worker->withHeartbeat(function () use ($operation, $server): void {
+                $operation->update(['heartbeat_at' => now()]);
+                if (Operation::whereKey($operation->id)->value('cancel_requested_at')) {
+                    try { app(ServerFilesFactory::class)->worker($server)->request('cancel', ['operation_id' => $operation->node_operation_id]); }
+                    catch (\Throwable) { /* Retain pending intent; cancellation is not confirmed by a lost response. */ }
+                }
+            });
         }
         if ($operation->phase === 'queued') {
             $release = $this->providers->get($server->provider)->release($server->source, $context['version'], $server->asset_pattern);
@@ -39,7 +46,8 @@ final class PrepareRelease
                 $release = $release->withManagedDirectories($entry['additional_managed_directories'] ?? []);
             }
             if (! $release->canPrepare()) {
-                throw new RuntimeException(implode('; ', $release->blockers) ?: 'Upstream download checksums or required files are missing');
+                $missing = count(array_filter($release->downloads, fn ($d) => empty($d['hashes']))) > 0;
+                throw new PreparationException(['code' => $missing ? 'CHECKSUM_MISSING' : 'RELEASE_UNVERIFIED', 'phase' => 'queued']);
             }
             if ($release->format === 'curseforge' && ! ($worker->request('capabilities')['curseforge_resolution'] ?? false)) {
                 throw new RuntimeException('This node worker needs the CurseForge required-file resolution capability; upgrade the worker first');
@@ -74,6 +82,7 @@ final class PrepareRelease
             }
             $operation->update(['context' => [...$context, 'progress' => ['state' => 'resolving required files',
                 'files_resolved' => count($batch['files']), 'required_files' => $batch['total']]]]);
+            PreparationProgress::phase($operation, 'awaiting_resolution', 'resolving_required_files', count($batch['files']), $batch['total']);
             if (! $batch['complete']) {
                 return false;
             }
@@ -81,37 +90,42 @@ final class PrepareRelease
                 'requirements_sha256' => $resolution['sha256'], 'files' => $batch['files']]);
         }
         $state = $status['state'] ?? null;
-        if (($status['operation_id'] ?? null) !== $operation->node_operation_id || ! in_array($state, ['queued', 'downloading', 'extracting', 'hashing', 'completed', 'failed', 'cancelled', 'interrupted'], true)) {
+        if (($status['operation_id'] ?? null) !== $operation->node_operation_id || ! in_array($state, ['queued', 'downloading', 'verifying', 'extracting', 'hashing', 'completed', 'failed', 'cancelled', 'interrupted'], true)) {
             throw new RuntimeException('Node returned an unknown or mismatched preparation state');
         }
+        if (isset($status['progress'])) { PreparationProgress::record($operation, $status); }
         if ($state === 'completed' && ! preg_match('/^[a-f0-9]{64}$/D', $status['manifest_sha256'] ?? '')) {
             throw new RuntimeException('Node completion has no verified manifest digest');
         }
         if (in_array($state, ['cancelled', 'interrupted'], true)) {
-            $operation->update(['error' => $status['error'] ?? 'Node preparation '.$state]);
+            $detail = PreparationDiagnostic::normalize($status['diagnostic'] ?? ['code' => strtoupper($state), 'phase' => $operation->progress['current']['phase'] ?? 'queued']);
+            $operation->update(['error' => PreparationDiagnostic::message($detail), 'context' => [...$operation->context, 'diagnostic' => $detail]]);
             $this->tracker->transition($operation, $state);
 
             return true;
         }
         if ($state === 'failed') {
-            $diagnostic = ManagedPathDiagnostic::normalize($status['diagnostic'] ?? null);
-            if ($diagnostic) {
-                $operation->update(['context' => [...$operation->context, 'diagnostic' => $diagnostic]]);
-                throw new RuntimeException(ManagedPathDiagnostic::message($diagnostic));
-            }
-            throw new RuntimeException('Node preparation '.$state.': '.($status['error'] ?? 'inspect node operation'));
+            throw new PreparationException($status['diagnostic'] ?? ['code' => 'PREPARATION_FAILED', 'phase' => $operation->progress['current']['phase'] ?? 'queued']);
         }
         if ($state !== 'completed') {
             $phase = match ($state) {
-                'extracting' => 'preparing', 'hashing' => 'comparing', default => 'downloading'
+                'extracting' => 'preparing', 'hashing' => 'hashing', 'verifying' => 'verifying', default => 'downloading'
             };
             if ($operation->phase !== $phase) {
                 $this->tracker->transition($operation, $phase);
             }
-            $operation->update(['heartbeat_at' => now(), 'context' => [...$context, 'progress' => array_intersect_key($status,
-                array_flip(['bytes_downloaded', 'files_verified', 'current_file', 'total_files', 'state']))]]);
+            $operation->update(['heartbeat_at' => now()]);
+            if (! isset($status['progress'])) {
+                PreparationProgress::phase($operation, in_array($state, PreparationDiagnostic::PHASES, true) ? $state : 'queued');
+            }
+            if (Operation::whereKey($operation->id)->value('cancel_requested_at')) {
+                $worker->request('cancel', ['operation_id' => $operation->node_operation_id]);
+            }
 
             return false;
+        }
+        if (Operation::whereKey($operation->id)->value('cancel_requested_at')) {
+            throw new PreparationException(['code' => 'CANCELLED', 'phase' => $operation->progress['current']['phase'] ?? 'queued']);
         }
         $manifest = $worker->request('manifest', ['operation_id' => $operation->node_operation_id]);
         (new BaselineGuard)->require($manifest, $server->provider, $server->source, $context['version']);
@@ -119,15 +133,19 @@ final class PrepareRelease
         $provenance = ['operation_id' => $operation->id, 'node_operation_id' => $operation->node_operation_id, 'transport' => $server->transport ?? 'wings',
             'provider' => $server->provider, 'project' => $server->source, 'version' => $context['version'],
             'manifest_sha256' => $status['manifest_sha256'], 'verification' => 'upstream-checksums'];
+        PreparationProgress::phase($operation, 'comparing', 'inventory_enumeration');
         if ($operation->kind === 'baseline') {
             $server->update(['base_manifest_path' => $path, 'baseline_status' => 'verified',
                 'baseline_provenance' => $provenance, 'approved_plan_sha256' => null]);
-            app(AdoptionService::class)->compare($server);
+            app(AdoptionService::class)->compare($server, $operation);
         } else {
             $server->update(['target_manifest_path' => $path, 'prepared_root' => ($server->transport === 'local' ? 'local:' : 'node:').$operation->node_operation_id,
                 'target_metadata' => array_replace($server->target_metadata ?? $server->release_metadata ?? [], ['prepared' => $provenance, 'runtime' => $manifest['runtime']]),
                 'preview_summary' => null, 'approved_plan_sha256' => null]);
-            app(PreviewService::class)->generate($server);
+            app(PreviewService::class)->generate($server, $operation);
+        }
+        if (Operation::whereKey($operation->id)->value('cancel_requested_at')) {
+            throw new PreparationException(['code' => 'CANCELLED', 'phase' => 'comparing']);
         }
         $this->tracker->transition($operation, 'waiting_for_approval');
         $this->tracker->transition($operation, 'completed');

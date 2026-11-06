@@ -51,6 +51,10 @@ final class LocalNode
         }
         try {
             $data['additional_managed_directories'] = \Arcturus\ModpackManager\Security\ManagedPaths::reviewedAdditions($data['additional_managed_directories'] ?? []);
+            $data['archive_roots'] = \Arcturus\ModpackManager\Security\ManagedPaths::reviewedAdditions($data['archive_roots'] ?? []);
+            if (array_intersect($data['archive_roots'], array_merge(\Arcturus\ModpackManager\Security\ManagedPaths::ROOTS, $data['additional_managed_directories']))) {
+                throw new \InvalidArgumentException('Archive wrappers overlap managed directories');
+            }
         } catch (\Throwable) {
             throw new CapabilityUnavailable('Approved additional managed directories are unsafe or reserved for runtime data. Re-run administrator node setup.');
         }
@@ -116,7 +120,7 @@ final class LocalNode
 
         return ['root' => $root, 'staging' => $config['staging_parent'].'/'.$uuid,
             'allowed_hosts' => $config['allowed_hosts'] ?? [], 'artifacts' => $config['artifacts'] ?? [],
-            'additional_managed_directories' => $config['additional_managed_directories']];
+            'additional_managed_directories' => $config['additional_managed_directories'], 'archive_roots' => $config['archive_roots']];
     }
 
     public function adoptionAttributes(string $uuid, string $selection): array

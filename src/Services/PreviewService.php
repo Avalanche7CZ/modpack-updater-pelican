@@ -16,7 +16,7 @@ final class PreviewService
         private readonly ReleaseStore $store, private readonly ServerFilesFactory $files,
         private readonly RuntimeInspector $runtime) {}
 
-    public function generate(ManagedServer $server): array
+    public function generate(ManagedServer $server, ?\Arcturus\ModpackManager\Models\Operation $operation = null): array
     {
         if (! $server->base_manifest_path || ! $server->target_manifest_path) {
             throw new RuntimeException('Prepare the exact installed upstream baseline and target release first');
@@ -54,15 +54,17 @@ final class PreviewService
             $local = $this->inventory->hashPaths($root, $paths);
             $identities = [];
         } else {
-            $remote = $this->files->managed($server)->inventory();
+            $remote = $this->files->managed($server, $operation)->inventory();
             $local = $remote['files'];
             $identities = ['base' => $base['identities'] ?? [], 'target' => $target['identities'] ?? [], 'local' => $remote['identities'] ?? []];
             $safetyRoots = array_merge($safetyRoots, $remote['excluded_roots'] ?? []);
             $metadata = array_replace($base['metadata'] ?? [], $target['metadata'] ?? [], $remote['metadata'] ?? []);
             $server->file_inventory = [...$remote, 'observed_at' => now()->toIso8601String()];
         }
+        if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning'); }
         $identities = (new ModIdentityMappings)->apply($identities, $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $local, 'target' => $target['files']]);
         $plan = $this->planner->plan($base['files'], $local, $target['files'], $rules, $identities, $server->disabled_mods ?? [], $safetyRoots, $metadata);
+        if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning', count($plan['changes']), count($plan['changes'])); }
         if ($server->file_inventory) {
             $server->file_inventory = [...$server->file_inventory, 'target_metadata' => $target['metadata'] ?? []];
         }

@@ -19,7 +19,7 @@ final class WingsFiles implements ServerFiles
     private array $listingWarnings = [];
 
     public function __construct(private readonly Server $server,
-        private readonly DaemonFileRepository $daemon, private readonly IntegrityWorker $worker) {}
+        private readonly DaemonFileRepository $daemon, private readonly IntegrityWorker $worker, private readonly ?string $operationId = null) {}
 
     /** @return list<string> */
     public function inspectionWarnings(): array
@@ -183,7 +183,7 @@ final class WingsFiles implements ServerFiles
 
     public function inventory(): array
     {
-        $data = $this->worker->request('inventory');
+        $data = $this->worker->request('inventory', $this->operationId ? ['operation_id' => $this->operationId] : []);
         if (($data['complete'] ?? false) !== true || ! is_array($data['files'] ?? null)) {
             throw new RuntimeException('Remote managed-file inventory is incomplete');
         }

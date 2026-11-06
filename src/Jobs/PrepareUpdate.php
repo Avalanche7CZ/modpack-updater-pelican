@@ -10,6 +10,8 @@ use Arcturus\ModpackManager\Services\OperationTracker;
 use Arcturus\ModpackManager\Services\PrepareRelease;
 use Arcturus\ModpackManager\Local\LocalWorker;
 use Arcturus\ModpackManager\Services\QueuePreparation;
+use Arcturus\ModpackManager\Services\PreparationDiagnostic;
+use Arcturus\ModpackManager\Services\PreparationException;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Cache;
@@ -74,14 +76,29 @@ final class PrepareUpdate implements ShouldQueue
             if ($operation->completed_at) {
                 return;
             }
+            if ($operation->cancel_requested_at && $operation->phase === 'queued') {
+                throw new PreparationException(['code' => 'CANCELLED', 'phase' => 'queued']);
+            }
             if (! $preparer->tick($server, $operation)) {
                 self::dispatch($server->id, $this->baseline, $operation->id)->delay(now()->addSeconds(10));
             }
         } catch (Throwable $error) {
+            $detail = $error instanceof PreparationException ? $error->diagnostic : PreparationDiagnostic::normalize([
+                'code' => $error instanceof \Arcturus\ModpackManager\Remote\CapabilityUnavailable ? 'WORKER_CONFIGURATION' : 'PANEL_ERROR',
+                'phase' => $operation?->progress['current']['phase'] ?? 'queued',
+            ]);
             if ($operation && ! $operation->completed_at) {
-                $tracker->fail($operation, $error->getMessage());
+                $operation->update(['context' => [...$operation->context, 'diagnostic' => $detail]]);
+                $message = PreparationDiagnostic::message($detail);
+                if (in_array($detail['code'], ['CANCELLED', 'INTERRUPTED', 'LOCAL_TIMEOUT', 'LOCAL_INTERRUPTED', 'REMOTE_UNAVAILABLE'], true)) {
+                    $operation->update(['error' => $message]);
+                    $tracker->transition($operation, $detail['code'] === 'CANCELLED' ? 'cancelled' : 'interrupted');
+                } else { $tracker->fail($operation, $message); }
+            } elseif (! $operation && isset($server)) {
+                $server->events()->create(['kind' => $this->baseline ? 'baseline' : 'prepare', 'status' => 'failed',
+                    'message' => PreparationDiagnostic::message($detail), 'details' => ['diagnostic' => $detail]]);
             }
-            throw $error;
+            if ($detail['code'] !== 'CANCELLED') { throw new PreparationException($detail); }
         } finally {
             $lock->release();
         }
