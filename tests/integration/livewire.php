@@ -106,13 +106,58 @@ $progressOperation->update(['node_operation_id' => str_repeat('a', 32)]);
 \Arcturus\ModpackManager\Services\PreparationProgress::record($progressOperation, ['operation_id' => str_repeat('a', 32),
     'progress' => ['phase' => 'downloading', 'bytes_done' => 1048576, 'bytes_total' => null, 'speed_bytes_per_second' => 1048576, 'updated_at' => time()]]);
 $child = Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id]);
-check(str_contains($child->html(), '1.00 MiB/s') && str_contains($child->html(), 'Indeterminate'), 'Native download telemetry or unknown-total indicator missing');
+check(str_contains($child->html(), '1.00 MiB/s') && str_contains($child->html(), 'Working — total not known yet'), 'Native download telemetry or unknown-total indicator missing');
 $dom = new DOMDocument;
 @$dom->loadHTML($child->html());
-check((new DOMXPath($dom))->query('//progress[not(@value)]')->length === 1, 'Unknown download total rendered a fabricated percentage');
+check((new DOMXPath($dom))->query('//progress')->length === 0, 'Unknown download total rendered a fabricated percentage');
 $progressOperation->update(['cancel_requested_at' => now()]);
 $child->call('$refresh');
 check(str_contains($child->html(), 'Cancellation requested'), 'Cancellation intent did not survive refresh');
+// Regression fixtures exercise rendered states, not just percentage arithmetic.
+$downloadSnapshot = ['phase' => 'downloading', 'bytes_done' => 520761531, 'bytes_total' => 520761531,
+    'downloaded_bytes' => 520761531, 'download_total_bytes' => 520761531,
+    'speed_bytes_per_second' => 12582912, 'eta_seconds' => 3, 'updated_at' => time() - 120, 'finished' => true];
+$extractionSnapshot = ['phase' => 'extracting', 'bytes_done' => 900000000, 'bytes_total' => 900000000,
+    'files_done' => 4321, 'files_total' => 4321, 'entries_validated' => 4500, 'finished' => true];
+$hashingSnapshot = ['phase' => 'hashing', 'files_done' => 0, 'files_total' => null,
+    'bytes_done' => 0, 'bytes_total' => null, 'updated_at' => time()];
+$progressOperation->update(['cancel_requested_at' => null, 'phase' => 'hashing', 'progress' => [
+    'current' => $hashingSnapshot, 'stages' => ['downloading' => $downloadSnapshot, 'extracting' => $extractionSnapshot, 'hashing' => $hashingSnapshot]]]);
+$child->call('$refresh');
+$html = $child->html();
+check(str_contains($html, 'Counting staged files') && ! str_contains($html, '0 / unknown'), 'Hashing reused an unknown count placeholder');
+check(str_contains($html, '4,321 / 4,321 files processed') && str_contains($html, '4,500 archive entries validated'), 'Extraction lost independently recorded counts');
+check(str_contains($html, 'Last recorded speed') && str_contains($html, '12.00 MiB/s') && str_contains($html, 'Last recorded ETA') && str_contains($html, '~00:00:03'), 'Historical download metrics were hidden or extrapolated');
+$dom = new DOMDocument; @$dom->loadHTML($html); $xpath = new DOMXPath($dom);
+check($xpath->query('//li[@data-phase="hashing"]//progress')->length === 0 && $xpath->query('//li[@data-phase="extracting"]//progress')->length === 0, 'Unknown hashing/completed extraction rendered a misleading bar');
+check($xpath->query('//details/summary[contains(., "Technical details")]')->length === 1 && $xpath->query('//details[@open]')->length === 0, 'Technical output is not collapsed');
+// The real failure case: the snapshot may be marked finished but lack a total.
+$hashingSnapshot['finished'] = true;
+$progressOperation->update(['phase' => 'failed', 'completed_at' => now(), 'progress' => [
+    'current' => $hashingSnapshot, 'stages' => ['downloading' => $downloadSnapshot, 'extracting' => $extractionSnapshot, 'hashing' => $hashingSnapshot],
+    'diagnostic' => ['code' => 'PERMISSION_DENIED', 'phase' => 'hashing', 'context' => ['file' => '/private/token=secret']]]]);
+$beforeRender = $progressOperation->fresh()->getRawOriginal();
+$child->call('$refresh'); $html = $child->html();
+$dom = new DOMDocument; @$dom->loadHTML($html); $xpath = new DOMXPath($dom);
+check($xpath->query('//progress')->length === 0 && ! str_contains($html, 'data-progress="indeterminate"') && ! str_contains($html, 'Counting staged files'), 'Failed operation retained an active/full indeterminate bar');
+check(str_contains($xpath->query('//li[@data-phase="hashing"]')->item(0)->textContent, 'Failed'), 'Failed hashing was labeled completed');
+check(str_contains($xpath->query('//li[@data-phase="extracting"]')->item(0)->textContent, 'Completed'), 'Earlier successful extraction lost completion status');
+check(! str_contains($html, '/private') && ! str_contains($html, 'token=secret'), 'Technical details exposed unsafe diagnostic data');
+check($beforeRender === $progressOperation->fresh()->getRawOriginal(), 'Presentation changed persisted operation state');
+// Known active totals have a measured phase percentage; terminal states have status badges only.
+foreach (['hashing' => null, 'completed' => now(), 'cancelled' => now(), 'interrupted' => now()] as $state => $completedAt) {
+    $progressOperation->update(['phase' => $state, 'completed_at' => $completedAt, 'progress' => [
+        'current' => ['phase' => 'hashing', 'bytes_done' => 50, 'bytes_total' => 200, 'files_done' => 1, 'files_total' => 4, 'updated_at' => time()],
+        'stages' => ['downloading' => $downloadSnapshot]]]);
+    $child->call('$refresh'); $html = $child->html();
+    $dom = new DOMDocument; @$dom->loadHTML($html); $xpath = new DOMXPath($dom);
+    check($xpath->query('//progress[@value="25"]')->length === ($completedAt ? 0 : 1), 'Measured active/terminal phase bar is incorrect: '.$state);
+    if ($completedAt) { check(str_contains($html, ucfirst($state)), 'Terminal status missing: '.$state); }
+}
+$progressOperation->update(['phase' => 'downloading', 'completed_at' => null, 'progress' => [
+    'current' => ['phase' => 'downloading', 'bytes_done' => 100, 'bytes_total' => null, 'updated_at' => time() - 120]]]);
+$child->call('$refresh');
+check(str_contains($child->html(), 'Waiting for the next progress sample') && ! str_contains($child->html(), 'MiB/s') && ! str_contains($child->html(), '~00:'), 'Stale/absent samples fabricated live speed or ETA');
 Auth::guard()->forgetUser();
 rejects(fn () => Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]), 'Guest mounted the managed-server review page');
 echo "All native Livewire detail tabs rendered; destructive control and guest access guards passed\n";

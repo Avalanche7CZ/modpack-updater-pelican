@@ -36,6 +36,9 @@ final class PreparationStatus extends Component
         if ($operation && ! $report) {
             $legacy = Operation::find($operation->id, ['context'])?->context['progress'] ?? [];
         }
-        return view('arcturus-modpack-manager::preparation-status', compact('operation', 'report', 'diagnostic', 'legacy'));
+        $presentation = \Arcturus\ModpackManager\Services\PreparationProgressView::make($report,
+            $operation?->phase ?? 'queued', $operation?->completed_at !== null,
+            $operation?->cancel_requested_at !== null, time());
+        return view('arcturus-modpack-manager::preparation-status', compact('operation', 'report', 'diagnostic', 'legacy', 'presentation'));
     }
 }
