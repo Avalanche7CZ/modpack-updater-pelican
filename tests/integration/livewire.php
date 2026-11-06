@@ -99,7 +99,20 @@ $progressOperation = Operation::create([
 ]);
 $record->update(['active_operation_id' => $progressOperation->id]);
 $test->call('selectTab', 'overview');
-check((bool) preg_match('~3\s*/\s*4 required files resolved~', $test->html()), 'Required-file progress counters were not rendered');
+$legacyChild = Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id]);
+check((bool) preg_match('~3\s*/\s*4 required files resolved~', $legacyChild->html()), 'Required-file progress counters were not rendered');
+// Independently polled child renders only persisted, sanitized state.
+$progressOperation->update(['node_operation_id' => str_repeat('a', 32)]);
+\Arcturus\ModpackManager\Services\PreparationProgress::record($progressOperation, ['operation_id' => str_repeat('a', 32),
+    'progress' => ['phase' => 'downloading', 'bytes_done' => 1048576, 'bytes_total' => null, 'speed_bytes_per_second' => 1048576, 'updated_at' => time()]]);
+$child = Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id]);
+check(str_contains($child->html(), '1.00 MiB/s') && str_contains($child->html(), 'Indeterminate'), 'Native download telemetry or unknown-total indicator missing');
+$dom = new DOMDocument;
+@$dom->loadHTML($child->html());
+check((new DOMXPath($dom))->query('//progress[not(@value)]')->length === 1, 'Unknown download total rendered a fabricated percentage');
+$progressOperation->update(['cancel_requested_at' => now()]);
+$child->call('$refresh');
+check(str_contains($child->html(), 'Cancellation requested'), 'Cancellation intent did not survive refresh');
 Auth::guard()->forgetUser();
 rejects(fn () => Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]), 'Guest mounted the managed-server review page');
 echo "All native Livewire detail tabs rendered; destructive control and guest access guards passed\n";

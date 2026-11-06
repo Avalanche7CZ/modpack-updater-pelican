@@ -9,33 +9,12 @@
             @endforeach
         </x-filament::tabs>
         <div class="mt-4 space-y-4">
-            @php($lastPreparationEvent = $record->events()->whereIn('kind', ['baseline', 'prepare'])->latest('id')->first())
-            @php($lastPreparation = !$record->active_operation_id && $lastPreparationEvent?->status === 'failed' ? $record->operations()->find($lastPreparationEvent->details['operation_id'] ?? '') : null)
-            @php($pathDiagnostic = $lastPreparation?->phase === 'failed' ? \Arcturus\ModpackManager\Services\ManagedPathDiagnostic::normalize($lastPreparation->context['diagnostic'] ?? null) : null)
-            @if($pathDiagnostic)
-                <x-filament::section heading="Preparation blocked by managed-path validation">
-                    <p class="break-words">{{ $pathDiagnostic['description'] }}</p>
-                    <p class="mt-2 text-sm">{{ $pathDiagnostic['action'] }}</p>
-                    <p class="mt-2 break-all text-sm">{{ $pathDiagnostic['code'] }} · {{ $pathDiagnostic['phase'] }} · Panel operation: {{ $lastPreparation->id }} · Worker operation: {{ $lastPreparation->node_operation_id }}</p>
-                </x-filament::section>
-            @endif
+            @livewire(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id], key('preparation-status-'.$record->id))
             @if($record->active_operation_id)
-                @php($operation = $record->operations()->find($record->active_operation_id))
-                <x-filament::section heading="Background operation">
-                    <p class="font-medium">{{ str_replace('_', ' ', ucfirst($operation?->phase ?? 'Unknown')) }}</p>
-                    @if($operation?->context['progress'] ?? null)
-                        <p class="text-sm text-gray-500 dark:text-gray-400">@if(isset($operation->context['progress']['files_resolved']))
-                            {{ $operation->context['progress']['files_resolved'] }} / {{ $operation->context['progress']['required_files'] }} required files resolved
-                        @else
-                            {{ number_format($operation->context['progress']['bytes_downloaded'] ?? 0) }} bytes downloaded · {{ $operation->context['progress']['files_verified'] ?? 0 }} files verified
-                        @endif</p>
-                    @endif
-                    <p class="text-sm text-gray-500 dark:text-gray-400">Last recorded event: {{ $operation?->heartbeat_at?->diffForHumans() ?? 'Unknown' }}</p>
-                    <div class="mt-3 flex flex-wrap gap-2">
-                        <x-filament::button color="gray" wire:click="resumePreparation">Reconcile preparation</x-filament::button>
-                        <x-filament::button color="warning" wire:click="cancelPreparation">Cancel preparation</x-filament::button>
-                    </div>
-                </x-filament::section>
+                <div class="flex flex-wrap gap-2">
+                    <x-filament::button color="gray" wire:click="resumePreparation">Reconcile preparation</x-filament::button>
+                    <x-filament::button color="warning" wire:click="cancelPreparation">Cancel preparation</x-filament::button>
+                </div>
             @endif
             @if($this->tab === 'overview')
                 <x-filament::section heading="Existing installation">
@@ -195,7 +174,7 @@
                 <x-filament::section heading="Recent job timeline">
                     @forelse($record->events()->latest()->limit(100)->get() as $event)
                         <div class="border-b border-gray-200 py-3 dark:border-gray-700"><p class="text-sm text-gray-500">{{ $event->created_at }} · {{ $event->kind }} · {{ str_replace('_', ' ', $event->status) }}</p><p class="break-words">{{ $event->message }}</p></div>
-                    @empty<p>No recorded operations.</p>@endforelse
+                    @empty<p>No preparation events recorded. Check queue health if you expected a job.</p>@endforelse
                 </x-filament::section>
             @endif
         </div>

@@ -107,7 +107,10 @@ class LocalTests(unittest.TestCase):
             result = local.run(self.request('prepare', recipe=recipe, operation_id=str(i) * 32))
             self.assertEqual(result['state'], 'failed')
             saved = json.loads((self.stage / (str(i) * 32) / 'operation.json').read_text())
-            self.assertNotEqual(saved['error'], result['error'], 'Display fallback destroyed original failed-operation evidence')
+            self.assertEqual(saved['diagnostic']['code'], ['ARCHIVE_UNSAFE', 'CHECKSUM_MISMATCH'][i])
+            before = (self.stage / (str(i) * 32) / 'operation.json').read_bytes()
+            local.public_result(saved)
+            self.assertEqual(before, (self.stage / (str(i) * 32) / 'operation.json').read_bytes())
         self.assertEqual((self.live / 'config/a.cfg').read_bytes(), b'local')
         self.assertFalse((self.root / 'escape').exists())
         with self.assertRaises(ValueError):

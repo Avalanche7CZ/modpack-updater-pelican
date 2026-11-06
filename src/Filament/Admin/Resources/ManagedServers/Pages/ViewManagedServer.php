@@ -306,8 +306,13 @@ final class ViewManagedServer extends ViewRecord
     {
         Access::requireAdmin();
         $record = $this->getRecord()->refresh();
-        $operation = $record->operations()->whereNull('completed_at')->whereIn('kind', ['baseline', 'prepare'])->firstOrFail();
-        app(ServerFilesFactory::class)->worker($record)->request('cancel', ['operation_id' => $operation->node_operation_id]);
+        $operation = $record->operations()->whereNull('completed_at')->whereIn('kind', ['baseline', 'prepare'])->first();
+        if (! $operation) { $this->queued('No active preparation to cancel'); return; }
+        $operation->update(['cancel_requested_at' => now()]);
+        if ($operation->phase !== 'queued') {
+            try { app(ServerFilesFactory::class)->worker($record)->request('cancel', ['operation_id' => $operation->node_operation_id]); }
+            catch (\Throwable) { /* Intent remains visible; the queue will reconcile it. */ }
+        }
         $this->queued('Cancellation requested; waiting for node confirmation');
     }
 

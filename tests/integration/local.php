@@ -111,6 +111,11 @@ Http::fake(function ($request) {
 });
 check(app(PrepareRelease::class)->tick($record, $operation), 'Local baseline did not complete');
 $record->refresh()->setRelation('pelicanServer', $server);
+$persistedProgress = $operation->fresh()->progress;
+check(isset($persistedProgress['stages']['downloading'], $persistedProgress['stages']['verifying'], $persistedProgress['stages']['extracting'], $persistedProgress['stages']['hashing'], $persistedProgress['stages']['comparing']), 'Preparation phases did not survive a model refresh');
+check($persistedProgress['current']['phase'] === 'comparing', 'Inventory comparison did not report progress');
+check(\Arcturus\ModpackManager\Services\PreparationProgress::percentage(['phase' => 'downloading', 'bytes_done' => 100, 'bytes_total' => null, 'files_done' => 1, 'files_total' => 1]) === null, 'Unknown download total fabricated a percentage');
+check(\Arcturus\ModpackManager\Services\PreparationProgress::percentage(['phase' => 'downloading', 'bytes_done' => 50, 'bytes_total' => 100]) === 50.0, 'Known byte total progress is incorrect');
 check($record->baseline_status === 'verified' && $record->baseline_provenance['transport'] === 'local', 'Local baseline provenance not verified');
 $manifest = app(ReleaseStore::class)->load($record->base_manifest_path);
 check($manifest['files']['config/custom.cfg'] === hash('sha256', 'upstream'), 'Live customization substituted for upstream baseline');

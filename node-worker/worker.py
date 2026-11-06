@@ -54,6 +54,174 @@ class ManagedPathFailure(ValueError):
         super().__init__(description + '. ' + action)
 
 
+# Public diagnostics are constructed from this vocabulary, never from exception strings.
+FAILURES = {
+    'CHECKSUM_MISSING': ('An independently verified upstream checksum is missing.', 'Select a release with published checksums or an operator-reviewed verified recipe.'),
+    'CHECKSUM_INVALID': ('The declared upstream checksum is invalid.', 'Correct the reviewed release metadata; do not disable checksum verification.'),
+    'CHECKSUM_MISMATCH': ('Downloaded bytes do not match the upstream checksum.', 'Retain the partial stage and verify the exact upstream asset before an explicit retry.'),
+    'NETWORK_DNS': ('The download hostname could not be resolved.', 'Check DNS from the Panel/worker host.'),
+    'NETWORK_TIMEOUT': ('The upstream connection timed out.', 'Check outbound connectivity and upstream availability before retrying.'),
+    'NETWORK_TLS': ('The upstream HTTPS connection could not be verified.', 'Check certificates, system time and trust store. Keep TLS verification enabled.'),
+    'NETWORK_IO': ('The upstream connection was interrupted.', 'Check connectivity and retain the partial download before retrying.'),
+    'HTTP_STATUS': ('The upstream server rejected the artifact request.', 'Check upstream availability, release asset selection and download permissions.'),
+    'DOWNLOAD_POLICY': ('The artifact or redirect violates the HTTPS/public-address/host policy.', 'Review the exact upstream CDN hosts in the operator configuration; do not allow private downloads.'),
+    'DOWNLOAD_LIMIT': ('The download exceeds its configured byte limit.', 'Review the expected release size and available staging space before adjusting operator limits.'),
+    'TRANSFER_SIZE': ('The transfer ended with a different byte count than declared.', 'Retain the partial download and check the exact upstream asset and connection.'),
+    'ARCHIVE_INVALID': ('The downloaded archive is corrupt or uses an unsupported format.', 'Verify the official server ZIP and retain the downloaded evidence.'),
+    'ARCHIVE_UNSAFE': ('An archive entry is unsafe, duplicated, encrypted or unsupported.', 'Inspect the numbered entry in the retained archive; use a reviewed normalized server pack.'),
+    'ARCHIVE_LIMIT': ('The archive exceeds file-count or expansion safety limits.', 'Review the archive and configured staging limits; do not bypass ZIP safety checks.'),
+    'PERMISSION_DENIED': ('A required file or directory could not be accessed.', 'Re-run node setup for managed-file read access and check private staging ownership. Do not grant live write access.'),
+    'DISK_FULL': ('The staging filesystem has no available space or quota.', 'Free operator-reviewed staging space without deleting active evidence, or provision more capacity.'),
+    'IO_ERROR': ('A filesystem operation failed.', 'Check filesystem health, mount state, staging capacity and permissions.'),
+    'MISSING_FILE': ('A required file disappeared or was not present.', 'Inspect retained staging and release contents; do not substitute live files for upstream evidence.'),
+    'MANAGED_PATH': ('A file is outside the safe managed-pack scope.', 'Inspect the file/entry identifier in retained staging and use an explicitly reviewed normalized pack. World exclusions cannot be overridden.'),
+    'FILES_CHANGED': ('Managed files changed or disappeared during inventory.', 'Retry comparison when files are stable; no incomplete inventory is accepted.'),
+    'INVENTORY_LIMIT': ('The managed-file inventory exceeds a safety limit.', 'Review managed scope and configured file/byte limits.'),
+    'METADATA_INVALID': ('The release or operation metadata is invalid or incomplete.', 'Review the exact release recipe and retained operation state.'),
+    'PREPARATION_FAILED': ('Preparation failed without a recognized safe diagnostic.', 'Inspect retained evidence using the operation IDs. No automatic replay is performed.'),
+    'CANCELLED': ('Cancellation was confirmed; partial staging is retained.', 'Start a new operation only after reviewing the retained stage.'),
+    'INTERRUPTED': ('The preparation process stopped before completion; staging is retained.', 'Inspect process and operation state before an explicit new attempt.'),
+}
+PHASES = frozenset(('queued', 'downloading', 'verifying', 'extracting', 'hashing', 'comparing', 'awaiting_resolution'))
+
+
+class PreparationFailure(ValueError):
+    def __init__(self, code, **context):
+        self.code = code
+        self.context = context
+        super().__init__(FAILURES[code][0])
+
+
+def safe_file(value):
+    """Only logical pack paths; unsafe names are represented by a stable, non-reversible ID."""
+    if not isinstance(value, str):
+        return {}
+    result = {'file_id': hashlib.sha256(value.encode('utf-8', errors='replace')).hexdigest()[:12]}
+    if (len(value) <= 240 and re.fullmatch(r'[A-Za-z0-9_. /+-]+', value)
+            and not value.startswith(('/', '.', ' ')) and all(s not in ('', '.', '..') for s in value.split('/'))
+            and (value.split('/')[0] in MANAGED_DIRS or '/' not in value)
+            and not re.search(r'[A-Za-z0-9_-]{40,}|token|secret|password|credential|bearer', value, re.I)):
+        result['file'] = value
+    return result
+
+
+def diagnostic(error, phase, context=None):
+    if isinstance(error, ManagedPathFailure):
+        return error.diagnostic
+    code = 'PREPARATION_FAILED'
+    if isinstance(error, PreparationFailure):
+        code = error.code
+    elif isinstance(error, InterruptedError):
+        code = 'CANCELLED'
+    elif isinstance(error, PermissionError):
+        code = 'PERMISSION_DENIED'
+    elif isinstance(error, FileNotFoundError):
+        code = 'MISSING_FILE'
+    elif isinstance(error, socket.gaierror):
+        code = 'NETWORK_DNS'
+    elif isinstance(error, (TimeoutError, socket.timeout)):
+        code = 'NETWORK_TIMEOUT'
+    elif isinstance(error, ssl.SSLError):
+        code = 'NETWORK_TLS'
+    elif isinstance(error, (ConnectionError, http.client.HTTPException)):
+        code = 'NETWORK_IO'
+    elif isinstance(error, (zipfile.BadZipFile, NotImplementedError)):
+        code = 'ARCHIVE_INVALID'
+    elif isinstance(error, OSError):
+        code = 'DISK_FULL' if error.errno in (28, 122) else 'IO_ERROR'
+    elif isinstance(error, (KeyError, TypeError, json.JSONDecodeError)):
+        code = 'METADATA_INVALID'
+    elif isinstance(error, ValueError):
+        # Recognize only our fixed legacy messages. Never serialize arbitrary exception text.
+        message = str(error)
+        if message in ('Unsafe relative path', 'Hash request is outside managed pack scope; world reads are forbidden',
+                       'Upstream release contains runtime or unmanaged paths; explicit normalization required',
+                       'Duplicate or unsafe Modrinth path', 'Unsafe Modrinth override', 'Unsafe CurseForge override path'):
+            code = 'MANAGED_PATH'
+        elif message in ('File changed during hashing; retry after the server is stopped',):
+            code = 'FILES_CHANGED'
+        elif message in ('Inventory byte limit exceeded; no partial inventory returned', 'Inventory byte limit exceeded',
+                         'Managed inventory directory/count limit exceeded', 'Inventory file limit exceeded', 'Prepared file limit exceeded'):
+            code = 'INVENTORY_LIMIT'
+        elif message in ('Download hostname has no address',):
+            code = 'NETWORK_DNS'
+        elif message in ('Download hostname resolves to a non-public address', 'Artifact redirect limit exceeded'):
+            code = 'DOWNLOAD_POLICY'
+    supplied = {**(context or {}), **(getattr(error, 'context', {}))}
+    safe = {}
+    for key in ('artifact_index', 'entry_index', 'http_status', 'file_index'):
+        value = supplied.get(key)
+        if type(value) is int and 0 <= value <= 1000000:
+            safe[key] = value
+    safe.update(safe_file(supplied.get('file')))
+    if isinstance(supplied.get('file_id'), str) and re.fullmatch('[a-f0-9]{12}', supplied['file_id']):
+        safe['file_id'] = supplied['file_id']
+    description, action = FAILURES[code]
+    return {'schema': 1, 'phase': phase if phase in PHASES else 'queued', 'code': code,
+            'description': description, 'action': action, 'context': safe}
+
+
+class ProgressState:
+    """One durable checkpoint per two seconds plus transitions/terminal states; no per-chunk fsync."""
+    def __init__(self, path, data, observer=None, clock=time.monotonic):
+        self.path, self.data, self.observer, self.clock = path, data, observer, clock
+        self.last_write = float('-inf')
+        self.last_bytes, self.last_sample, self.speed = None, None, None
+
+    def __call__(self, force=False, **values):
+        old = self.data.get('progress', {}).get('phase')
+        phase = values.pop('phase', values.get('state'))
+        if phase not in PHASES:
+            phase = old or 'queued'
+        terminal = values.get('state') in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution')
+        changed = phase != old
+        if changed:
+            previous = self.data.get('progress', {})
+            if old:
+                self.data.setdefault('stages', {})[old] = {**previous, 'finished': True}
+            self.data['progress'] = {'phase': phase, 'bytes_done': 0, 'bytes_total': None,
+                                     'files_done': 0, 'files_total': None}
+            self.last_bytes, self.last_sample, self.speed = None, None, None
+        progress = self.data.setdefault('progress', {'phase': phase})
+        for key in ('bytes_done', 'bytes_total', 'files_done', 'files_total', 'entries_validated', 'entries_scanned', 'step', 'file', 'file_id'):
+            if key in values:
+                progress[key] = values.pop(key)
+        now = self.clock()
+        if phase == 'downloading':
+            done = progress.get('bytes_done', 0)
+            if self.last_sample is not None and now - self.last_sample >= 0.25 and done >= self.last_bytes:
+                measured = (done - self.last_bytes) / (now - self.last_sample)
+                self.speed = measured if self.speed is None else 0.5 * measured + 0.5 * self.speed
+                self.last_sample, self.last_bytes = now, done
+            elif self.last_sample is None:
+                self.last_sample, self.last_bytes = now, done
+            progress['speed_bytes_per_second'] = self.speed
+            total = progress.get('bytes_total')
+            progress['eta_seconds'] = max(0, (total - done) / self.speed) if total is not None and self.speed and self.speed > 0 else None
+        progress['updated_at'] = time.time()
+        self.data.update(values, updated_at=time.time())
+        progress['artifact_index'] = self.data.get('current_file')
+        progress['downloaded_bytes'] = self.data.get('bytes_downloaded')
+        progress['download_total_bytes'] = self.data.get('download_total_bytes')
+        if 'bytes_downloaded' in values:
+            self.data['bytes_downloaded'] = values['bytes_downloaded']
+        if values.get('state') == 'completed':
+            progress['finished'] = True
+        self.data.setdefault('stages', {})[phase] = dict(progress)
+        if force or terminal or now - self.last_write >= 2:
+            self.last_write = now
+            atomic_json(self.path, self.data)
+            if self.observer:
+                self.observer({'operation_id': self.data.get('operation_id'), 'state': self.data.get('state'),
+                               'progress': dict(progress), 'stages': dict(self.data['stages']),
+                               'diagnostic': self.data.get('diagnostic')})
+
+    def failed(self, error, **context):
+        detail = diagnostic(error, self.data.get('progress', {}).get('phase', self.data.get('state')),
+            {**{key: self.data.get('progress', {}).get(key) for key in ('file', 'file_id')}, **context})
+        self(force=True, state='failed', diagnostic=detail, error=detail['description'])
+
+
 def relative(value):
     if not isinstance(value, str) or not value or len(value) > 1024 or '\\' in value or ':' in value:
         raise ValueError('Unsafe relative path')
@@ -99,7 +267,7 @@ def open_regular(root, path):
         os.close(directory)
 
 
-def hash_file(root, path, budget):
+def hash_file(root, path, budget, progress=lambda n: None, cancelled=lambda: False):
     with open_regular(root, path) as source:
         before = os.fstat(source.fileno())
         if before.st_size > budget:
@@ -107,7 +275,10 @@ def hash_file(root, path, budget):
         digest = hashlib.sha256()
         size = 0
         while chunk := source.read(1024 * 1024):
+            if cancelled():
+                raise InterruptedError('Operation cancelled')
             size += len(chunk)
+            progress(size)
             if size > budget:
                 raise ValueError('Inventory byte limit exceeded')
             digest.update(chunk)
@@ -142,36 +313,54 @@ def public_address(host):
     return addresses[0][4][0]
 
 
-def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress=lambda n: None, cancelled=lambda: False):
-    """Validate every redirect and pin the checked address, including TLS SNI verification."""
-    if not isinstance(hashes, dict) or not hashes or any(k not in ('sha256', 'sha512', 'sha1') for k in hashes):
-        raise ValueError('An upstream checksum is required')
+def transfer_report(update, offset, **values):
+    if values.get('state') == 'downloading' and type(values.get('bytes_done')) is int:
+        values['bytes_downloaded'] = offset + values['bytes_done']
+    update(**values)
+
+
+def validate_checksums(hashes):
+    if not isinstance(hashes, dict) or not hashes:
+        raise PreparationFailure('CHECKSUM_MISSING')
     for algorithm, value in hashes.items():
-        if not isinstance(value, str) or not re.fullmatch('[a-fA-F0-9]{%d}' % (hashlib.new(algorithm).digest_size * 2), value):
-            raise ValueError('Invalid upstream checksum')
+        if (algorithm not in ('sha256', 'sha512', 'sha1') or not isinstance(value, str)
+                or not re.fullmatch('[a-fA-F0-9]{%d}' % (hashlib.new(algorithm).digest_size * 2), value)):
+            raise PreparationFailure('CHECKSUM_INVALID')
+
+
+def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress=lambda n: None,
+          cancelled=lambda: False, report=lambda **values: None):
+    """Pinned HTTPS, streaming checksums and measured progress. Never retry partial mutations."""
+    validate_checksums(hashes)
     response = connection = None
     try:
         for _ in range(4):
-            p = urlsplit(url)
-            if (len(url) > 4096 or p.scheme != 'https' or p.hostname not in hosts or p.port not in (None, 443)
-                    or p.username or p.password or p.fragment or any(ord(c) <= 32 for c in url)):
-                raise ValueError('Download URL is outside the node HTTPS allowlist')
+            try:
+                p = urlsplit(url)
+                allowed = (len(url) <= 4096 and p.scheme == 'https' and p.hostname in hosts
+                           and p.port in (None, 443) and not p.username and not p.password
+                           and not p.fragment and not any(ord(c) <= 32 for c in url))
+            except ValueError:
+                allowed = False
+            if not allowed:
+                raise PreparationFailure('DOWNLOAD_POLICY')
             connection = PinnedHTTPS(p.hostname, public_address(p.hostname))
             connection.request('GET', p.path + ('?' + p.query if p.query else ''), headers={'User-Agent': 'Arcturus-Modpack-Manager/0.4'})
             response = connection.getresponse()
             if response.status in (301, 302, 303, 307, 308):
                 url = urljoin(url, response.getheader('Location', ''))
-                response.close()
-                connection.close()
+                response.close(); connection.close()
                 continue
             if response.status != 200:
-                raise ValueError('Artifact HTTP error: %s' % response.status)
+                raise PreparationFailure('HTTP_STATUS', http_status=response.status)
             break
         else:
-            raise ValueError('Artifact redirect limit exceeded')
+            raise PreparationFailure('DOWNLOAD_POLICY')
         length = response.getheader('Content-Length')
         if length is not None and (not length.isdigit() or int(length) > maximum):
-            raise ValueError('Artifact download limit exceeded')
+            raise PreparationFailure('DOWNLOAD_LIMIT')
+        total = int(length) if length is not None else expected_size
+        report(state='downloading', bytes_done=0, bytes_total=total, files_done=0, files_total=1)
         digests = {a: hashlib.new(a) for a in set(hashes) | {'sha256'}}
         size = 0
         with destination.open('xb') as output:
@@ -180,18 +369,21 @@ def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress
                     raise InterruptedError('Operation cancelled')
                 size += len(chunk)
                 if size > maximum:
-                    raise ValueError('Artifact download limit exceeded')
+                    raise PreparationFailure('DOWNLOAD_LIMIT')
                 output.write(chunk)
                 for digest in digests.values():
                     digest.update(chunk)
                 progress(size)
-            output.flush()
-            os.fsync(output.fileno())
+                report(state='downloading', bytes_done=size, bytes_total=total)
+            output.flush(); os.fsync(output.fileno())
         if (length is not None and size != int(length)) or (expected_size is not None and size != expected_size):
-            raise ValueError('Artifact transfer interrupted or size mismatched')
-        for algorithm, expected in hashes.items():
+            raise PreparationFailure('TRANSFER_SIZE')
+        report(state='verifying', files_done=0, files_total=len(hashes), bytes_done=0, bytes_total=None,
+               step='comparing_streamed_checksums')
+        for index, (algorithm, expected) in enumerate(hashes.items()):
             if not hmac.compare_digest(digests[algorithm].hexdigest(), expected.lower()):
-                raise ValueError('Artifact checksum mismatch')
+                raise PreparationFailure('CHECKSUM_MISMATCH')
+            report(state='verifying', files_done=index + 1, files_total=len(hashes))
         return digests['sha256'].hexdigest(), size
     finally:
         if response:
@@ -200,50 +392,66 @@ def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress
             connection.close()
 
 
-def local_artifact(identifier, destination, entry, hashes, maximum):
+def local_artifact(identifier, destination, entry, hashes, maximum, report=lambda **values: None, cancelled=lambda: False):
     if not isinstance(identifier, str) or not re.fullmatch('[A-Za-z0-9_-]{1,100}', identifier):
-        raise ValueError('Invalid trusted local artifact ID')
+        raise PreparationFailure('METADATA_INVALID')
     configured = entry.get('artifacts', {}).get(identifier)
     if not configured:
-        raise ValueError('Trusted local artifact is not configured for this server')
+        raise PreparationFailure('METADATA_INVALID')
     source = Path(configured)
     if source.resolve() != source or not source.is_file() or Path(entry['root']) in source.parents:
-        raise ValueError('Trusted artifact must be a canonical file outside the live volume')
-    if not hashes or any(a not in ('sha256', 'sha512', 'sha1') for a in hashes):
-        raise ValueError('Trusted artifact requires independent upstream checksums')
+        raise PreparationFailure('DOWNLOAD_POLICY')
+    validate_checksums(hashes)
     digests = {a: hashlib.new(a) for a in set(hashes) | {'sha256'}}
     size = 0
     with open_regular(source.parent, source.name) as src, destination.open('xb') as dest:
+        total = os.fstat(src.fileno()).st_size
+        report(state='downloading', bytes_done=0, bytes_total=total, files_done=0, files_total=1)
         while chunk := src.read(1024 * 1024):
+            if cancelled():
+                raise InterruptedError('Operation cancelled')
             size += len(chunk)
             if size > maximum:
-                raise ValueError('Local artifact exceeds stage limits')
+                raise PreparationFailure('DOWNLOAD_LIMIT')
             dest.write(chunk)
             for digest in digests.values():
                 digest.update(chunk)
-    if any(not hmac.compare_digest(digests[a].hexdigest(), value.lower()) for a, value in hashes.items()):
-        raise ValueError('Local artifact checksum mismatch')
+            report(state='downloading', bytes_done=size, bytes_total=total, bytes_downloaded=size)
+        dest.flush(); os.fsync(dest.fileno())
+    report(state='verifying', files_done=0, files_total=len(hashes), bytes_done=0, bytes_total=None,
+           step='comparing_streamed_checksums')
+    for index, (algorithm, expected) in enumerate(hashes.items()):
+        if not hmac.compare_digest(digests[algorithm].hexdigest(), expected.lower()):
+            raise PreparationFailure('CHECKSUM_MISMATCH')
+        report(state='verifying', files_done=index + 1, files_total=len(hashes))
     return digests['sha256'].hexdigest(), size
 
 
-def extract_zip(archive, destination, maximum, cancelled=lambda: False):
+def extract_zip(archive, destination, maximum, cancelled=lambda: False, report=lambda **values: None):
     """Validate the entire central directory before extracting a single entry."""
     with zipfile.ZipFile(archive) as source:
-        if len(source.infolist()) > MAX_FILES:
-            raise ValueError('Archive file count limit exceeded')
-        seen = set()
-        total = 0
-        for item in source.infolist():
-            name = relative(item.filename.rstrip('/'))
+        entries = source.infolist()
+        if len(entries) > MAX_FILES:
+            raise PreparationFailure('ARCHIVE_LIMIT')
+        seen, total, files_total = set(), 0, sum(not item.is_dir() for item in entries)
+        report(state='extracting', step='validating_archive', bytes_done=0, bytes_total=None,
+               files_done=0, files_total=files_total, entries_validated=0)
+        for index, item in enumerate(entries):
+            try:
+                name = relative(item.filename.rstrip('/'))
+            except ValueError:
+                raise PreparationFailure('ARCHIVE_UNSAFE', entry_index=index + 1)
             mode = item.external_attr >> 16
-            kind = stat.S_IFMT(mode)
-            if name in seen or kind not in (0, stat.S_IFREG, stat.S_IFDIR) or item.flag_bits & 1:
-                raise ValueError('Duplicate, encrypted, symlink, or special archive entry')
+            if name in seen or stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR) or item.flag_bits & 1:
+                raise PreparationFailure('ARCHIVE_UNSAFE', entry_index=index + 1)
             seen.add(name)
             total += item.file_size
             if total > maximum or item.file_size > max(1048576, item.compress_size * 1000):
-                raise ValueError('Archive expansion limit exceeded')
-        for item in source.infolist():
+                raise PreparationFailure('ARCHIVE_LIMIT', entry_index=index + 1)
+            report(state='extracting', entries_validated=index + 1)
+        written, files_done = 0, 0
+        report(state='extracting', step='extracting_files', bytes_done=0, bytes_total=total)
+        for index, item in enumerate(entries):
             if cancelled():
                 raise InterruptedError('Operation cancelled')
             dest = destination / item.filename
@@ -252,16 +460,23 @@ def extract_zip(archive, destination, maximum, cancelled=lambda: False):
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
             count = 0
-            with source.open(item) as src, dest.open('xb') as out:
-                while chunk := src.read(1024 * 1024):
-                    count += len(chunk)
-                    if count > item.file_size:
-                        raise ValueError('Archive entry exceeded its declared length')
-                    out.write(chunk)
+            try:
+                with source.open(item) as src, dest.open('xb') as out:
+                    while chunk := src.read(1024 * 1024):
+                        if cancelled():
+                            raise InterruptedError('Operation cancelled')
+                        count += len(chunk)
+                        if count > item.file_size:
+                            raise PreparationFailure('ARCHIVE_INVALID', entry_index=index + 1)
+                        out.write(chunk)
+                        report(state='extracting', bytes_done=written + count, bytes_total=total)
+            except zipfile.BadZipFile:
+                raise PreparationFailure('ARCHIVE_INVALID', entry_index=index + 1)
             if count != item.file_size:
-                raise ValueError('Archive entry is truncated')
+                raise PreparationFailure('ARCHIVE_INVALID', entry_index=index + 1)
             os.chmod(dest, 0o750 if (item.external_attr >> 16) & 0o111 else 0o640)
-
+            written += count; files_done += 1
+            report(state='extracting', bytes_done=written, bytes_total=total, files_done=files_done)
 
 def mod_metadata(root, path):
     """Bounded JAR metadata, including legacy Forge mcmod.info. Never infer IDs from names."""
@@ -306,8 +521,9 @@ def mod_identity(root, path):
 
 
 class Worker:
-    def __init__(self, settings, *, require_tokens=True, recover_interrupted=True):
+    def __init__(self, settings, *, require_tokens=True, recover_interrupted=True, observer=None):
         self.settings = settings
+        self.observer = observer
         self.locks = {}
         self.threads = {}
         self.mutex = threading.Lock()
@@ -325,6 +541,9 @@ class Worker:
         for server_id, entry in settings['servers'].items():
             uuid.UUID(server_id)
             additional_directories(entry.get('additional_managed_directories', []))
+            wrappers = additional_directories(entry.get('archive_roots', []))
+            if set(wrappers) & (set(entry.get('managed_directories', MANAGED_DIRS)) | set(entry.get('additional_managed_directories', []))):
+                raise ValueError('Archive wrappers cannot also be managed directories')
             for option in ('managed_directories', 'excluded_directories'):
                 values = entry.get(option, [])
                 if not isinstance(values, list) or len(values) > 128:
@@ -353,7 +572,7 @@ class Worker:
         for path in Path(self.entry(server)['staging']).glob('*/operation.json'):
             data = json.loads(path.read_text())
             if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution'):
-                data.update(state='interrupted', error='Preparation process restarted; explicit retry with a new operation is required')
+                data.update(state='interrupted', error=FAILURES['INTERRUPTED'][0], diagnostic=diagnostic(PreparationFailure('INTERRUPTED'), data.get('progress', {}).get('phase', data.get('state'))))
                 atomic_json(path, data)
 
     def entry(self, server):
@@ -398,7 +617,25 @@ class Worker:
         entry = self.entry(server)
         return set(entry.get('managed_directories', MANAGED_DIRS)) | set(additional_directories(entry.get('additional_managed_directories', [])))
 
-    def inventory(self, server):
+    def inventory(self, server, operation_id=None):
+        if operation_id is None:
+            return self._inventory(server)
+        base = self.operation_path(server, operation_id)
+        update = ProgressState(base / 'comparison.json', {'operation_id': operation_id, 'state': 'comparing'}, self.observer)
+        cancelled = lambda: (base / 'cancel').exists()
+        update(state='comparing', step='inventory_enumeration', files_done=0, files_total=None)
+        try:
+            result = self._inventory(server, update, cancelled)
+            update(force=True, state='completed', phase='comparing', files_done=len(result['files']), files_total=len(result['files']))
+            return result
+        except InterruptedError:
+            update(force=True, state='cancelled', diagnostic=diagnostic(PreparationFailure('CANCELLED'), 'comparing'), error=FAILURES['CANCELLED'][0])
+            raise
+        except Exception as error:
+            update.failed(error)
+            raise
+
+    def _inventory(self, server, report=lambda **v: None, cancelled=lambda: False):
         entry = self.entry(server)
         root = Path(entry['root'])
         paths = []
@@ -416,7 +653,10 @@ class Worker:
                     excluded.append(item.name)
                     continue
                 for directory, dirs, names in os.walk(item, followlinks=False, onerror=fail_walk):
+                    if cancelled():
+                        raise InterruptedError('Operation cancelled')
                     entries_scanned += len(dirs) + len(names)
+                    report(state='comparing', step='inventory_enumeration', entries_scanned=entries_scanned)
                     if entries_scanned > MAX_FILES or len(Path(directory).relative_to(root).parts) > 32:
                         raise ValueError('Managed inventory directory/count limit exceeded')
                     for name in dirs + names:
@@ -439,34 +679,46 @@ class Worker:
                         raise ValueError('Inventory file limit exceeded')
             else:
                 paths.append(item.name)
-        hashed = self.hashes(server, paths)
+        hashed = self.hashes(server, paths, report=report, cancelled=cancelled)
         if hashed['missing']:
-            raise ValueError('Managed files disappeared during inventory; no partial result accepted')
+            raise PreparationFailure('FILES_CHANGED')
         files = hashed['files']
         identities, metadata = {}, {}
-        for path in paths:
+        report(state='comparing', step='reading_mod_metadata', files_done=0, files_total=len(paths))
+        for index, path in enumerate(paths):
+            if cancelled():
+                raise InterruptedError('Operation cancelled')
             item = mod_metadata(root, path)
             if item:
                 identities[path], metadata[path] = item['identity'], item
+            report(state='comparing', files_done=index + 1)
         return {'complete': True, 'files': files, 'identities': identities, 'metadata': metadata,
                 'scope': 'managed-pack-files', 'excluded_roots': sorted(set(excluded)),
                 'notice': 'World data is not hashed. A running-server inventory is a point-in-time observation.'}
 
-    def hashes(self, server, paths):
+    def hashes(self, server, paths, report=lambda **v: None, cancelled=lambda: False):
         if not isinstance(paths, list) or len(paths) > MAX_FILES or len(set(paths)) != len(paths):
             raise ValueError('Invalid inventory path list')
         result, missing = {}, []
         budget = self.entry(server).get('max_inventory_bytes', 32 * 1024**3)
         excluded = self.world_roots(server)
-        for path in paths:
+        consumed = 0
+        report(state='comparing', step='inventory_hashing', files_done=0, files_total=len(paths), bytes_done=0, bytes_total=None)
+        for index, path in enumerate(paths):
+            if cancelled():
+                raise InterruptedError('Operation cancelled')
             if not self.managed(server, path, excluded):
                 raise ValueError('Hash request is outside managed pack scope; world reads are forbidden')
             try:
-                digest, size = hash_file(self.entry(server)['root'], path, budget)
+                report(**{'file': None, 'file_id': None, **safe_file(path)})
+                digest, size = hash_file(self.entry(server)['root'], path, budget,
+                    progress=lambda n: report(bytes_done=consumed + n), cancelled=cancelled)
+                consumed += size
                 budget -= size
                 result[path] = digest
             except FileNotFoundError:
                 missing.append(path)
+            report(files_done=index + 1, bytes_done=consumed)
         return {'files': result, 'missing': missing}
 
     def operation_path(self, server, operation_id):
@@ -499,9 +751,7 @@ class Worker:
     def _prepare(self, server, base, recipe):
         path = base / 'operation.json'
         data = json.loads(path.read_text())
-        def update(**values):
-            data.update(values, updated_at=time.time())
-            atomic_json(path, data)
+        update = ProgressState(path, data, self.observer)
         cancelled = lambda: (base / 'cancel').exists()
         try:
             # One preparation per server bounds disk/CPU use and prevents resource exhaustion.
@@ -513,11 +763,12 @@ class Worker:
                 files = base / 'files'
                 files.mkdir(mode=0o700)
                 if recipe.get('blockers') or not recipe.get('version') or not recipe.get('project') or not recipe.get('provider'):
-                    raise ValueError('Release provenance or required files are incomplete')
+                    raise PreparationFailure('METADATA_INVALID')
                 items = recipe.get('downloads', [])
                 if not items or len(items) > MAX_FILES:
-                    raise ValueError('No complete downloadable server manifest')
+                    raise PreparationFailure('METADATA_INVALID')
                 total = 0
+                update(download_total_bytes=sum(item['size'] for item in items) if all(type(item.get('size')) is int for item in items) else None)
                 artifacts = []
                 for i, item in enumerate(items):
                     if cancelled():
@@ -525,13 +776,13 @@ class Worker:
                     update(state='downloading', current_file=i + 1, total_files=len(items))
                     dest = base / ('download-%d' % i)
                     if 'artifact_id' in item:
-                        sha, size = local_artifact(item['artifact_id'], dest, entry, item['hashes'], maximum - total)
+                        sha, size = local_artifact(item['artifact_id'], dest, entry, item['hashes'], maximum - total, report=lambda **v: transfer_report(update, total, **v), cancelled=cancelled)
                         if item.get('size') is not None and item['size'] != size:
-                            raise ValueError('Local artifact size mismatch')
+                            raise PreparationFailure('TRANSFER_SIZE')
                     else:
                         sha, size = fetch(item['url'], dest, entry.get('allowed_hosts', []), item['hashes'],
                                           maximum - total, item.get('size'),
-                                          lambda n: update(bytes_downloaded=total + n), cancelled)
+                                          lambda n: update(bytes_downloaded=total + n), cancelled, report=lambda **v: transfer_report(update, total, **v))
                     total += size
                     artifacts.append({'sha256': sha, 'bytes': size, 'path': item.get('path'), 'hashes': item['hashes']})
                     if item.get('archive'):
@@ -540,7 +791,7 @@ class Worker:
                         update(state='extracting')
                         unpack = base / 'unpacked'
                         unpack.mkdir(mode=0o700)
-                        extract_zip(dest, unpack, maximum, cancelled)
+                        extract_zip(dest, unpack, maximum, cancelled, report=update)
                         if recipe.get('format') == 'curseforge':
                             manifest_path = unpack / 'manifest.json'
                             if manifest_path.stat().st_size > MAX_REQUEST:
@@ -555,7 +806,7 @@ class Worker:
                             recipe['runtime'] = {**recipe.get('runtime', {}), **self._mrpack(server, unpack, files, maximum, cancelled, update)}
                         else:
                             children = list(unpack.iterdir())
-                            content = children[0] if len(children) == 1 and children[0].is_dir() and children[0].name not in self.managed_directories(server) else unpack
+                            content = children[0] if len(children) == 1 and children[0].is_dir() and children[0].name in entry.get('archive_roots', []) and self.managed(server, children[0].name) else unpack
                             # A manifest-only CurseForge pack must never be mistaken for a ready server.
                             if (content / 'manifest.json').exists():
                                 manifest = json.loads((content / 'manifest.json').read_text())
@@ -572,11 +823,10 @@ class Worker:
             finally:
                 self.locks[server].release()
         except InterruptedError:
-            update(state='cancelled', error='Preparation cancelled; partial stage retained')
+            update(force=True, state='cancelled', error=FAILURES['CANCELLED'][0], diagnostic=diagnostic(PreparationFailure('CANCELLED'), data.get('progress', {}).get('phase')))
         except Exception as error:
             # Never log signed URLs, request payloads, or credentials.
-            update(state='failed', error=str(error) if isinstance(error, ValueError) else type(error).__name__,
-                   **({'diagnostic': error.diagnostic} if isinstance(error, ManagedPathFailure) else {}))
+            update.failed(error, artifact_index=data.get('current_file'), **{key: data.get('progress', {}).get(key) for key in ('file', 'file_id')})
 
     def _finalize(self, server, base, recipe, artifacts, maximum, update):
         files = base / 'files'
@@ -587,19 +837,30 @@ class Worker:
             protected = any(not self.managed(server, name, excluded) for name in unknown)
             raise ManagedPathFailure(unknown, protected=protected)
         manifest, identities, metadata, bytes_hashed = {}, {}, {}, 0
+        planned, total_bytes = [], 0
+        cancelled = lambda: (base / 'cancel').exists()
         for directory, dirs, names in os.walk(files, onerror=fail_walk):
             for name in names:
                 rel = str((Path(directory) / name).relative_to(files))
                 if not self.managed(server, rel):
                     raise ManagedPathFailure([rel], protected=True)
-                digest, size = hash_file(files, rel, maximum - bytes_hashed)
-                bytes_hashed += size
-                manifest[rel] = digest
-                if len(manifest) > MAX_FILES:
-                    raise ValueError('Prepared file limit exceeded')
-                item = mod_metadata(files, rel)
-                if item:
-                    identities[rel], metadata[rel] = item['identity'], item
+                info = (files / rel).lstat()
+                if not stat.S_ISREG(info.st_mode):
+                    raise PreparationFailure('MANAGED_PATH', file=rel)
+                planned.append((rel, info.st_size)); total_bytes += info.st_size
+                if len(planned) > MAX_FILES or total_bytes > maximum:
+                    raise PreparationFailure('INVENTORY_LIMIT', file=rel)
+        update(state='hashing', bytes_done=0, bytes_total=total_bytes, files_done=0, files_total=len(planned))
+        for index, (rel, _) in enumerate(planned):
+            update(**{'file': None, 'file_id': None, **safe_file(rel)})
+            digest, size = hash_file(files, rel, maximum - bytes_hashed,
+                progress=lambda n: update(bytes_done=bytes_hashed + n), cancelled=cancelled)
+            bytes_hashed += size
+            manifest[rel] = digest
+            item = mod_metadata(files, rel)
+            if item:
+                identities[rel], metadata[rel] = item['identity'], item
+            update(bytes_done=bytes_hashed, files_done=index + 1)
         if not manifest:
             raise ValueError('Prepared server pack is empty')
         result = {'schema': 2, 'provider': recipe['provider'], 'project': recipe['project'],
@@ -674,9 +935,7 @@ class Worker:
     def _resolve(self, server, base, downloads):
         path = base / 'operation.json'
         data = json.loads(path.read_text())
-        def update(**values):
-            data.update(values, updated_at=time.time())
-            atomic_json(path, data)
+        update = ProgressState(path, data, self.observer)
         cancelled = lambda: (base / 'cancel').exists()
         acquired = False
         try:
@@ -688,14 +947,16 @@ class Worker:
             recipe, artifacts, total = saved['recipe'], saved['artifacts'], saved['bytes']
             maximum = min(entry.get('max_archive_bytes', 8 * 1024**3), recipe.get('limits', {}).get('max_archive_bytes', 8 * 1024**3))
             files = base / 'files'
+            update(download_total_bytes=total + sum(item['size'] for item in downloads) if all(type(item.get('size')) is int for item in downloads) else None)
             for index, item in enumerate(downloads):
                 if cancelled():
                     raise InterruptedError('Operation cancelled')
+                update(state='downloading', current_file=index + 1, total_files=len(downloads))
                 target = files / relative(item['path'])
                 target.parent.mkdir(parents=True, exist_ok=True)
                 # No artifact can become visible in a completed manifest before its hash is verified.
                 sha, size = fetch(item['url'], target, entry.get('allowed_hosts', []), item['hashes'], maximum - total,
-                                  item.get('size'), lambda n: update(bytes_downloaded=total + n), cancelled)
+                                  item.get('size'), lambda n: update(bytes_downloaded=total + n), cancelled, report=lambda **v: transfer_report(update, total, **v))
                 total += size
                 artifacts.append({'sha256': sha, 'bytes': size, 'path': item['path'], 'hashes': item['hashes'],
                                   'project_id': item['project_id'], 'file_id': item['file_id']})
@@ -725,10 +986,9 @@ class Worker:
             recipe['runtime'] = runtime
             self._finalize(server, base, recipe, artifacts, maximum, update)
         except InterruptedError:
-            update(state='cancelled', error='Preparation cancelled; partial stage retained')
+            update(force=True, state='cancelled', error=FAILURES['CANCELLED'][0], diagnostic=diagnostic(PreparationFailure('CANCELLED'), data.get('progress', {}).get('phase')))
         except Exception as error:
-            update(state='failed', error=str(error) if isinstance(error, ValueError) else type(error).__name__,
-                   **({'diagnostic': error.diagnostic} if isinstance(error, ManagedPathFailure) else {}))
+            update.failed(error, artifact_index=data.get('current_file'), **{key: data.get('progress', {}).get(key) for key in ('file', 'file_id')})
         finally:
             if acquired:
                 self.locks[server].release()
@@ -741,6 +1001,8 @@ class Worker:
         if index.get('formatVersion') != 1 or index.get('game') != 'minecraft' or not isinstance(index.get('files'), list):
             raise ValueError('Unsupported Modrinth index')
         total = 0
+        base_offset = update.data.get('bytes_downloaded', 0) if isinstance(update, ProgressState) else 0
+        update(download_total_bytes=None)
         seen = set()
         for item in index['files']:
             if item.get('env', {}).get('server', 'required') not in ('required', 'unsupported', 'optional'):
@@ -759,8 +1021,9 @@ class Worker:
             urls = item.get('downloads', [])
             if not urls:
                 raise ValueError('Required Modrinth file has no download')
+            update(state='downloading', current_file=len(seen), total_files=len(index['files']))
             _, size = fetch(urls[0], dest, self.entry(server).get('allowed_hosts', []),
-                            item.get('hashes', {}), maximum - total, item.get('fileSize'), cancelled=cancelled)
+                            item.get('hashes', {}), maximum - total, item.get('fileSize'), cancelled=cancelled, report=lambda **v: transfer_report(update, total, **v))
             total += size
             update(files_verified=len(seen))
         # server-overrides take precedence; client-overrides are never used.
@@ -787,6 +1050,7 @@ class Worker:
         return runtime
 
     def handle(self, server, operation, payload):
+        payload = payload or {}  # PHP serializes an empty request array as [].
         if operation == 'capabilities':
             return {'protocol': 1, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
                     'deploy': False, 'preserve_exclusions': False,
@@ -794,7 +1058,7 @@ class Worker:
         if operation == 'hashes':
             return self.hashes(server, payload['paths'])
         if operation == 'inventory':
-            return self.inventory(server)
+            return self.inventory(server, payload.get('operation_id'))
         if operation == 'prepare':
             return self.prepare(server, payload['recipe'], payload['operation_id'])
         if operation == 'requirements':
@@ -806,7 +1070,9 @@ class Worker:
         if operation == 'cancel':
             base = self.operation_path(server, payload['operation_id'])
             data = self.status(server, payload['operation_id'])
-            if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted'):
+            comparison = base / 'comparison.json'
+            comparing = comparison.exists() and json.loads(comparison.read_text()).get('state') == 'comparing'
+            if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted') or comparing:
                 (base / 'cancel').touch(mode=0o600)
                 if data['state'] == 'awaiting_resolution':
                     data.update(state='cancelled', error='Preparation cancelled before required-file resolution')
@@ -892,8 +1158,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        except (ValueError, KeyError, TypeError, OSError, zipfile.BadZipFile):
-            body = b'{"error":"Operation rejected; inspect node capability and input validation"}'
+        except (ValueError, KeyError, TypeError, OSError, zipfile.BadZipFile) as error:
+            body = json.dumps({'diagnostic': diagnostic(error, 'comparing' if operation == 'inventory' else 'queued')}).encode()
             self.send_response(422)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()

@@ -235,6 +235,7 @@ def main():
     parser.add_argument('--staging-parent', default=str(STAGING))
     parser.add_argument('--additional-managed-directory', action='append', default=[],
         help='Explicitly approve a reviewed top-level pack directory (repeatable; never inferred from archives)')
+    parser.add_argument('--archive-root', action='append', default=[], help='Explicitly review a removable single-directory ZIP wrapper (repeatable)')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--replace', action='store_true', help='Explicitly replace a previous node/root approval (retains old stages/ACLs)')
     args = parser.parse_args()
@@ -267,10 +268,15 @@ def main():
                 raise ValueError('Existing approval file is unsafe; inspect it before setup')
             previous = json.loads(CONFIG.read_text())
         additions = approved_additions(previous.get('additional_managed_directories', []) + args.additional_managed_directory)
+        wrappers = approved_additions(previous.get('archive_roots', []) + args.archive_root)
+        if set(wrappers) & (PACK_DIRS | set(additions)):
+            raise ValueError('Archive wrappers cannot also be managed directories')
         config = {**previous, 'schema': 1, 'node_id': args.node, 'node_uuid': snapshot['node_uuid'], 'uid': account.pw_uid,
             'volume_root': str(root), 'staging_parent': str(stage), 'allowed_hosts': previous.get('allowed_hosts', HOSTS)}
         if additions:
             config['additional_managed_directories'] = additions
+        if wrappers:
+            config['archive_roots'] = wrappers
         if previous and previous != config and not args.replace:
             raise ValueError('Approval changed; inspect existing operations and explicitly use --replace')
         print('Approve node %s (%s); volume root %s; staging %s; account %s; %s database servers' % (

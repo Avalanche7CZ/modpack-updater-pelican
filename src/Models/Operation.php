@@ -18,6 +18,6 @@ final class Operation extends Model
 
     protected function casts(): array
     {
-        return ['context' => 'encrypted:array', 'heartbeat_at' => 'datetime', 'completed_at' => 'datetime'];
+        return ['context' => 'encrypted:array', 'progress' => 'array', 'cancel_requested_at' => 'datetime', 'heartbeat_at' => 'datetime', 'completed_at' => 'datetime'];
     }
 }

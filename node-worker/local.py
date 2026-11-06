@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sys
 
-from worker import Worker, MAX_REQUEST, ManagedPathFailure
+from worker import Worker, MAX_REQUEST, ManagedPathFailure, FAILURES, PreparationFailure, diagnostic
 
 
 class LocalError(Exception):
@@ -24,8 +24,12 @@ def public_result(result):
             and all(isinstance(s, str) for s in detail['directories'])):
         safe = ManagedPathFailure(detail['directories'], protected=detail['code'] == 'PROTECTED_MANAGED_PATH').diagnostic
         result.update(diagnostic=safe, error=safe['description'])
+    elif isinstance(detail, dict) and isinstance(detail.get('code'), str) and detail['code'] in FAILURES:
+        safe = diagnostic(PreparationFailure(detail['code'], **(detail['context'] if isinstance(detail.get('context'), dict) else {})), detail.get('phase'))
+        result.update(diagnostic=safe, error=safe['description'])
     else:
-        result['error'] = 'Local preparation failed checksum, download, archive, permissions or managed-path validation. Check the reviewed recipe and retained stage; live files were not changed.'
+        safe = diagnostic(PreparationFailure('PREPARATION_FAILED'), 'queued')
+        result.update(diagnostic=safe, error=safe['description'])
     # Preserve the original private worker record; never replace evidence with a display fallback.
     return result
 
@@ -88,7 +92,7 @@ def provision(request):
         os.close(fd)
 
 
-def run(request):
+def run(request, observer=None):
     if request['operation'] == 'node_capabilities':
         return node_capabilities(request['node'])
     if request['operation'] == 'provision':
@@ -102,7 +106,7 @@ def run(request):
         raise LocalError('operation')
     # Reuse identical scope, descriptor-relative hashing, pinned downloads, archive and manifest code.
     # A read/test must not mark another running subprocess interrupted.
-    worker = Worker(settings, require_tokens=False, recover_interrupted=False)
+    worker = Worker(settings, require_tokens=False, recover_interrupted=False, observer=observer)
     if operation == 'capabilities':
         return {**worker.handle(server, operation, payload), 'configuration_ready': True, 'backend': 'local'}
     if operation not in {'prepare', 'resolve'}:
@@ -130,21 +134,39 @@ def run(request):
 
 def main():
     os.umask(0o077)
+    streaming, phase = False, 'queued'
+    request = {}
+    lock = __import__('threading').Lock()
+    def write(value):
+        with lock:
+            print(json.dumps(value), flush=True)
+    def observe(snapshot):
+        nonlocal phase
+        phase = snapshot.get('progress', {}).get('phase', phase)
+        if streaming:
+            write({'type': 'progress', **snapshot})
+    def finish(value):
+        write({'type': 'result', 'data': value} if streaming else value)
     try:
         raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
         if len(raw) > MAX_REQUEST:
             raise LocalError('input')
-        result = run(json.loads(raw))
-        print(json.dumps(result))
+        request = json.loads(raw)
+        streaming = request.get('progress_stream') is True
+        phase = 'comparing' if request.get('operation') == 'inventory' else 'queued'
+        result = run(request, observe)
+        finish(result)
         return 0
-    except PermissionError:
-        code = 'permissions'
-    except LocalError as error:
-        code = str(error)
-    except (ValueError, KeyError, TypeError, OSError):
-        code = 'paths'
-    print(json.dumps({'code': code}))
-    return 1
+    except Exception as error:
+        if isinstance(error, LocalError):
+            code = str(error)
+            mapped = 'PERMISSION_DENIED' if code == 'permissions' else 'METADATA_INVALID'
+            detail = diagnostic(PreparationFailure(mapped), phase)
+        else:
+            code = 'permissions' if isinstance(error, PermissionError) else 'paths'
+            detail = diagnostic(PreparationFailure('CANCELLED') if isinstance(error, InterruptedError) else error, phase)
+        finish({'code': code, 'diagnostic': detail})
+        return 1
 
 
 if __name__ == '__main__':

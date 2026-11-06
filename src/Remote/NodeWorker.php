@@ -6,6 +6,7 @@ namespace Arcturus\ModpackManager\Remote;
 
 use Illuminate\Support\Facades\Http;
 use Arcturus\ModpackManager\Contracts\IntegrityWorker;
+use Arcturus\ModpackManager\Services\PreparationException;
 
 /** Requests are scoped by a per-server secret in operator-owned config. No shell operations. */
 final class NodeWorker implements IntegrityWorker
@@ -31,8 +32,8 @@ final class NodeWorker implements IntegrityWorker
         try {
             $r = Http::withToken($entry['token'])->acceptJson()->withoutRedirecting()
                 ->connectTimeout(5)->timeout(120)->withOptions(['stream' => true])->post($url, $payload);
-            if (! $r->successful()) {
-                throw new CapabilityUnavailable('Node worker rejected '.$operation.' (HTTP '.$r->status().')');
+            if (! $r->successful() && $r->status() !== 422) {
+                throw new PreparationException(['code' => 'WORKER_HTTP', 'context' => ['http_status' => $r->status()]]);
             }
             $stream = $r->toPsrResponse()->getBody();
             try {
@@ -47,16 +48,17 @@ final class NodeWorker implements IntegrityWorker
                 if (! is_array($data)) {
                     throw new CapabilityUnavailable('Node returned invalid metadata');
                 }
+                if (! $r->successful()) { throw new PreparationException($data['diagnostic'] ?? ['code' => 'WORKER_HTTP', 'context' => ['http_status' => $r->status()]]); }
 
                 return $data;
             } finally {
                 $stream->close();
             }
-        } catch (CapabilityUnavailable $e) {
+        } catch (PreparationException|CapabilityUnavailable $e) {
             throw $e;
         } catch (\Throwable $e) {
             // Laravel HTTP exception messages can contain credentials or signed URLs.
-            throw new CapabilityUnavailable('Node worker request interrupted; inspect the saved operation before retrying');
+            throw new PreparationException(['code' => 'REMOTE_UNAVAILABLE']);
         }
     }
 }

@@ -98,7 +98,7 @@ Settings use Pelican's `HasPluginSettings` API. Values are stored encrypted usin
 
 ## Operations and troubleshooting
 
-Progress records actual phases and counters rather than percentages. Preparation uses durable operation IDs; queue redelivery reuses the same node ID. Worker restarts mark unfinished node work interrupted and retain partial artifacts. No destructive request is automatically replayed.
+Background Operation shows persisted phase progress, actual downloaded bytes, known totals, MiB/s and ETA, with an indeterminate indicator when totals are unknown. Safe structured diagnostics and corrective actions remain in history; partial staging is retained. See [progress and diagnostic details](docs/local-filesystem.md#preparation-diagnostics-and-progress). Preparation uses durable operation IDs; queue redelivery reuses the same node ID. Worker restarts mark unfinished node work interrupted and retain partial artifacts. No destructive request is automatically replayed.
 
 - **Node capability unavailable:** install/configure the worker and HTTPS proxy; check the exact server UUID/token mapping.
 - **Unverified baseline:** prepare the exact original release, not a manifest derived from live customized files.
