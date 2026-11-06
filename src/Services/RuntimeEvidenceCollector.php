@@ -12,7 +12,8 @@ final class RuntimeEvidenceCollector
 {
     private const CONFIGS = ['modrinth.index.json', 'manifest.json', 'modpack.json', 'server.properties',
         'fabric-server-launcher.properties', 'quilt-server-launcher.properties', 'run.sh', 'startserver.sh',
-        'start.sh', 'settings.sh', 'variables.txt', 'unix_args.txt'];
+        'start.sh', 'start_server.sh', 'start_server.bat', 'settings.sh', 'variables.txt',
+        'forge-auto-install.txt', 'server_starter.conf', 'unix_args.txt'];
 
     public function collect(ServerFiles $files): array
     {
