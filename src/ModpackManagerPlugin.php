@@ -62,7 +62,7 @@ final class ModpackManagerPlugin implements HasPluginSettings, Plugin
                 Toggle::make('clear_curseforge_api_key')->label('Remove saved CurseForge credential'),
                 TextInput::make('discord_webhook')->password()->autocomplete('off'),
                 Toggle::make('clear_discord_webhook')->label('Remove saved Discord webhook'),
-                Toggle::make('discord_events')->label('Enable release and failure notifications'),
+                Toggle::make('discord_events')->label('Enable Discord notifications globally'),
             ]),
             Section::make('Monitoring and staging')->schema([
                 Select::make('default_policy')->options(['notify' => 'Notify only', 'approve' => 'Administrator approval'])->required(),

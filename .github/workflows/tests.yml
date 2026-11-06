@@ -50,6 +50,8 @@ jobs:
           php tests/integration/curseforge.php
           php tests/integration/runtime.php
           php tests/integration/policies.php
+          php tests/integration/discord.php
+          php tests/integration/discord_deployment.php
   package:
     needs: [regression, pelican]
     runs-on: ubuntu-latest

@@ -27,6 +27,8 @@ php tests/integration/adoption.php
 php tests/integration/curseforge.php
 php tests/integration/runtime.php
 php tests/integration/policies.php
+php tests/integration/discord.php
+php tests/integration/discord_deployment.php
 ```
 
 The bootstrap refuses a checkout with an existing `.env`, uses in-memory SQLite and test-only cache/session/mail configuration, and requires an explicit completion marker to prevent Laravel's console exception renderer producing false success. It loads actual Pelican/Laravel/Filament classes, runs Arcturus migrations up/down, verifies the reference plugin's sentinel data is untouched, tests encrypted settings, checks durable queue exclusion/recovery locks and exercises actual daemon repositories through mocked HTTP responses. The Filament test discovers both panels, constructs native wizard/forms/tables/settings and compiles every Blade template. The Livewire test renders and switches all seven detail tabs and verifies guest denial and the disabled destructive control.

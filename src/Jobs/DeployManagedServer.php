@@ -190,6 +190,7 @@ final class DeployManagedServer implements ShouldQueue
                     $power->stop($pelican);
                 }
 
+                $releaseUrl = $managed->target_metadata['release_url'] ?? ($managed->available_version === $target['version'] ? $managed->available_release_url : null);
                 $managed->forceFill([
                     'installed_version' => $target['version'],
                     'base_manifest_path' => $managed->target_manifest_path,
@@ -202,7 +203,7 @@ final class DeployManagedServer implements ShouldQueue
                     'last_error' => null,
                     'approved_plan_sha256' => null, 'approved_at' => null,
                 ])->save();
-                $managed->events()->create([
+                $successEvent = $managed->events()->create([
                     'kind' => 'deploy', 'status' => 'success',
                     'from_version' => $base['version'], 'to_version' => $target['version'],
                     'message' => 'Update installed; Minecraft startup marker confirmed',
@@ -210,17 +211,11 @@ final class DeployManagedServer implements ShouldQueue
                         'backup_backend' => $backupMode,
                         'backup_uuid' => $pelicanBackup?->uuid,
                         'filesystem_backup' => $filesystemBackup,
-                        'modified' => $result['modified'],
+                        'modified' => $result['modified'], 'startup_verified' => true,
+                        'release_url' => $releaseUrl, 'discord_notification_pending' => true,
                     ],
                 ]);
-                try {
-                    $discord->announce($managed, 'updated',
-                        "Server updated from **{$base['version']}** to **{$target['version']}**. ".
-                        'Startup verified; backup: '.
-                        ($pelicanBackup?->uuid ?? $filesystemBackup ?? 'unknown'));
-                } catch (Throwable $notificationError) {
-                    report($notificationError);
-                }
+                $discord->forEvent($successEvent);
             } catch (Throwable $error) {
                 $recovery = 'not attempted';
                 try {
@@ -276,7 +271,7 @@ final class DeployManagedServer implements ShouldQueue
                 }
                 $message = mb_substr($error->getMessage().' | '.$recovery, 0, 1800);
                 $managed->forceFill(['last_error' => $message])->save();
-                $managed->events()->create([
+                $failureEvent = $managed->events()->create([
                     'kind' => 'deploy', 'status' => 'failed',
                     'from_version' => $base['version'], 'to_version' => $target['version'],
                     'message' => $message,
@@ -285,13 +280,16 @@ final class DeployManagedServer implements ShouldQueue
                         'backup_uuid' => $pelicanBackup?->uuid,
                         'filesystem_backup' => $filesystemBackup,
                         'recovery' => $recovery,
-                        'excluded_directories' => $excludedFolders,
+                        'excluded_directories' => $excludedFolders, 'discord_notification_pending' => true,
                     ],
                 ]);
-                try {
-                    $discord->announce($managed, 'failed', 'Update failed: '.$message);
-                } catch (Throwable $notificationError) {
-                    report($notificationError);
+                $discord->forEvent($failureEvent);
+                if ($restored) {
+                    $rollbackEvent = $managed->events()->create(['kind' => 'rollback', 'status' => 'success',
+                        'from_version' => $base['version'], 'to_version' => $target['version'],
+                        'message' => 'Pre-update installation restored; see deployment history for runtime status',
+                        'details' => ['restore_verified' => true, 'discord_notification_pending' => true]]);
+                    $discord->forEvent($rollbackEvent);
                 }
                 throw new RuntimeException('Update failed: '.$message, previous: $error);
             }

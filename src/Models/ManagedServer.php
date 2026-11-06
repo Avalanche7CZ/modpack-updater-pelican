@@ -19,7 +19,7 @@ final class ManagedServer extends Model
     protected $attributes = ['policy_revision' => 0];
 
     protected $hidden = ['worker_key', 'local_root', 'base_manifest_path', 'target_manifest_path',
-        'staging_parent', 'prepared_root', 'backup_root'];
+        'staging_parent', 'prepared_root', 'backup_root', 'discord_webhook'];
 
     protected function casts(): array
     {
@@ -28,6 +28,7 @@ final class ManagedServer extends Model
             'release_metadata' => 'array', 'target_metadata' => 'array', 'disabled_mods' => 'array', 'mod_identity_mappings' => 'array', 'adopted_at' => 'datetime',
             'approved_at' => 'datetime', 'last_check_attempt_at' => 'datetime',
             'enabled' => 'boolean',
+            'discord_enabled' => 'boolean', 'discord_webhook' => 'encrypted', 'discord_notify_events' => 'array',
             'deploy_enabled' => 'boolean',
             'file_rules' => 'array', 'file_inventory' => 'array', 'policy_revision' => 'integer',
             'backup_excluded_directories' => 'array',

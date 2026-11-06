@@ -107,3 +107,7 @@ Run `bash scripts/test.sh` for the existing and expanded offline regression suit
 CI checks PHP 8.4/8.5, the Python worker, packaging and official Pelican rc.1/rc.2 lockfiles. Every successful main commit publishes a uniquely versioned install ZIP, native `update.json`, and SHA-256 sums after the required checks pass. Preview builds use the source version; release ZIP metadata and update feed share the computed release version. Local artifacts are not proof of publication.
 
 The public release ZIP and `update.json` are available to Pelican's native updater. Cached update checks may take up to ten minutes to refresh.
+
+## Discord notifications
+
+Each managed server has a compact **Discord Notifications** section on Edit: enable toggle, encrypted webhook override (global fallback), optional role ID, event selection and a test action without pings. Successful updates send one Czech/English embed only after startup verification. Queued delivery is deduplicated and recorded in History; Discord errors never trigger rollback. See [setup, queue requirements and ambiguous-delivery handling](docs/discord-notifications.md).

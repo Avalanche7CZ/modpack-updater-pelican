@@ -7,6 +7,7 @@ namespace Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\ManagedServerResource;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\BackupExclusions;
+use Arcturus\ModpackManager\Services\DiscordSettings;
 use Arcturus\ModpackManager\Services\ModIdentityMappings;
 use Arcturus\ModpackManager\Services\ProtectionPolicy;
 use Arcturus\ModpackManager\Services\ServerPolicyService;
@@ -26,6 +27,8 @@ final class EditManagedServer extends EditRecord
     protected function mutateFormDataBeforeFill(array $data): array
     {
         $this->policyRevision = $data['policy_revision'] ?? 0;
+        $data['discord_webhook'] = '';
+        $data['clear_discord_webhook'] = false;
         $data['file_rules'] = (new ProtectionPolicy)->normalize($data['file_rules'] ?? []);
 
         return $data;
@@ -34,6 +37,7 @@ final class EditManagedServer extends EditRecord
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
         $attributes = array_intersect_key($data, array_flip(['label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings']));
+        $attributes += array_intersect_key($data, array_flip(DiscordSettings::FIELDS));
         app(ServerPolicyService::class)->save($record, $data['file_rules'] ?? [], $data['disabled_mods'] ?? [], $this->policyRevision, $attributes);
         $record->refresh();
         $this->policyRevision = $record->policy_revision;
@@ -53,6 +57,12 @@ final class EditManagedServer extends EditRecord
         $data['preview_summary'] = null;
 
         return $data;
+    }
+
+    protected function afterSave(): void
+    {
+        $this->data['discord_webhook'] = '';
+        $this->data['clear_discord_webhook'] = false;
     }
 
     protected function getHeaderActions(): array
