@@ -74,6 +74,12 @@ final class LocalNode
         if (! $node || $node->uuid !== $config['node_uuid'] || $node->daemon_base !== $config['volume_root']) {
             throw new CapabilityUnavailable('Approved node identity or Wings volume root no longer matches Pelican metadata. Re-run host setup for the correct local node.');
         }
+        foreach (Node::pluck('daemon_base') as $root) {
+            if (! is_string($root) || $root === '/' || ! str_starts_with($root, '/') || preg_match('~(?:^|/)\.{1,2}(?:/|$)~', $root) ||
+                self::overlap(realpath($root) ?: $root, $config['staging_parent'])) {
+                throw new CapabilityUnavailable('Shared staging overlaps a configured Wings volume root or node path metadata is unsafe. Re-run host setup with an isolated staging parent.');
+            }
+        }
 
         return $node;
     }

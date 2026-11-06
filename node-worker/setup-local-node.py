@@ -175,6 +175,9 @@ def approve(snapshot, node_id, root, stage):
         raise ValueError('Node identity/root, asynchronous queue, or active-operation check failed. No approval written')
     if overlap(root, stage):
         raise ValueError('Shared staging must be outside all Wings volumes')
+    for value in snapshot.get('volume_roots', [str(root)]):
+        if overlap(canonical(value, existing=False), stage):
+            raise ValueError('Shared staging overlaps another configured Wings volume root')
     servers = snapshot['servers']
     if not isinstance(servers, list) or len(servers) != len(set(servers)) or any(not UUID.fullmatch(s) for s in servers):
         raise ValueError('Invalid Pelican server UUID metadata')
@@ -221,6 +224,8 @@ def main():
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--replace', action='store_true', help='Explicitly replace a previous node/root approval (retains old stages/ACLs)')
     args = parser.parse_args()
+    if sys.version_info < (3, 11):
+        parser.error('Python 3.11+ is required before host provisioning')
     if os.geteuid() != 0:
         parser.error('Run this one-time host setup as root; PHP is always run as the specified unprivileged account')
     os.umask(0o077)

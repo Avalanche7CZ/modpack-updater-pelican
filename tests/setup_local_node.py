@@ -34,6 +34,8 @@ class SetupTests(unittest.TestCase):
                 setup.approve({**snapshot, **changed}, 2, root, stage)
         with self.assertRaises(ValueError):
             setup.approve(snapshot, 2, root, root / 'stage')
+        with self.assertRaises(ValueError):
+            setup.approve({**snapshot, 'volume_roots': [str(root), str(stage.parent)]}, 2, root, stage)
         link = self.root / 'link'; link.symlink_to(root, target_is_directory=True)
         with self.assertRaises(ValueError):
             setup.canonical(str(link))

@@ -30,6 +30,7 @@ final class DescribeLocalNode extends Command
         $uuids = Server::where('node_id', $node->id)->pluck('uuid')->all();
         $this->line(json_encode(['node_id' => $node->id, 'node_uuid' => $node->uuid,
             'volume_root' => $node->daemon_base,
+            'volume_roots' => Node::pluck('daemon_base')->unique()->values()->all(),
             'servers' => $uuids,
             'active_operations' => Operation::whereNull('completed_at')->whereIn('managed_server_id',
                 ManagedServer::whereIn('pelican_server_uuid', $uuids)->select('id'))->count(),

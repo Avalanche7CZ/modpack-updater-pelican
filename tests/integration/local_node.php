@@ -73,6 +73,15 @@ rejects(fn () => $local->entry($future), 'Missing UUID directory accepted');
 mkdir($dir.'/volumes/'.$future, 0755);
 check($local->entry($future)['root'] === $dir.'/volumes/'.$future, 'Future database server required a per-server mapping');
 $before = file_get_contents($dir.'/approval.json');
+DB::table('nodes')->where('id', 2)->update(['daemon_base' => $dir.'/stages']);
+check(! $local->status()['ready'], 'Staging overlapping another node root accepted');
+DB::table('nodes')->where('id', 2)->update(['daemon_base' => $dir.'/volumes']);
+file_put_contents($dir.'/approval.json', '{malformed');
+check(! $local->status()['ready'], 'Malformed host approval accepted');
+file_put_contents($dir.'/approval.json', $before);
+symlink($dir.'/approval.json', $dir.'/approval-link.json');
+check(! (new LocalNode($dir.'/approval-link.json', fileowner($dir)))->status()['ready'], 'Symlink host approval accepted');
+unlink($dir.'/approval-link.json');
 DB::table('nodes')->where('id', 1)->update(['daemon_base' => $dir.'/volumes/elsewhere']);
 rejects(fn () => $local->entry($uuid), 'Changed daemon root accepted');
 DB::table('nodes')->where('id', 1)->update(['daemon_base' => $dir.'/volumes']);
@@ -97,6 +106,11 @@ foreach (['index', 'create', 'view', 'edit'] as $page) {
 }
 $screen = Livewire\Livewire::test(LocalFilesystem::class);
 check(str_contains($screen->html(), 'One-time Ubuntu host setup'), 'Native setup screen did not render');
+chmod($dir.'/approval.json', 0666); clearstatcache();
+$screen->call('mountAction', 'localDefault')->call('callMountedAction');
+check(config('arcturus-modpack-manager.default_filesystem_backend') === 'wings', 'Stale UI readiness bypassed protected-approval recheck');
+chmod($dir.'/approval.json', 0644); clearstatcache();
+$screen->call('refreshReadiness');
 $screen->call('mountAction', 'localDefault')->call('callMountedAction');
 check(config('arcturus-modpack-manager.default_filesystem_backend') === 'local', 'Native local-default action failed');
 check((new PluginSettings)->all()['default_filesystem_backend'] === 'local', 'Default was not persisted');
