@@ -8,8 +8,11 @@ use App\Models\Server;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Remote\ServerFilesFactory;
 use Arcturus\ModpackManager\Security\Access;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
+use Throwable;
 
 /** Adoption has no power, reinstall, file-write, or startup-service dependency. */
 final class AdoptionService
@@ -20,13 +23,34 @@ final class AdoptionService
 
     public function inspect(Server $server): array
     {
-        $files = $this->files->wings($server);
-        $evidence = (new RuntimeEvidenceCollector)->collect($files);
-        $report = $this->runtime->inspect($evidence['paths'], $evidence['texts'], $server->startup, $server->image, $server->egg?->name);
+        $evidence = ['paths' => [], 'texts' => [], 'warnings' => [], 'complete' => false];
+        $diagnostic = null;
+        try {
+            // A failed root listing must not erase the startup command, egg
+            // and container image already known to Pelican. These are hints,
+            // not proof of the running Java/loader.
+            $files = $this->files->wings($server);
+            $evidence = (new RuntimeEvidenceCollector)->collect($files);
+        } catch (Throwable $error) {
+            report($error);
+            $status = $error instanceof RequestException ? $error->response->status() : null;
+            $diagnostic = [
+                'stage' => 'wings_root_listing',
+                'code' => $status !== null ? 'HTTP_'.$status : (
+                    $error instanceof ConnectionException ? 'CONNECTION' : 'METADATA_ERROR'
+                ),
+            ];
+            $evidence['warnings'][] = $status !== null
+                ? 'Wings file listing failed (HTTP '.$status.'). Check node connectivity and permissions.'
+                : 'Could not list the server files through Wings. Check the Pelican Laravel log.';
+        }
+        $report = $this->runtime->inspect($evidence['paths'], $evidence['texts'], (string) $server->startup, (string) $server->image, $server->egg?->name);
         $report['warnings'] = array_values(array_unique(array_merge(
             $report['warnings'] ?? [], $evidence['warnings'] ?? []
         )));
         $report['inspection_complete'] = (bool) ($evidence['complete'] ?? false);
+        $report['diagnostic'] = $diagnostic;
+        $report['evidence_source'] = $diagnostic === null ? 'wings_files_and_panel_settings' : 'panel_settings_only';
         $report['protected_roots'] = SafetyPaths::roots($evidence['texts']['server.properties'] ?? '');
         try {
             // Status is supplementary information. Missing power/status access
