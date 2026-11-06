@@ -18,6 +18,26 @@ class LocalTests(unittest.TestCase):
     archive = fixtures.WorkerTests.archive
     recipe = fixtures.WorkerTests.recipe
 
+    def test_node_probe_is_read_only_and_uuid_staging_is_private(self):
+        volumes, stages = self.root / 'volumes', self.root / 'stages'
+        volumes.mkdir(mode=0o700); stages.mkdir(mode=0o700)
+        live = volumes / self.server; live.mkdir(mode=0o700)
+        stage = stages / self.server
+        node = {'uid': local.os.geteuid(), 'volume_root': str(volumes), 'staging_parent': str(stages)}
+        self.assertTrue(local.run({'operation': 'node_capabilities', 'node': node})['configuration_ready'])
+        self.assertEqual(list(stages.iterdir()), [])
+        request = {'operation': 'provision', 'server': self.server,
+            'servers': {self.server: {'root': str(live), 'staging': str(stage)}}}
+        self.assertTrue(local.run(request)['configuration_ready'])
+        self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(stage.stat().st_uid, local.os.geteuid())
+        self.assertTrue(local.run(request)['configuration_ready'])
+        stage.rmdir(); stage.symlink_to(self.stage, target_is_directory=True)
+        with self.assertRaises(local.LocalError):
+            local.run(request)
+        with self.assertRaises(local.LocalError):
+            local.run({'operation': 'node_capabilities', 'node': {**node, 'uid': 0}})
+
     def request(self, operation, **payload):
         # Local mode deliberately needs no server token.
         self.settings['servers'][self.server].pop('token', None)

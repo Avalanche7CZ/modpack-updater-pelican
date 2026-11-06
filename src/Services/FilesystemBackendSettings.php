@@ -25,7 +25,7 @@ final class FilesystemBackendSettings
             $candidate->staging_parent = null;
             $worker = new LocalWorker($candidate);
             $entries = $worker->configuration();
-            $worker->request('capabilities');
+            $worker->request('provision');
             $entry = $entries[$server->pelican_server_uuid];
         }
         DB::transaction(function () use ($server, $transport, $entry): void {

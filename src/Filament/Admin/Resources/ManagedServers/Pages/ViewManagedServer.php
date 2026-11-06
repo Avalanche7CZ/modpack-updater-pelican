@@ -82,7 +82,7 @@ final class ViewManagedServer extends ViewRecord
                 ->fillForm(fn () => ['transport' => $this->getRecord()->transport ?? 'wings'])
                 ->schema([Select::make('transport')->label('Preparation and inventory backend')->required()->options([
                     'wings' => 'Remote node worker', 'local' => 'Same-host local filesystem',
-                ])->helperText('Local: configure this UUID in ARCTURUS_MODPACK_MANAGER_LOCAL_CONFIG first. Paths are validated from the operator mapping; no API token or service is required.')])
+                ])->helperText('Local servers are discovered from the approved Wings node. Complete Local filesystem setup once; private UUID staging is created automatically.')])
                 ->modalDescription('Changing backend invalidates baseline and plan verification. Existing protection rules and Minecraft files remain unchanged.')
                 ->action(function (array $data): void {
                     try {

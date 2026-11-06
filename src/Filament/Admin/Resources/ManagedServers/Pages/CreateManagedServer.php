@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages;
 
 use App\Models\Server;
+use Arcturus\ModpackManager\Local\LocalNode;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\ManagedServerResource;
 use Arcturus\ModpackManager\Filament\Forms\PolicyFields;
 use Arcturus\ModpackManager\Security\Access;
@@ -45,6 +46,9 @@ final class CreateManagedServer extends CreateRecord
             Step::make('Existing server')->schema([
                 Select::make('pelican_server_uuid')->label('Pelican server')->required()->searchable()
                     ->options(fn () => Server::orderBy('name')->pluck('name', 'uuid'))->unique(ignoreRecord: true),
+                Select::make('filesystem_backend')->label('Preparation backend')->required()->default('default')
+                    ->options(['default' => 'Use node default (remote for other nodes)', 'local' => 'Same-host filesystem', 'wings' => 'Remote node worker'])
+                    ->helperText('After one-time host setup, local UUID volumes are discovered from Pelican and private staging is created automatically.'),
                 TextInput::make('label')->label('Managed server name')->required()->maxLength(120),
                 Actions::make([Action::make('inspect')->button()->icon('heroicon-o-magnifying-glass')->label('Inspect runtime and launch method')
                     ->action(fn ($get) => $this->inspectSelection((string) $get('pelican_server_uuid')))]),
@@ -105,6 +109,7 @@ final class CreateManagedServer extends CreateRecord
             'Server' => Server::where('uuid', $get('pelican_server_uuid'))->value('name') ?? 'Select a server',
             'Managed name' => $get('label') ?? '', 'Provider / project' => ($get('provider') ?? '').' / '.($get('source') ?? ''),
             'Installed release' => $get('installed_version') ?? '', 'Backup backend' => $get('backup_mode') ?? 'pelican',
+            'Preparation backend' => $get('filesystem_backend') ?? 'default',
             'Backup exclusions' => implode(', ', $get('backup_excluded_directories') ?? []) ?: 'None',
             'Protection rules' => count($rules).' server-specific rules',
             'Disabled mods' => implode(', ', $get('disabled_mods') ?? []) ?: 'None specified',
@@ -150,13 +155,18 @@ final class CreateManagedServer extends CreateRecord
         Access::requireAdmin();
         $server = Server::where('uuid', $data['pelican_server_uuid'])->firstOrFail();
         try {
+            $backend = app(LocalNode::class)->adoptionAttributes($server->uuid, $data['filesystem_backend'] ?? 'default');
+        } catch (\Arcturus\ModpackManager\Remote\CapabilityUnavailable $error) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['filesystem_backend' => $error->getMessage()]);
+        }
+        try {
             $runtime = app(AdoptionService::class)->inspect($server);
         } catch (\Throwable $error) {
             // An unavailable Wings node must not prevent a database-only monitoring draft.
             $runtime = ['warnings' => ['Runtime inspection unavailable; inspect again when Wings is reachable.']];
         }
         $mode = $data['adoption_mode'] ?? 'draft';
-        unset($data['adoption_mode'], $data['policy_template']);
+        unset($data['adoption_mode'], $data['policy_template'], $data['filesystem_backend'], $data['local_root'], $data['staging_parent'], $data['prepared_root']);
         $data['file_rules'] = (new ProtectionPolicy)->normalize($data['file_rules'] ?? []);
         (new UpdatePlanner)->plan([], [], [], $data['file_rules'], [], $data['disabled_mods'] ?? []);
         if (! empty($runtime['protected_roots'])) {
@@ -168,7 +178,7 @@ final class CreateManagedServer extends CreateRecord
         }
         $data['backup_excluded_directories'] = BackupExclusions::normalize($data['backup_excluded_directories'] ?? []);
 
-        $record = $this->getModel()::create([...$data, 'transport' => 'wings', 'baseline_status' => 'unverified',
+        $record = $this->getModel()::create([...$data, ...$backend, 'baseline_status' => 'unverified',
             'runtime_report' => $runtime, 'enabled' => false, 'deploy_enabled' => false, 'policy' => config('arcturus-modpack-manager.default_policy', 'approve'), 'backup_mode' => $data['backup_mode'] ?? 'pelican']);
         if ($mode === 'monitor') {
             app(AdoptionService::class)->finish($record, true);
