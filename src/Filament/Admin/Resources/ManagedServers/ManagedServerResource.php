@@ -95,7 +95,7 @@ final class ManagedServerResource extends Resource
     {
         return $schema->components([
             Section::make('Server & release source')
-                ->description('Bind an existing Pelican server. Checking releases never restarts it.')
+                ->description('Edit the existing server and release association. Changing server, source, version or ZIP pattern requires a new verified baseline; live files and saved protection rules are preserved.')
                 ->columns(2)->schema([
                     TextInput::make('label')->label('Display name')->required()->maxLength(120),
                     Select::make('pelican_server_uuid')->label('Existing Pelican server')
@@ -106,8 +106,8 @@ final class ManagedServerResource extends Resource
                                 $server->uuid => $server->name.' · '.$server->uuid,
                             ])->all())
                         ->helperText('This binds an existing server. It does not create or reinstall it.')
-                        ->unique(ignoreRecord: true)->disabled(fn ($record) => $record !== null),
-                    Select::make('provider')->label('Provider')->required()->disabled(fn ($record) => $record !== null)
+                        ->unique(ignoreRecord: true)->exists('servers', 'uuid'),
+                    Select::make('provider')->label('Provider')->required()
                         ->options([
                             'ftb' => 'FTB · Feed The Beast',
                             'github' => 'GitHub Releases · GTNH / TFG / custom',
@@ -116,18 +116,23 @@ final class ManagedServerResource extends Resource
                             'atlauncher' => 'ATLauncher',
                             'custom' => 'Custom verified recipe',
                         ])->default('github')->native(false),
-                    TextInput::make('source')->label('Pack ID / owner/repo')->disabled(fn ($record) => $record !== null)
-                        ->helperText('FTB/CurseForge: numeric ID · GitHub: owner/repo · Modrinth: slug · Custom: absolute manifest path')
+                    TextInput::make('source')->label('Pack ID / owner/repo')
+                        ->helperText('FTB/CurseForge: numeric ID · GitHub: owner/repo · Modrinth: slug · Custom: verified recipe HTTPS URL')
                         ->maxLength(255)->required(),
                     TextInput::make('asset_pattern')->label('Server ZIP filename pattern')
                         ->helperText('GitHub only. Example: *Server*Java17*.zip — one matching file is required.')
                         ->maxLength(160),
-                    TextInput::make('installed_version')->label('Installed upstream version')->disabled(fn ($record) => $record !== null)
+                    TextInput::make('installed_version')->label('Installed upstream version')
                         ->helperText('Set the version you verified is currently installed.')
                         ->maxLength(120)->required(),
                 ]),
+            Section::make('Filesystem backend')->visible(fn ($record) => $record !== null)->schema([
+                Select::make('transport')->label('Preparation / inventory backend')->required()->native(false)
+                    ->options(['wings' => 'Remote node worker', 'local' => 'Same-host local filesystem'])
+                    ->helperText('Same-host access uses the approved node setup and trusted server UUID. Backend changes require a new baseline; paths and permissions cannot be granted from this form.'),
+            ]),
             Section::make('Update policy')
-                ->description('Automated deployment is disabled until a verified node worker is configured.')
+                ->description('Deployment remains disabled pending transaction and restore qualification, including for same-host installations.')
                 ->columns(2)->schema([
                     Select::make('policy')->required()->default('notify')->native(false)
                         ->options(['notify' => 'Notify only', 'approve' => 'Require admin approval',
