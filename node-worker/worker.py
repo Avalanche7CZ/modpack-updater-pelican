@@ -276,7 +276,7 @@ def mod_identity(root, path):
 
 
 class Worker:
-    def __init__(self, settings):
+    def __init__(self, settings, *, require_tokens=True, recover_interrupted=True):
         self.settings = settings
         self.locks = {}
         self.threads = {}
@@ -302,7 +302,7 @@ class Worker:
                     relative(value)
                     if '/' in value:
                         raise ValueError('Inventory directories must be top-level names')
-            if len(entry.get('token', '')) < 32:
+            if require_tokens and len(entry.get('token', '')) < 32:
                 raise ValueError('Use independent random per-server tokens of at least 32 characters')
             live, stage = Path(entry['root']), Path(entry['staging'])
             for path in (live, stage):
@@ -315,11 +315,15 @@ class Worker:
                 raise ValueError('Staging directory must have mode 0700')
             self.locks[server_id] = threading.Lock()
             # Interrupted requests are retained, never replayed on restart.
-            for path in stage.glob('*/operation.json'):
-                data = json.loads(path.read_text())
-                if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution'):
-                    data.update(state='interrupted', error='Node worker restarted; explicit retry with a new operation is required')
-                    atomic_json(path, data)
+            if recover_interrupted:
+                self.recover(server_id)
+
+    def recover(self, server):
+        for path in Path(self.entry(server)['staging']).glob('*/operation.json'):
+            data = json.loads(path.read_text())
+            if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution'):
+                data.update(state='interrupted', error='Preparation process restarted; explicit retry with a new operation is required')
+                atomic_json(path, data)
 
     def entry(self, server):
         return self.settings['servers'][server]

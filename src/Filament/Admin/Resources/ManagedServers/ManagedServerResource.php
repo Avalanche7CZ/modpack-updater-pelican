@@ -12,10 +12,10 @@ use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewMa
 use Arcturus\ModpackManager\Filament\Forms\DiscordFields;
 use Arcturus\ModpackManager\Filament\Forms\PolicyFields;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
-use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\PreviewService;
+use Arcturus\ModpackManager\Services\QueuePreparation;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\DeleteAction;
@@ -233,8 +233,12 @@ final class ManagedServerResource extends Resource
                 ->modalDescription('Download the new server pack into staging. This does not restart the server.')
                 ->action(function (ManagedServer $record): void {
                     Access::requireAdmin();
-                    PrepareUpdate::dispatch($record->id);
-                    Notification::make()->title('Preparation queued')->success()->send();
+                    try {
+                        app(QueuePreparation::class)->queue($record);
+                        Notification::make()->title('Preparation queued')->success()->send();
+                    } catch (\Throwable $error) {
+                        Notification::make()->title('Preparation unavailable')->body($error->getMessage())->danger()->send();
+                    }
                 }),
             EditAction::make(),
             DeleteAction::make()->requiresConfirmation(),

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Arcturus\ModpackManager\Services;
 
-use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -72,7 +71,7 @@ final class ReleaseChecker
                     if ($server->policy === 'auto' && $server->deploy_enabled &&
                         config('arcturus-modpack-manager.automatic_deploy', false) &&
                         config('arcturus-modpack-manager.enable_deploy', false)) {
-                        PrepareUpdate::dispatch($server->id);
+                        app(QueuePreparation::class)->queue($server);
                     }
                 }
 

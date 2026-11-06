@@ -8,6 +8,8 @@ use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Models\Operation;
 use Arcturus\ModpackManager\Services\OperationTracker;
 use Arcturus\ModpackManager\Services\PrepareRelease;
+use Arcturus\ModpackManager\Local\LocalWorker;
+use Arcturus\ModpackManager\Services\QueuePreparation;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Cache;
@@ -31,11 +33,14 @@ final class PrepareUpdate implements ShouldQueue
         public readonly bool $baseline = false, public readonly ?string $operationId = null)
     {
         $this->requestId = (string) Str::uuid();
+        if (ManagedServer::find($managedServerId)?->transport === 'local') {
+            $this->timeout = LocalWorker::TIMEOUT + 30;
+        }
     }
 
     public function handle(PrepareRelease $preparer, OperationTracker $tracker): void
     {
-        $lock = Cache::lock('arcturus-modpack-manager-operation-'.$this->managedServerId, 180);
+        $lock = Cache::lock('arcturus-modpack-manager-operation-'.$this->managedServerId, $this->timeout + 30);
         if (! $lock->get()) {
             $this->release(15);
 
@@ -44,6 +49,9 @@ final class PrepareUpdate implements ShouldQueue
         $operation = null;
         try {
             $server = ManagedServer::findOrFail($this->managedServerId);
+            if ($server->transport === 'local') {
+                app(QueuePreparation::class)->requireLocalQueue();
+            }
             if (! $this->baseline && $server->baseline_status !== 'verified') {
                 throw new RuntimeException('Prepare and verify the installed upstream baseline first');
             }

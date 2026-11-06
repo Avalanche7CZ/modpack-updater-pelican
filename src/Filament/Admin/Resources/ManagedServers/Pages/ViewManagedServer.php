@@ -10,7 +10,9 @@ use Arcturus\ModpackManager\Jobs\CheckRelease;
 use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Modpacks\ProviderRegistry;
-use Arcturus\ModpackManager\Remote\NodeWorker;
+use Arcturus\ModpackManager\Remote\ServerFilesFactory;
+use Arcturus\ModpackManager\Services\FilesystemBackendSettings;
+use Arcturus\ModpackManager\Services\QueuePreparation;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\AdoptionService;
 use Arcturus\ModpackManager\Services\FilePolicyCatalog;
@@ -75,6 +77,33 @@ final class ViewManagedServer extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('filesystemBackend')->label('Filesystem backend')->button()->color('gray')
+                ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
+                ->fillForm(fn () => ['transport' => $this->getRecord()->transport ?? 'wings'])
+                ->schema([Select::make('transport')->label('Preparation and inventory backend')->required()->options([
+                    'wings' => 'Remote node worker', 'local' => 'Same-host local filesystem',
+                ])->helperText('Local: configure this UUID in ARCTURUS_MODPACK_MANAGER_LOCAL_CONFIG first. Paths are validated from the operator mapping; no API token or service is required.')])
+                ->modalDescription('Changing backend invalidates baseline and plan verification. Existing protection rules and Minecraft files remain unchanged.')
+                ->action(function (array $data): void {
+                    try {
+                        app(FilesystemBackendSettings::class)->save($this->getRecord(), $data['transport']);
+                        $this->nodeCapabilities = null;
+                        $this->queued('Filesystem backend validated; prepare the installed baseline');
+                    } catch (\Throwable $error) {
+                        Notification::make()->title('Filesystem backend unavailable')->body($error->getMessage())->danger()->send();
+                    }
+                }),
+            Action::make('testFilesystem')->label('Test filesystem access')->button()->color('gray')
+                ->action(function (): void {
+                    Access::requireAdmin();
+                    try {
+                        $this->nodeCapabilities = app(ServerFilesFactory::class)->worker($this->getRecord())->request('capabilities');
+                        $this->queued('Filesystem capability check passed; no server files scanned');
+                    } catch (\Throwable $error) {
+                        $this->nodeCapabilities = null;
+                        Notification::make()->title('Filesystem access unavailable')->body($error->getMessage())->danger()->send();
+                    }
+                }),
             Action::make('editPolicies')->label('Edit protection rules')->button()->color('gray')
                 ->visible(fn () => $this->tab === 'protection')->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->fillForm(fn () => ['file_rules' => (new ProtectionPolicy)->normalize($this->getRecord()->file_rules ?? []), 'disabled_mods' => $this->getRecord()->disabled_mods ?? [], 'revision' => $this->getRecord()->policy_revision])
@@ -117,12 +146,11 @@ final class ViewManagedServer extends ViewRecord
                         return;
                     }
                     try {
-                        // Hash/inventory capabilities require the optional node
-                        // worker. A missing worker must not invalidate runtime
-                        // evidence available through the normal Wings file API.
-                        $this->nodeCapabilities = (new NodeWorker($record->pelican_server_uuid))->request('capabilities');
+                        // Integrity backend failure must not invalidate the
+                        // runtime evidence available through the normal Wings API.
+                        $this->nodeCapabilities = app(ServerFilesFactory::class)->worker($record)->request('capabilities');
                     } catch (\Throwable $error) {
-                        $this->nodeCapabilities = ['available' => false, 'reason' => 'Node worker unavailable'];
+                        $this->nodeCapabilities = ['available' => false, 'reason' => 'Selected filesystem backend unavailable; use Test filesystem access'];
                     }
                     if (! ($report['inspection_complete'] ?? false) || ! empty($report['warnings'])) {
                         Notification::make()->title('Runtime evidence is incomplete')
@@ -155,8 +183,7 @@ final class ViewManagedServer extends ViewRecord
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->action(function (): void {
                     Access::requireAdmin();
-                    PrepareUpdate::dispatch($this->getRecord()->id, true);
-                    $this->queued('Baseline preparation queued');
+                    $this->queuePreparation(true);
                 }),
             Action::make('adopt')->button()->icon('heroicon-o-check-circle')->label('Finish verified adoption')->visible(fn () => ! $this->getRecord()->adopted_at)->requiresConfirmation()
                 ->disabled(fn () => $this->getRecord()->baseline_status !== 'verified' || (bool) $this->getRecord()->active_operation_id)
@@ -200,8 +227,7 @@ final class ViewManagedServer extends ViewRecord
                 ->disabled(fn () => ! $this->getRecord()->targetVersion() || (bool) $this->getRecord()->active_operation_id)
                 ->action(function (): void {
                     Access::requireAdmin();
-                    PrepareUpdate::dispatch($this->getRecord()->id);
-                    $this->queued('Target preparation queued');
+                    $this->queuePreparation(false);
                 }),
             Action::make('preview')->button()->icon('heroicon-o-document-magnifying-glass')->label('Compare files')->color('gray')->visible(fn () => in_array($this->tab, ['updates', 'changes'], true))->action(function (): void {
                 Access::requireAdmin();
@@ -210,6 +236,16 @@ final class ViewManagedServer extends ViewRecord
             }),
             EditAction::make(),
         ];
+    }
+
+    private function queuePreparation(bool $baseline): void
+    {
+        try {
+            app(QueuePreparation::class)->queue($this->getRecord(), $baseline);
+            $this->queued($baseline ? 'Baseline preparation queued' : 'Target preparation queued');
+        } catch (\Throwable $error) {
+            Notification::make()->title('Preparation unavailable')->body($error->getMessage())->persistent()->danger()->send();
+        }
     }
 
     private function queued(string $title): void
@@ -271,7 +307,7 @@ final class ViewManagedServer extends ViewRecord
         Access::requireAdmin();
         $record = $this->getRecord()->refresh();
         $operation = $record->operations()->whereNull('completed_at')->whereIn('kind', ['baseline', 'prepare'])->firstOrFail();
-        (new NodeWorker($record->pelican_server_uuid))->request('cancel', ['operation_id' => $operation->node_operation_id]);
+        app(ServerFilesFactory::class)->worker($record)->request('cancel', ['operation_id' => $operation->node_operation_id]);
         $this->queued('Cancellation requested; waiting for node confirmation');
     }
 

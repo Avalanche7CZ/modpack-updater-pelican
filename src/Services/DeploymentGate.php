@@ -11,6 +11,9 @@ final class DeploymentGate
 {
     public function require(ManagedServer $server, ?string $approvedDigest): void
     {
+        if (isset($server->baseline_provenance['transport'])) {
+            throw new RuntimeException('Preparation backends provide read-only inventory and staging only; deployment remains disabled');
+        }
         if ($server->transport !== 'local') {
             throw new RuntimeException('Remote deployment is disabled: a qualified node transaction and exclusion-preserving restore are not available');
         }

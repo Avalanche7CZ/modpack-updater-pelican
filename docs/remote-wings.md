@@ -1,5 +1,7 @@
 # Remote Wings setup
 
+If Panel, Wings and volumes share one host, you can instead explicitly select the [local filesystem backend](local-filesystem.md), which reuses this worker's safe staging code without a service, proxy or tokens.
+
 No Panel volume mount is required for inspection, adoption, staging or comparison. Native file operations use Pelican's existing node credentials. Efficient SHA-256 inventory and safe archive staging use the separate worker shipped in `node-worker/worker.py`.
 
 The worker is deliberately not a general remote administration agent. It cannot run shell commands, stop/start Minecraft, execute pack scripts, reinstall servers, change eggs/images/startup, apply live updates or restore backups.

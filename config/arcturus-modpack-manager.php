@@ -11,8 +11,28 @@ if ($nodeConfig) {
     $nodes = json_decode(file_get_contents($nodeConfig), true, flags: JSON_THROW_ON_ERROR);
 }
 
+$localServers = [];
+$localConfigError = false;
+$localConfig = env('ARCTURUS_MODPACK_MANAGER_LOCAL_CONFIG');
+if ($localConfig) {
+    try {
+        if (! is_string($localConfig) || ! is_file($localConfig) || is_link($localConfig) || ! is_readable($localConfig) || (fileperms($localConfig) & 0022)) {
+            throw new RuntimeException();
+        }
+        $localServers = json_decode(file_get_contents($localConfig), true, flags: JSON_THROW_ON_ERROR);
+        if (! is_array($localServers) || ($localServers && array_is_list($localServers))) {
+            throw new RuntimeException();
+        }
+    } catch (Throwable) {
+        $localServers = [];
+        $localConfigError = true;
+    }
+}
+
 return [
     'nodes' => $nodes,
+    'local_servers' => $localServers,
+    'local_config_error' => $localConfigError,
     'local_server_roots' => [],
     'default_policy' => 'approve',
     'default_backup_exclusions' => ['backup', 'backups'],

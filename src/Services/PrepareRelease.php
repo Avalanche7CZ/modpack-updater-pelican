@@ -8,10 +8,11 @@ use Arcturus\ModpackManager\Contracts\RequiredFileResolver;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Models\Operation;
 use Arcturus\ModpackManager\Modpacks\ProviderRegistry;
-use Arcturus\ModpackManager\Remote\NodeWorker;
+use Arcturus\ModpackManager\Remote\ServerFilesFactory;
+use Arcturus\ModpackManager\Local\LocalWorker;
 use RuntimeException;
 
-/** A short queue tick: large artifacts never pass through the Panel. */
+/** Remote polling or a bounded local subprocess; artifacts never enter PHP memory. */
 final class PrepareRelease
 {
     public function __construct(private readonly ProviderRegistry $providers,
@@ -27,7 +28,10 @@ final class PrepareRelease
         if ($operation->created_at->lt(now()->subHours(4))) {
             throw new RuntimeException('Preparation deadline exceeded; retain node stage and inspect before retrying');
         }
-        $worker = new NodeWorker($server->pelican_server_uuid);
+        $worker = app(ServerFilesFactory::class)->worker($server);
+        if ($worker instanceof LocalWorker) {
+            $worker->withHeartbeat(fn () => $operation->update(['heartbeat_at' => now()]));
+        }
         if ($operation->phase === 'queued') {
             $release = $this->providers->get($server->provider)->release($server->source, $context['version'], $server->asset_pattern);
             if (! $release->canPrepare()) {
@@ -103,7 +107,7 @@ final class PrepareRelease
         $manifest = $worker->request('manifest', ['operation_id' => $operation->node_operation_id]);
         (new BaselineGuard)->require($manifest, $server->provider, $server->source, $context['version']);
         $path = $this->store->put($manifest);
-        $provenance = ['operation_id' => $operation->id, 'node_operation_id' => $operation->node_operation_id,
+        $provenance = ['operation_id' => $operation->id, 'node_operation_id' => $operation->node_operation_id, 'transport' => $server->transport ?? 'wings',
             'provider' => $server->provider, 'project' => $server->source, 'version' => $context['version'],
             'manifest_sha256' => $status['manifest_sha256'], 'verification' => 'upstream-checksums'];
         if ($operation->kind === 'baseline') {
@@ -111,7 +115,7 @@ final class PrepareRelease
                 'baseline_provenance' => $provenance, 'approved_plan_sha256' => null]);
             app(AdoptionService::class)->compare($server);
         } else {
-            $server->update(['target_manifest_path' => $path, 'prepared_root' => 'node:'.$operation->node_operation_id,
+            $server->update(['target_manifest_path' => $path, 'prepared_root' => ($server->transport === 'local' ? 'local:' : 'node:').$operation->node_operation_id,
                 'target_metadata' => array_replace($server->target_metadata ?? $server->release_metadata ?? [], ['prepared' => $provenance, 'runtime' => $manifest['runtime']]),
                 'preview_summary' => null, 'approved_plan_sha256' => null]);
             app(PreviewService::class)->generate($server);

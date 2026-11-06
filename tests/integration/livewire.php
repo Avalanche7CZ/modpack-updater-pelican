@@ -15,6 +15,8 @@ use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Bus;
+use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 
 Schema::create('webhook_configurations', function (Blueprint $t) {
     $t->id();
@@ -71,6 +73,25 @@ foreach (['overview', 'updates', 'changes', 'mods', 'protection', 'backups', 'hi
         file_put_contents($snapshotDir.'/'.$tab.'.html', '<!doctype html><html lang="en" class="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/build/'.$css.'"></head><body class="bg-gray-50 text-gray-950 dark:bg-gray-950 dark:text-white" style="padding:16px">'.Blade::render('@filamentStyles').$html.'</body></html>');
     }
 }
+$test->call('selectTab', 'overview')->call('mountAction', 'filesystemBackend');
+$test->set('mountedActions.0.data.transport', 'local')->call('callMountedAction');
+check($record->refresh()->transport === 'wings', 'Missing local config changed the backend');
+$localDir = sys_get_temp_dir().'/arcturus-local-ui-'.bin2hex(random_bytes(6));
+mkdir($localDir, 0700);
+mkdir($localDir.'/live', 0700);
+mkdir($localDir.'/stage', 0700);
+config(['arcturus-modpack-manager.local_servers' => [$record->pelican_server_uuid => ['root' => $localDir.'/live', 'staging' => $localDir.'/stage']]]);
+$test->call('mountAction', 'filesystemBackend')->set('mountedActions.0.data.transport', 'local')->call('callMountedAction');
+check($record->refresh()->transport === 'local' && $record->baseline_status === 'unverified', 'Native local backend action did not pin paths and invalidate baseline');
+$test->call('mountAction', 'testFilesystem')->call('callMountedAction');
+check(($test->get('nodeCapabilities')['configuration_ready'] ?? false) === true, 'Native filesystem test did not invoke local capability check');
+Bus::fake([PrepareUpdate::class]);
+config(['arcturus-modpack-manager.local_servers' => []]);
+$test->call('mountAction', 'baseline')->call('callMountedAction');
+check(Bus::dispatched(PrepareUpdate::class)->isEmpty() && ! $record->refresh()->active_operation_id, 'Missing local mapping queued a doomed job through native UI');
+$test->call('mountAction', 'filesystemBackend')->set('mountedActions.0.data.transport', 'wings')->call('callMountedAction');
+check($record->refresh()->transport === 'wings', 'Native remote backend selection failed');
+rmdir($localDir.'/stage'); rmdir($localDir.'/live'); rmdir($localDir);
 $progressOperation = Operation::create([
     'id' => (string) Str::uuid(), 'managed_server_id' => $record->id, 'kind' => 'baseline',
     'phase' => 'preparing', 'heartbeat_at' => now(),

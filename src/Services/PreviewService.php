@@ -41,7 +41,7 @@ final class PreviewService
         $rules = $server->file_rules ?? [];
         $safetyRoots = $server->runtime_report['protected_roots'] ?? [];
         $metadata = [];
-        if ($server->transport === 'local') {
+        if ($server->transport === 'local' && ! isset($server->baseline_provenance['transport'])) {
             $root = realpath((string) $server->local_root);
             $mapping = config('arcturus-modpack-manager.local_server_roots.'.$server->pelican_server_uuid);
             if (! $mapping || ! $root || is_link($server->local_root) || realpath($mapping) !== $root) {
@@ -54,7 +54,7 @@ final class PreviewService
             $local = $this->inventory->hashPaths($root, $paths);
             $identities = [];
         } else {
-            $remote = $this->files->wings($server->pelicanServer)->inventory();
+            $remote = $this->files->managed($server)->inventory();
             $local = $remote['files'];
             $identities = ['base' => $base['identities'] ?? [], 'target' => $target['identities'] ?? [], 'local' => $remote['identities'] ?? []];
             $safetyRoots = array_merge($safetyRoots, $remote['excluded_roots'] ?? []);
@@ -81,8 +81,10 @@ final class PreviewService
             $gateReasons[] = $plan['blocked'].' unresolved file changes';
         }
         $gateReasons = array_merge($gateReasons, $compatibility['blockers']);
-        if ($server->transport !== 'local') {
-            $gateReasons[] = 'Remote deployment is disabled pending transaction/restore integration qualification';
+        if ($server->transport !== 'local' || isset($server->baseline_provenance['transport'])) {
+            $gateReasons[] = $server->transport === 'local'
+                ? 'Local filesystem preparation provides inventory and staging only; deployment remains disabled'
+                : 'Remote deployment is disabled pending transaction/restore integration qualification';
         }
         $binding = ['uuid' => $server->pelican_server_uuid, 'from' => $base['version'], 'to' => $target['version'],
             'base' => $base['files'], 'local' => $local, 'target' => $target['files'], 'rules' => $rules,

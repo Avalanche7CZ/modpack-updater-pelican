@@ -7,18 +7,19 @@ namespace Arcturus\ModpackManager\Remote;
 use App\Models\Server;
 use App\Repositories\Daemon\DaemonFileRepository;
 use Arcturus\ModpackManager\Contracts\ServerFiles;
+use Arcturus\ModpackManager\Contracts\IntegrityWorker;
 use Arcturus\ModpackManager\Services\UpdatePlanner;
 use Illuminate\Http\Client\RequestException;
 use RuntimeException;
 
-/** Native Pelican file API. Integrity and safe archive operations require the node worker. */
+/** Native Pelican file API with an explicitly selected integrity/staging backend. */
 final class WingsFiles implements ServerFiles
 {
     /** Diagnostic only: raw remote filenames are never included. */
     private array $listingWarnings = [];
 
     public function __construct(private readonly Server $server,
-        private readonly DaemonFileRepository $daemon, private readonly NodeWorker $worker) {}
+        private readonly DaemonFileRepository $daemon, private readonly IntegrityWorker $worker) {}
 
     /** @return list<string> */
     public function inspectionWarnings(): array

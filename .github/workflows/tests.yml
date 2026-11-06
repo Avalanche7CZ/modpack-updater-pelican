@@ -47,6 +47,7 @@ jobs:
           php tests/integration/filament.php
           php tests/integration/livewire.php
           php tests/integration/adoption.php
+          php tests/integration/local.php
           php tests/integration/curseforge.php
           php tests/integration/runtime.php
           php tests/integration/policies.php

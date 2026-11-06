@@ -29,6 +29,8 @@
             @endif
             @if($this->tab === 'overview')
                 <x-filament::section heading="Existing installation">
+                    <p class="mb-3 text-sm">Preparation / inventory backend: {{ $record->transport === 'local' ? 'Same-host local filesystem' : 'Remote node worker' }}.
+                        <a class="text-primary-600 underline" href="https://github.com/Avalanche7CZ/modpack-updater-pelican/blob/main/docs/local-filesystem.md" target="_blank" rel="noopener noreferrer">Same-host setup instructions</a>. Use Filesystem backend to select it, then Test filesystem access.</p>
                     <dl class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         @foreach(['label' => 'Server', 'provider' => 'Provider', 'source' => 'Project', 'installed_version' => 'Installed release', 'available_version' => 'Available release', 'baseline_status' => 'Baseline'] as $field => $label)
                             <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd class="break-all">{{ $record->$field ?? 'Unavailable' }}</dd></div>

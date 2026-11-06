@@ -15,6 +15,8 @@ Identity is permanently isolated from cosmii02's Modpack Manager:
 
 Both plugins can coexist. Arcturus never reads, migrates or modifies cosmii02's tables, files or configuration.
 
+For a same-host Ubuntu installation, use the [local filesystem setup](docs/local-filesystem.md): explicit UUID-to-volume mapping, private staging, unprivileged Python subprocess and the existing Laravel queue. No separate node-worker service, HTTPS proxy or tokens are needed for local preparation. Select **Filesystem backend → Same-host local filesystem** on the managed server. Remote deployments retain the [remote worker setup](docs/remote-wings.md).
+
 ## Requirements and installation
 
 Target: Pelican Panel **1.0.0-rc.1**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. Keep queue `retry_after` above this plugin's 150-second preparation tick timeout; 180 seconds or more is appropriate for these short ticks. Native legacy deployment jobs have a much longer timeout and are not enabled by this release.

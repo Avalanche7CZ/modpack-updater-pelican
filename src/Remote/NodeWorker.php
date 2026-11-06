@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Remote;
 
 use Illuminate\Support\Facades\Http;
+use Arcturus\ModpackManager\Contracts\IntegrityWorker;
 
 /** Requests are scoped by a per-server secret in operator-owned config. No shell operations. */
-final class NodeWorker
+final class NodeWorker implements IntegrityWorker
 {
     public function __construct(private readonly string $uuid) {}
 

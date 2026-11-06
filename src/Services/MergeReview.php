@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Services;
 
 use Arcturus\ModpackManager\Models\ManagedServer;
-use Arcturus\ModpackManager\Remote\NodeWorker;
 use Arcturus\ModpackManager\Remote\ServerFilesFactory;
 use RuntimeException;
 
@@ -22,7 +21,7 @@ final class MergeReview
         if (! $baseId || ! $targetId) {
             throw new RuntimeException('The original baseline and target node stages must both be retained');
         }
-        $worker = new NodeWorker($server->pelican_server_uuid);
+        $worker = app(ServerFilesFactory::class)->worker($server);
         $base = $worker->request('stage_file', ['operation_id' => $baseId, 'path' => $path]);
         $target = $worker->request('stage_file', ['operation_id' => $targetId, 'path' => $path]);
         $local = app(ServerFilesFactory::class)->wings($server->pelicanServer)->read($path);

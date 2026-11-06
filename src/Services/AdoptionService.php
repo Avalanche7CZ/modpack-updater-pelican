@@ -87,7 +87,7 @@ final class AdoptionService
     {
         $base = $this->store->load($server->base_manifest_path);
         (new BaselineGuard)->require($base, $server->provider, $server->source, $server->installed_version);
-        $inventory = $this->files->wings($server->pelicanServer)->inventory();
+        $inventory = $this->files->managed($server)->inventory();
         $observed = $this->inspect($server->pelicanServer);
         if (($observed['world_path_verified'] ?? null) === false) {
             throw new RuntimeException('Verify the custom world path in server.properties before adoption comparison');
