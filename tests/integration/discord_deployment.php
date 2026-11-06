@@ -25,6 +25,28 @@ Schema::create('servers', function (Blueprint $t) {
     $t->string('startup')->default('bash run.sh');
     $t->string('image')->default('java_21');
 });
+/**
+ * Real Pelican DaemonServerRepository::power() writes activity records.
+ * Supply the same audit tables it needs in this disposable in-memory DB,
+ * instead of mocking out the repository's native side effects.
+ */
+Schema::create('activity_logs', function (Blueprint $t) {
+    $t->id();
+    $t->string('ip');
+    $t->text('properties');
+    $t->unsignedBigInteger('api_key_id')->nullable();
+    $t->unsignedBigInteger('actor_id')->nullable();
+    $t->string('actor_type')->nullable();
+    $t->string('event');
+    $t->text('description')->nullable();
+    $t->timestamp('timestamp')->nullable();
+});
+Schema::create('activity_log_subjects', function (Blueprint $t) {
+    $t->id();
+    $t->unsignedBigInteger('activity_log_id');
+    $t->unsignedBigInteger('subject_id');
+    $t->string('subject_type');
+});
 foreach (glob($source.'/database/migrations/*.php') as $path) {
     (require $path)->up();
 }
@@ -112,6 +134,9 @@ Http::fake(function ($request) use (&$state, &$powerCalls, $dir) {
 
     return Http::response(['state' => $state], 200, $headers);
 });
+// A queued deployment is executed without a logged-in panel user.
+// This also avoids introducing a non-canonical anonymous test User morph.
+Auth::guard()->forgetUser();
 app()->call([new DeployManagedServer($managed->id, false, $preview['plan_sha256']), 'handle']);
 $managed->refresh();
 $delivery = DiscordDelivery::where('kind', 'updated')->first();
