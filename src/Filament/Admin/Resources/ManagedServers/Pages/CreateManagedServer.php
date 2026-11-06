@@ -49,10 +49,18 @@ final class CreateManagedServer extends CreateRecord
                 Actions::make([Action::make('inspect')->button()->icon('heroicon-o-magnifying-glass')->label('Inspect runtime and launch method')
                     ->action(fn ($get) => $this->inspectSelection((string) $get('pelican_server_uuid')))]),
                 Text::make(fn () => $this->inspection ? implode(' · ', array_filter([
-                    $this->inspection['state'] ?? null, $this->inspection['loader'] ?? 'Loader unknown',
-                    $this->inspection['minecraft'] ?? 'Minecraft unknown', $this->inspection['pack_hint'] ?? null,
+                    'Wings: '.($this->inspection['state'] ?? 'unavailable'),
+                    $this->inspection['loader'] ? 'Observed loader: '.$this->inspection['loader'] : 'Loader not verified',
+                    $this->inspection['minecraft'] ? 'Minecraft: '.$this->inspection['minecraft'] : 'Minecraft version not verified',
                     ! empty($this->inspection['warnings']) ? 'Warnings: '.count($this->inspection['warnings']) : null,
                 ])) : 'Inspection reads configuration through Wings. Adoption never stops or restarts the server.'),
+                Text::make(fn () => $this->inspection ? implode(' · ', array_filter([
+                    'Panel startup: '.mb_strimwidth((string) ($this->inspection['startup'] ?? '(not available)'), 0, 160, '…'),
+                    'Java image: '.mb_strimwidth((string) ($this->inspection['image'] ?? '(not available)'), 0, 100, '…'),
+                    $this->inspection['diagnostic'] ? 'Wings diagnostic: '.$this->inspection['diagnostic']['stage'].' / '.$this->inspection['diagnostic']['code'] : null,
+                ])) : ''),
+                Text::make(fn () => $this->inspection && ! empty($this->inspection['warnings'])
+                    ? 'Inspection warning: '.$this->inspection['warnings'][0] : ''),
             ]),
             Step::make('Exact upstream release')->schema([
                 Select::make('provider')->options(['ftb' => 'FTB', 'github' => 'GitHub / GTNH',
@@ -118,9 +126,12 @@ final class CreateManagedServer extends CreateRecord
             return;
         }
         if (! ($this->inspection['inspection_complete'] ?? false) || ! empty($this->inspection['warnings'])) {
+            $diagnostic = $this->inspection['diagnostic'] ?? null;
             Notification::make()
-                ->title('Runtime inspection partially completed')
-                ->body('Some launcher evidence or Wings state could not be read. Runtime compatibility remains unverified.')
+                ->title('Runtime inspection incomplete')
+                ->body($diagnostic
+                    ? 'Wings file listing: '.$diagnostic['code'].'. Panel startup and image are shown below; the loader is not verified. Check the Pelican/Wings logs.'
+                    : 'Some launcher evidence or Wings state could not be read. Runtime compatibility remains unverified.')
                 ->warning()->send();
 
             return;
