@@ -164,6 +164,7 @@ $tfgFiles = [
     'start_server.sh' => "#!/bin/bash\njava -Xmx6024M -jar minecraft_server.jar nogui\n",
     'forge-auto-install.txt' => "minecraftVersion=1.20.1\nloaderType=Forge\nloaderVersion=47.4.13\n",
     'server_starter.conf' => "java_path=java\n",
+    'server.properties' => 'motd=\\u00a7aTFG\\nArcturus'."\nlevel-name=TFGWorld\n",
 ];
 Http::swap(new Factory);
 Http::preventStrayRequests();
@@ -195,10 +196,49 @@ check($tfg['loader'] === 'forge' && $tfg['minecraft'] === '1.20.1' &&
     'TFG native Wings inspection did not detect Forge Server Starter');
 check($tfg['java_confidence'] === 'image_hint' && $tfg['state'] === 'running' &&
     $tfg['inspection_complete'] === true, 'TFG runtime evidence incorrectly marked unavailable');
+check(($tfg['world_path_verified'] ?? null) === true &&
+    in_array('TFGWorld', $tfg['protected_roots'] ?? [], true),
+    'Escaped MOTD prevented TFG loader/world inspection');
+
 foreach (Http::recorded() as [$request, $response]) {
     check(! preg_match('~/world(?:/|$)|/mods(?:/|$)|/power|/reinstall~', urldecode($request->url())),
         'TFG inspection traversed world/mod trees or controlled server power');
 }
+
+// A genuinely escaped world name remains ambiguous. It must *not* discard
+// valid Forge metadata or claim that automatic deployment is safe.
+$escapedWorldFiles = $tfgFiles;
+$escapedWorldFiles['server.properties'] = 'level-name=TFG\ World'."\n";
+Http::swap(new Factory);
+Http::preventStrayRequests();
+Http::fake(function ($request) use ($row, $escapedWorldFiles, $headers) {
+    check($request->method() === 'GET', 'Escaped world path inspection made a mutating request');
+    $path = parse_url($request->url(), PHP_URL_PATH);
+    parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+    if (str_ends_with($path, '/files/list-directory')) {
+        check(($query['directory'] ?? '') === '/', 'Unexpected nested listing for TFG fixture');
+        $files = array_map(fn ($name) => $row($name, false), array_keys($escapedWorldFiles));
+        $files[] = $row('minecraft_server.jar', false);
+        $files[] = $row('world');
+
+        return Http::response($files, 200, $headers);
+    }
+    if (str_ends_with($path, '/files/contents')) {
+        $name = ltrim($query['file'] ?? '', '/');
+        check(array_key_exists($name, $escapedWorldFiles), 'Unexpected file read in escaped world test');
+
+        return Http::response($escapedWorldFiles[$name], 200, $headers);
+    }
+
+    return Http::response(['state' => 'running'], 200, $headers);
+});
+$ambiguousWorld = app(AdoptionService::class)->inspect($tfgServer);
+check($ambiguousWorld['loader'] === 'forge' && $ambiguousWorld['minecraft'] === '1.20.1'
+    && $ambiguousWorld['world_path_verified'] === false
+    && $ambiguousWorld['inspection_complete'] === false,
+    'Unverified escaped world path lost valid runtime evidence or was treated as safe');
+check(str_contains(implode(' ', $ambiguousWorld['warnings']), 'world path'),
+    'Custom world path warning was not visible');
 
 echo "Remote runtime inspection reads nested active arguments without worker, world access or power changes\n";
 $GLOBALS['arcturus_integration_passed'] = true;
