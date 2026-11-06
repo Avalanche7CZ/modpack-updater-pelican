@@ -55,8 +55,9 @@ final class CreateManagedServer extends CreateRecord
                     ! empty($this->inspection['warnings']) ? 'Warnings: '.count($this->inspection['warnings']) : null,
                 ])) : 'Inspection reads configuration through Wings. Adoption never stops or restarts the server.'),
                 Text::make(fn () => $this->inspection ? implode(' · ', array_filter([
-                    'Panel startup: '.mb_strimwidth((string) ($this->inspection['startup'] ?? '(not available)'), 0, 160, '…'),
+                    'Panel launch method: '.($this->inspection['launch_method'] ?? 'unknown'),
                     'Java image: '.mb_strimwidth((string) ($this->inspection['image'] ?? '(not available)'), 0, 100, '…'),
+                    'Egg: '.mb_strimwidth((string) ($this->inspection['egg'] ?? '(not available)'), 0, 80, '…'),
                     $this->inspection['diagnostic'] ? 'Wings diagnostic: '.$this->inspection['diagnostic']['stage'].' / '.$this->inspection['diagnostic']['code'] : null,
                 ])) : ''),
                 Text::make(fn () => $this->inspection && ! empty($this->inspection['warnings'])
