@@ -70,6 +70,7 @@ function fakeDiscord(callable $callback): void
 $webhook = 'https://discord.com/api/webhooks/123456789012345678/'.str_repeat('fixturetoken', 6);
 config(['queue.default' => 'fixture', 'queue.connections.fixture.driver' => 'database',
     'arcturus-modpack-manager.discord_events' => true, 'arcturus-modpack-manager.discord_webhook' => $webhook]);
+$realQueue = app('queue');
 Queue::fake();
 Http::preventStrayRequests();
 $server = ManagedServer::create(['label' => 'TFG Modern', 'pelican_server_uuid' => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'provider' => 'github',
@@ -117,6 +118,7 @@ Http::fakeSequence()->push(['retry_after' => 1.5, 'global' => true], 429)->push(
 $rate = $notifier->forEvent($event());
 (new SendDiscordNotification($rate->id))->handle($notifier);
 check($rate->refresh()->status === 'retry_wait' && $rate->attempts === 1 && $rate->next_attempt_at->isFuture(), 'Rate limit not persisted');
+check(str_contains($notifier->testStatus($rate), 'Rate Limited') && str_contains($notifier->testStatus($rate), 'HTTP 429'), 'Actual rate-limit status/HTTP code not shown');
 (new SendDiscordNotification($rate->id))->handle($notifier);
 check($rate->refresh()->attempts === 1, 'Rate-limited request retried before deadline');
 Carbon::setTestNow(now()->addSeconds(3));
@@ -124,11 +126,11 @@ Carbon::setTestNow(now()->addSeconds(3));
 Carbon::setTestNow();
 check($rate->refresh()->status === 'delivered' && $rate->attempts === 2, 'Safe rate limit retry failed');
 Cache::flush();
-foreach ([400 => 'failed', 404 => 'failed', 500 => 'uncertain', 204 => 'uncertain'] as $status => $expected) {
+foreach ([401 => 'failed', 403 => 'failed', 400 => 'failed', 404 => 'failed', 500 => 'uncertain', 204 => 'uncertain'] as $status => $expected) {
     fakeDiscord(fn () => Http::response(null, $status));
     $row = $notifier->forEvent($event());
     (new SendDiscordNotification($row->id))->handle($notifier);
-    check($row->refresh()->status === $expected, 'HTTP error handling incorrect: '.$status);
+    check($row->refresh()->status === $expected && str_contains($row->last_error, 'HTTP '.$status), 'HTTP error handling incorrect: '.$status);
     $count = Http::recorded()->count();
     (new SendDiscordNotification($row->id))->handle($notifier);
     check(Http::recorded()->count() === $count, 'Ambiguous/permanent response retried blindly');
@@ -137,6 +139,10 @@ fakeDiscord(fn () => throw new ConnectionException('Sensitive '.$webhook));
 $row = $notifier->forEvent($event());
 (new SendDiscordNotification($row->id))->handle($notifier);
 check($row->refresh()->status === 'uncertain' && ! str_contains($row->last_error, 'fixturetoken'), 'Interrupted transfer leaked credentials or was retried');
+$workerFailure = $notifier->test($server);
+$workerFailure->update(['status' => 'sending', 'claimed_at' => now()]);
+(new SendDiscordNotification($workerFailure->id))->failed(new RuntimeException('Sensitive '.$webhook));
+check($workerFailure->refresh()->status === 'uncertain' && ! str_contains($workerFailure->last_error, 'fixturetoken'), 'Failed worker callback leaked exception secrets or lost status');
 $server->refresh();
 check($server->installed_version === '0.13.17' && ! $server->last_error, 'Notification error changed update result');
 
@@ -164,10 +170,10 @@ $server->update(['discord_enabled' => false]);
 (new SendDiscordNotification($cancel->id))->handle($notifier);
 check($cancel->refresh()->status === 'cancelled', 'Disable did not cancel a pending notification');
 
-// Actual native Filament form hydration and test action; credentials stay blank.
+// Actual native Filament hydration, unsaved tests, delivery polling and unrelated saves.
 $server->update(['discord_webhook' => $webhook]);
 $edit = Livewire\Livewire::test(EditManagedServer::class, ['record' => $server->id]);
-check($edit->instance()->data['discord_webhook'] === '' && ! str_contains($edit->html(), 'fixturetoken') && str_contains($edit->html(), 'Discord Notifications'), 'Native settings hydrated a token or did not render');
+check($edit->instance()->data['discord_webhook'] === $webhook && str_contains($edit->html(), 'Copy') && str_contains($edit->html(), 'Discord Notifications'), 'Admin webhook hydration/Copy control did not render');
 // Action schema key is checked below from its rendered native button instead of assuming it.
 $dom = new DOMDocument;
 @$dom->loadHTML('<meta charset="utf-8">'.$edit->html());
@@ -179,11 +185,133 @@ $decode = fn ($value) => json_decode(json_decode('"'.$value.'"', true, flags: JS
 $context = $decode($encoded[1][count($encoded[1]) - 1]);
 $edit->set('data.clear_discord_webhook', true)->set('data.discord_role_id', '523456789012345678')->set('data.discord_notify_events', ['updated'])->call('save');
 check($server->refresh()->discord_webhook === null && $server->discord_role_id === '523456789012345678' && $server->discord_notify_events === ['updated'], 'Native settings did not persist clear/role/event selection');
-check($edit->instance()->data['discord_webhook'] === '' && $edit->instance()->data['clear_discord_webhook'] === false, 'Secrets remained in form after saving');
-$edit->call('mountAction', 'testDiscord', [], $context)->call('callMountedAction');
-check($server->events()->where('kind', 'notification_test')->count() === 2, 'Native test action did not queue a test');
+check($edit->instance()->data['discord_webhook'] === null && $edit->instance()->data['clear_discord_webhook'] === false, 'Secrets remained in form after saving');
+$unsaved = 'https://discord.com/api/webhooks/623456789012345678/'.str_repeat('unsavedtoken', 5);
+$edit->set('data.discord_webhook', $unsaved)->call('mountAction', 'testDiscord', [], $context)->call('callMountedAction');
+$test = DiscordDelivery::where('kind', 'test')->latest('id')->firstOrFail();
+check($test->webhook === $unsaved && $server->refresh()->discord_webhook === null, 'Native action ignored input or saved the unsaved webhook');
+$edit->call('$refresh');
+check(str_contains($edit->html(), 'Test #'.$test->id.': Queued') && str_contains($edit->html(), 'wire:poll.3s'), 'Queued result/polling missing');
+fakeDiscord(function ($request) use ($test, $notifier, $unsaved) {
+    check(str_starts_with($request->url(), $unsaved.'?wait=true'), 'Queued test did not target unsaved URL');
+    check(str_contains($notifier->testStatus($test->refresh()), 'Sending'), 'Sending status not observable');
+    check($request['allowed_mentions']['roles'] === [] && $request['content'] === '', 'Native test pinged a role');
+
+    return Http::response(['id' => '723456789012345678'], 200);
+});
+(new SendDiscordNotification($test->id))->handle($notifier);
+$edit->call('$refresh');
+check(str_contains($edit->html(), 'Delivered') && str_contains($edit->html(), 'HTTP 200'), 'Native polling did not confirm actual delivery');
+$edit->set('data.discord_webhook', 'https://invalid.test/secret')->call('mountAction', 'testDiscord', [], $context)->call('callMountedAction');
+check(DiscordDelivery::where('kind', 'test')->count() === 3, 'Invalid entered webhook queued a test');
+$server->update(['discord_webhook' => $webhook]);
+$edit = Livewire\Livewire::test(EditManagedServer::class, ['record' => $server->id]);
+$edit->set('data.label', 'Updated label only')->call('save');
+check($server->refresh()->discord_webhook === $webhook && $edit->instance()->data['discord_webhook'] === $webhook, 'Unrelated save erased saved webhook or hid it');
+$global = app(\Arcturus\ModpackManager\Services\PluginSettings::class)->formData();
+check($global['discord_webhook'] === $webhook && $global['curseforge_api_key'] === '', 'Global admin hydration failed or revealed unrelated credentials');
+$pluginSettings = app(\Arcturus\ModpackManager\Services\PluginSettings::class);
+$pluginSettings->save($global);
+check(! str_contains(DB::table('arcturus_modpack_settings')->where('key', 'discord_webhook')->value('value'), 'fixturetoken'), 'Global webhook stored in plaintext');
+$global['discord_webhook'] = '';
+$pluginSettings->save($global);
+check(config('arcturus-modpack-manager.discord_webhook') === $webhook, 'Blank unrelated global edit erased webhook');
+$fallback = $notifier->test($server, $unsaved, true);
+check($fallback->webhook === $webhook, 'Remove override did not test global fallback');
+foreach (['retry_wait' => 'Rate Limited', 'failed' => 'Failed', 'uncertain' => 'Uncertain'] as $state => $label) {
+    $fallback->update(['status' => $state, 'last_error' => 'HTTP 429: rate limited', 'next_attempt_at' => now()->addMinute()]);
+    check(str_contains($notifier->testStatus($fallback), $label), 'Missing UI status '.$label);
+}
+config(['queue.default' => 'sync']);
+$pending = $notifier->test($server);
+check($pending->status === 'queued' && str_contains($pending->last_error, 'Asynchronous queue required'), 'Sync driver diagnosis missing');
+$pending->update(['created_at' => now()->subMinutes(2)]);
+check(str_contains($notifier->testStatus($pending), 'over a minute'), 'Stalled worker diagnostic missing');
+
+// Real database queue serialization, worker execution and scheduled recovery, with fake HTTPS only.
+Schema::create('jobs', function (Blueprint $t) {
+    $t->bigIncrements('id'); $t->string('queue')->index(); $t->longText('payload');
+    $t->unsignedTinyInteger('attempts'); $t->unsignedInteger('reserved_at')->nullable();
+    $t->unsignedInteger('available_at'); $t->unsignedInteger('created_at');
+});
+config(['queue.default' => 'discord-integration', 'queue.connections.discord-integration' => [
+    'driver' => 'database', 'connection' => 'sqlite', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 90, 'after_commit' => false,
+]]);
+Queue::swap($realQueue);
+fakeDiscord(fn () => Http::response(['id' => '823456789012345678'], 200));
+DB::beginTransaction();
+$edit->set('data.discord_webhook', $unsaved)->call('mountAction', 'testDiscord', [], $context)->call('callMountedAction');
+$real = DiscordDelivery::where('kind', 'test')->latest('id')->firstOrFail();
+check($real->webhook === $unsaved && $server->refresh()->discord_webhook === $webhook, 'Real queue test ignored form input or saved it');
+check(DB::table('jobs')->count() === 0, 'Queue job escaped the outer transaction');
+DB::commit();
+check(DB::table('jobs')->count() === 1 && ! str_contains(DB::table('jobs')->value('payload'), 'token'), 'Real queue serialization leaked credentials or did not dispatch');
+app('queue.worker')->runNextJob('discord-integration', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0));
+check($real->refresh()->status === 'delivered' && DB::table('jobs')->count() === 0, 'Real queue worker did not deliver and acknowledge test');
+$edit->call('$refresh');
+check(str_contains($edit->html(), 'Test #'.$real->id.': Delivered') && str_contains($edit->html(), 'HTTP 200'), 'Real worker result did not reach the native Filament status');
+$notifier->recover();
+check(Cache::has('arcturus-discord-recovery-at'), 'Recovery execution was not observed');
+
+// Failed queue writes remain visible and recoverable without dumping the secret exception.
+config(['queue.connections.broken' => ['driver' => 'database', 'connection' => 'sqlite', 'table' => 'missing_jobs', 'queue' => 'default', 'retry_after' => 90], 'queue.default' => 'broken']);
+$broken = $notifier->test($server, $unsaved);
+check($broken->status === 'queued' && str_contains($broken->last_error, 'Queue dispatch failed'), 'Broken connection was reported as successful dispatch');
+config(['queue.default' => 'discord-integration']);
+$notifier->recover();
+while (DB::table('jobs')->count() > 0) {
+    app('queue.worker')->runNextJob('discord-integration', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0));
+}
+check($broken->refresh()->status === 'delivered', 'Recovery did not hand a failed dispatch to the real worker');
+
+// Register the real provider/scheduler and run the actual recovery command.
+$pluginPath = plugin_path('arcturus-modpack-manager');
+if (! is_dir(dirname($pluginPath))) { mkdir(dirname($pluginPath), 0700, true); }
+if (! file_exists($pluginPath)) { symlink($source, $pluginPath); }
+$app->register(\Arcturus\ModpackManager\Providers\ModpackManagerServiceProvider::class);
+$events = app(\Illuminate\Console\Scheduling\Schedule::class)->events();
+check(count(array_filter($events, fn ($event) => str_contains($event->command ?? '', 'arcturus-modpack:recover') && $event->expression === '*/5 * * * *')) === 1, 'Recovery scheduler was not registered every five minutes');
+$app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(new \Arcturus\ModpackManager\Console\Commands\RecoverOperations);
+Cache::forget('arcturus-discord-recovery-at');
+check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:recover') === 0 && Cache::has('arcturus-discord-recovery-at'), 'Scheduled recovery command failed');
+
+// Actual provider discovery/checker subscriptions: current, repeated and disabled releases never POST.
+Queue::fake();
+$server->update(['discord_enabled' => true, 'discord_notify_events' => ['update_available'], 'available_version' => null]);
+$providerJson = new class extends \Arcturus\ModpackManager\Modpacks\JsonClient
+{
+    public string $version = '0.15.0';
+
+    public function get(string $url, array $headers = []): array
+    {
+        return ['tag_name' => $this->version, 'name' => $this->version, 'draft' => false, 'prerelease' => false,
+            'html_url' => 'https://github.com/fixture/pack/releases/tag/'.$this->version, 'body' => '', 'assets' => []];
+    }
+};
+$app->instance(\Arcturus\ModpackManager\Modpacks\JsonClient::class, $providerJson);
+$checker = app(\Arcturus\ModpackManager\Services\ReleaseChecker::class);
+$before = DiscordDelivery::where('kind', 'update_available')->count();
+check($checker->check($server)['state'] === 'available', 'Real release discovery failed');
+$checker->check($server);
+check(DiscordDelivery::where('kind', 'update_available')->count() === $before + 1, 'Repeated release checks generated another notification');
+$server->update(['installed_version' => $providerJson->version, 'available_version' => null]);
+$checker->check($server);
+check(DiscordDelivery::where('kind', 'update_available')->count() === $before + 1, 'Already installed release was notified');
+$server->update(['discord_notify_events' => []]);
+$providerJson->version = '0.16.0';
+$checker->check($server);
+check(DiscordDelivery::where('kind', 'update_available')->latest('id')->first()->status === 'skipped', 'Unsubscribed release generated notification');
+
+Auth::guard()->setUser(new class extends User
+{
+    public function isRootAdmin(): bool { return false; }
+});
+check(! \Arcturus\ModpackManager\Filament\Forms\DiscordFields::webhook('Webhook')->isVisible(), 'Non-admin could inspect webhook field');
+rejects(fn () => $notifier->test($server, $unsaved), 'Non-admin could test webhook');
+rejects(fn () => app(\Arcturus\ModpackManager\Services\PluginSettings::class)->formData(), 'Non-admin could hydrate webhook');
 Auth::guard()->forgetUser();
+rejects(fn () => app(\Arcturus\ModpackManager\Services\PluginSettings::class)->formData(), 'Guest could inspect global webhook');
 rejects(fn () => $notifier->test($server), 'Unauthorized test notification allowed');
 check(! $server->events()->where('kind', 'notification')->where('message', 'like', '%fixturetoken%')->exists(), 'History exposed webhook credentials');
-echo "Queued bilingual embeds, mention isolation, encryption, idempotency, rate limits, ambiguous errors, recovery and native settings/test action passed\n";
+echo "Native unsaved webhook tests, delivery polling, real queue worker/recovery, release subscriptions, encryption, mention isolation and HTTP diagnostics passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

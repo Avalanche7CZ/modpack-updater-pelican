@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager;
 
 use App\Contracts\Plugins\HasPluginSettings;
+use Arcturus\ModpackManager\Filament\Forms\DiscordFields;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\PluginSettings;
 use Filament\Contracts\Plugin;
@@ -60,7 +61,8 @@ final class ModpackManagerPlugin implements HasPluginSettings, Plugin
                 TextInput::make('curseforge_api_key')->password()->autocomplete('off')
                     ->helperText('Leave blank to keep the encrypted credential. Credentials are never loaded into this form.'),
                 Toggle::make('clear_curseforge_api_key')->label('Remove saved CurseForge credential'),
-                TextInput::make('discord_webhook')->password()->autocomplete('off'),
+                DiscordFields::webhook('Global fallback webhook')
+                    ->helperText(fn () => config('arcturus-modpack-manager.discord_webhook') ? 'Global fallback is configured. Server overrides take priority.' : 'No global fallback configured.'),
                 Toggle::make('clear_discord_webhook')->label('Remove saved Discord webhook'),
                 Toggle::make('discord_events')->label('Enable Discord notifications globally'),
             ]),

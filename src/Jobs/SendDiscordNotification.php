@@ -28,6 +28,6 @@ final class SendDiscordNotification implements ShouldQueue
     public function failed(?Throwable $error): void
     {
         // Never report the underlying transport exception, which may contain a secret URL.
-        app(DiscordNotifier::class)->interrupted($this->deliveryId);
+        app(DiscordNotifier::class)->interrupted($this->deliveryId, $error);
     }
 }

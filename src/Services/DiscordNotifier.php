@@ -9,8 +9,10 @@ use Arcturus\ModpackManager\Models\DiscordDelivery;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Models\UpdateEvent;
 use Arcturus\ModpackManager\Security\Access;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Throwable;
@@ -109,8 +111,7 @@ final class DiscordNotifier
             $event->kind === 'deploy' && $event->status === 'success' && ($event->details['startup_verified'] ?? false) === true => 'updated',
             $event->kind === 'deploy' && $event->status === 'failed' => 'failed',
             $event->kind === 'rollback' && $event->status === 'success' && ($event->details['restore_verified'] ?? false) === true => 'rollback',
-            $event->kind === 'release' && $event->status === 'success' => 'update_available',
-            $event->kind === 'notification_test' => 'test',
+            $event->kind === 'release' && $event->status === 'success' && $event->to_version !== $event->from_version => 'update_available',
             default => null,
         };
     }
@@ -133,7 +134,7 @@ final class DiscordNotifier
                 }
                 $server = $source->managedServer;
                 $webhook = $server->discord_webhook ?: config('arcturus-modpack-manager.discord_webhook');
-                $enabled = $kind === 'test' || (config('arcturus-modpack-manager.discord_events', true) && $server->discord_enabled && in_array($kind, $server->discord_notify_events ?? self::DEFAULT_EVENTS, true));
+                $enabled = config('arcturus-modpack-manager.discord_events', true) && $server->discord_enabled && in_array($kind, $server->discord_notify_events ?? self::DEFAULT_EVENTS, true);
                 if ($webhook) {
                     self::validateWebhook($webhook);
                 }
@@ -150,9 +151,11 @@ final class DiscordNotifier
 
             return $delivery;
         } catch (Throwable $error) {
+            Log::warning('Discord outbox handoff failed', ['source_event_id' => $event->id, 'diagnostic' => self::diagnostic($error)]);
             try {
-                $event->managedServer->events()->create(['kind' => 'notification', 'status' => 'failed', 'message' => 'Discord notification could not be queued; verify notification settings', 'details' => ['source_event_id' => $event->id]]);
-            } catch (Throwable) {
+                $event->managedServer->events()->create(['kind' => 'notification', 'status' => 'failed', 'message' => self::diagnostic($error), 'details' => ['source_event_id' => $event->id]]);
+            } catch (Throwable $historyError) {
+                Log::warning('Discord failure history unavailable', ['source_event_id' => $event->id, 'diagnostic' => self::diagnostic($historyError)]);
             }
 
             return null;
@@ -169,32 +172,92 @@ final class DiscordNotifier
         }
     }
 
-    public function test(ManagedServer $server): DiscordDelivery
+    public static function diagnostic(Throwable $error): string
+    {
+        // Never include exception messages, traces, SQL bindings or request URLs.
+        return match (true) {
+            $error instanceof \Illuminate\Database\QueryException => 'Database unavailable: check migrations, database connectivity and APP_KEY access.',
+            $error instanceof \Illuminate\Contracts\Encryption\DecryptException => 'Credential decryption failed: restore the correct Panel APP_KEY.',
+            $error instanceof \Illuminate\Http\Client\ConnectionException => 'Connection interrupted: check worker DNS, outbound HTTPS, TLS certificates and proxy settings.',
+            $error instanceof RuntimeException && $error->getMessage() === 'Enter an official HTTPS Discord webhook URL' => 'Enter an official HTTPS Discord webhook URL, or configure the global fallback.',
+            default => 'Notification infrastructure failed: check database, cache/lock and queue connectivity (internal_error).',
+        };
+    }
+
+    public function testStatus(?DiscordDelivery $delivery): string
     {
         Access::requireAdmin();
-        $webhook = $server->discord_webhook ?: config('arcturus-modpack-manager.discord_webhook');
-        self::validateWebhook((string) $webhook);
-        $event = $server->events()->create(['kind' => 'notification_test', 'status' => 'info', 'message' => 'Administrator requested a test notification without role mentions', 'details' => ['actor_id' => auth()->id()]]);
-        $delivery = $this->forEvent($event);
+        try {
+            $recovery = Cache::get('arcturus-discord-recovery-at');
+            $health = $recovery ? 'Recovery last ran: '.$recovery.'.' : 'Recovery has not been observed; verify schedule:run runs every minute (recovery every five minutes).';
+        } catch (Throwable) {
+            $health = 'Recovery observation unavailable: check the cache connection and shared cache configuration.';
+        }
         if (! $delivery) {
-            throw new RuntimeException('Test notification could not be queued; see history');
+            return 'No test requested. '.$health;
+        }
+        $label = match ($delivery->status) {
+            'retry_wait' => str_contains(strtolower($delivery->last_error ?? ''), 'rate limit') || str_contains($delivery->last_error ?? '', 'HTTP 429') ? 'Rate Limited' : 'Queued',
+            default => ucwords(str_replace('_', ' ', $delivery->status)),
+        };
+        $message = 'Test #'.$delivery->id.': '.$label.'. Attempts: '.$delivery->attempts.'. ';
+        if ($delivery->status === 'delivered') {
+            $message .= 'HTTP 200: Discord confirmed message '.$delivery->message_id.'. Worker processed this test. ';
+        } else {
+            $message .= ($delivery->last_error ?? ($delivery->status === 'sending' ? 'Worker claimed this test; waiting for Discord acknowledgement.' : 'Waiting for a queue worker.')).' ';
+        }
+        if ($delivery->status === 'queued') {
+            $message .= 'Verify queue:work listens on the configured connection and queue; inspect queue:failed and restart workers after changing configuration. ';
+            if ($delivery->created_at->lt(now()->subMinute())) {
+                $message .= 'No worker has claimed this test for over a minute. ';
+            }
+        }
+        if ($delivery->next_attempt_at && $delivery->status === 'retry_wait') {
+            $message .= 'Next attempt: '.$delivery->next_attempt_at->toIso8601String().'. ';
         }
 
-        return $delivery;
+        return $message.$health;
+    }
+
+    public function test(ManagedServer $server, ?string $enteredWebhook = null, bool $clearOverride = false): DiscordDelivery
+    {
+        Access::requireAdmin();
+        $webhook = $clearOverride ? config('arcturus-modpack-manager.discord_webhook') :
+            ($enteredWebhook ?: $server->discord_webhook ?: config('arcturus-modpack-manager.discord_webhook'));
+        self::validateWebhook((string) $webhook);
+        $delivery = DB::transaction(function () use ($server, $webhook): DiscordDelivery {
+            $event = $server->events()->create(['kind' => 'notification_test', 'status' => 'info', 'message' => 'Administrator requested a test notification without role mentions', 'details' => ['actor_id' => auth()->id()]]);
+            $delivery = DiscordDelivery::create(['managed_server_id' => $server->id, 'source_event_id' => $event->id, 'kind' => 'test',
+                'status' => 'queued', 'webhook' => $webhook, 'payload' => $this->payload($server, $event, 'test')]);
+            $this->history($delivery, 'queued', 'Discord test queued using administrator form input');
+
+            return $delivery;
+        });
+        $this->dispatch($delivery);
+
+        return $delivery->refresh();
     }
 
     private function dispatch(DiscordDelivery $delivery): void
     {
-        try {
-            $connection = config('queue.default');
-            if (! is_string($connection) || ! in_array(config('queue.connections.'.$connection.'.driver'), ['redis', 'database', 'sqs', 'beanstalkd'], true)) {
-                throw new RuntimeException('Asynchronous queue required');
+        DB::afterCommit(function () use ($delivery): void {
+            try {
+                $connection = config('queue.default');
+                if (! is_string($connection) || ! in_array(config('queue.connections.'.$connection.'.driver'), ['redis', 'database', 'sqs', 'beanstalkd'], true)) {
+                    $delivery->update(['last_error' => 'Asynchronous queue required: set QUEUE_CONNECTION to redis, database, sqs or beanstalkd; restart workers.']);
+
+                    return;
+                }
+                $job = (new SendDiscordNotification($delivery->id))->onConnection($connection)->delay($delivery->next_attempt_at);
+                Bus::dispatch($job);
+                DiscordDelivery::whereKey($delivery->id)->where('status', 'queued')->update(['last_error' => null]);
+            } catch (Throwable $error) {
+                $message = 'Queue dispatch failed: check queue credentials, connectivity and worker configuration; recovery will retry.';
+                $delivery->update(['last_error' => $message]);
+                Log::warning('Discord queue dispatch failed', ['delivery_id' => $delivery->id, 'diagnostic' => self::diagnostic($error)]);
+                $this->history($delivery, 'queued', $message);
             }
-            SendDiscordNotification::dispatch($delivery->id)->onConnection($connection)->delay($delivery->next_attempt_at)->afterCommit();
-        } catch (Throwable) {
-            $delivery->update(['last_error' => 'Queue dispatch unavailable; scheduler will retry']);
-            $this->history($delivery, 'queued', 'Discord dispatch deferred; configure a working asynchronous queue');
-        }
+        });
     }
 
     private function history(DiscordDelivery $delivery, string $status, string $message): void
@@ -239,7 +302,7 @@ final class DiscordNotifier
 
                 return;
             }
-            $webhook = $server->discord_webhook ?: config('arcturus-modpack-manager.discord_webhook');
+            $webhook = $delivery->kind === 'test' ? $delivery->webhook : ($server->discord_webhook ?: config('arcturus-modpack-manager.discord_webhook'));
             if (! $webhook || $webhook !== $delivery->webhook) {
                 $this->finish($delivery, 'cancelled', 'Discord webhook settings changed before delivery');
 
@@ -266,27 +329,27 @@ final class DiscordNotifier
                     // wait=true returns a confirmed message ID. No automatic POST retries or redirects.
                     $response = Http::connectTimeout(5)->timeout(10)->withoutRedirecting()->post($webhook.'?wait=true', $payload);
                 } catch (Throwable) {
-                    $this->finish($delivery, 'uncertain', 'Discord transport interrupted; delivery may have occurred. Check the channel before any manual resend.');
+                    $this->finish($delivery, 'uncertain', 'Connection/timeout: check DNS, outbound HTTPS, TLS and proxy. Delivery may have occurred; check Discord before resending.');
 
                     return;
                 }
                 if ($response->status() === 429) {
                     $delay = $response->json('retry_after') ?? $response->header('Retry-After');
                     if (! is_numeric($delay) || ! is_finite((float) $delay) || $delay < 0 || $delay > 604800 || $delivery->attempts >= 5) {
-                        $this->finish($delivery, 'failed', 'Discord rate limit retry budget or delay is invalid');
+                        $this->finish($delivery, 'failed', 'HTTP 429: retry budget exhausted or invalid delay; wait before a manual test');
 
                         return;
                     }
                     $seconds = max(1, (int) ceil((float) $delay));
                     $until = now()->addSeconds($seconds);
                     Cache::put($response->json('global') === true ? 'arcturus-modpack-manager-discord-global-pause' : $key.'-pause', $until->timestamp, $seconds);
-                    $this->finish($delivery, 'retry_wait', 'Discord rate limited the notification; retry scheduled', ['next_attempt_at' => $until]);
+                    $this->finish($delivery, 'retry_wait', 'HTTP 429: Discord rate limited the notification; retry scheduled', ['next_attempt_at' => $until]);
                 } elseif ($response->successful() && $response->status() === 200) {
                     $messageId = $response->json('id');
                     try {
                         self::validateSnowflake(is_string($messageId) ? $messageId : '');
                     } catch (Throwable) {
-                        $this->finish($delivery, 'uncertain', 'Discord response did not confirm a message ID; automatic resend suppressed');
+                        $this->finish($delivery, 'uncertain', 'HTTP 200 without a valid message ID; check the channel before resending');
 
                         return;
                     }
@@ -296,30 +359,37 @@ final class DiscordNotifier
                         Cache::put($key.'-pause', now()->addSeconds((int) ceil((float) $reset))->timestamp, (int) ceil((float) $reset));
                     }
                 } else {
-                    $this->finish($delivery, $response->status() >= 500 || $response->successful() ? 'uncertain' : 'failed', 'Discord returned HTTP '.$response->status().'; no automatic resend');
+                    $this->finish($delivery, $response->status() >= 500 || $response->successful() ? 'uncertain' : 'failed', 'HTTP '.$response->status().': '.match ($response->status()) {
+                        401, 403 => 'webhook unauthorized; check permissions or replace it',
+                        404 => 'webhook not found; create a new webhook',
+                        400 => 'invalid payload; check notification configuration',
+                        default => 'delivery not confirmed; check Discord before resending',
+                    });
                 }
             } finally {
                 $lock->release();
             }
-        } catch (Throwable) {
-            // Failure after an attempted POST is conservatively ambiguous; never leak request exceptions.
-            $this->interrupted($delivery->id);
+        } catch (Throwable $error) {
+            $this->finish($delivery, $delivery->attempts > 0 ? 'uncertain' : 'failed',
+                self::diagnostic($error).($delivery->attempts > 0 ? ' Check Discord before resending.' : ' No HTTP attempt was made.'));
         }
     }
 
-    public function interrupted(int $id): void
+    public function interrupted(int $id, ?Throwable $error = null): void
     {
         try {
             if ($delivery = DiscordDelivery::find($id)) {
-                $this->finish($delivery, 'uncertain', 'Discord worker interrupted; check the channel before any manual resend');
+                $this->finish($delivery, 'uncertain', $error ? self::diagnostic($error).' Check Discord before resending.' : 'Discord worker interrupted; check the channel before any manual resend');
             }
-        } catch (Throwable) {
+        } catch (Throwable $error) {
+            Log::warning('Discord interruption could not be recorded', ['delivery_id' => $id, 'diagnostic' => self::diagnostic($error)]);
         }
     }
 
     /** Recover safe rejected/pending requests, never ambiguous in-flight POSTs. */
     public function recover(): void
     {
+        Cache::put('arcturus-discord-recovery-at', now()->toIso8601String(), 900);
         foreach (DiscordDelivery::where('status', 'sending')->where('claimed_at', '<', now()->subMinutes(2))->limit(100)->get() as $row) {
             $this->interrupted($row->id);
         }

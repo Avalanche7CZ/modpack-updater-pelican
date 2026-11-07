@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 
-/** Isolated encrypted values, including credentials. Secrets never enter form hydration. */
+/** Isolated encrypted values, including credentials. Only root administrators may inspect saved Discord webhooks. */
 final class PluginSettings
 {
     public const SECRETS = ['curseforge_api_key', 'discord_webhook'];
@@ -39,7 +39,7 @@ final class PluginSettings
             $data[$key] = config('arcturus-modpack-manager.'.$key);
         }
         foreach (self::SECRETS as $key) {
-            $data[$key] = '';
+            $data[$key] = $key === 'discord_webhook' ? config('arcturus-modpack-manager.discord_webhook') : '';
             $data['clear_'.$key] = false;
         }
 

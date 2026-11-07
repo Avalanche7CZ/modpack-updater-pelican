@@ -30,7 +30,8 @@ final class EditManagedServer extends EditRecord
     protected function mutateFormDataBeforeFill(array $data): array
     {
         $this->policyRevision = $data['policy_revision'] ?? 0;
-        $data['discord_webhook'] = '';
+        Access::requireAdmin();
+        $data['discord_webhook'] = $this->record->discord_webhook;
         $data['clear_discord_webhook'] = false;
         $data['file_rules'] = (new ProtectionPolicy)->normalize($data['file_rules'] ?? []);
 
@@ -68,7 +69,7 @@ final class EditManagedServer extends EditRecord
 
     protected function afterSave(): void
     {
-        $this->data['discord_webhook'] = '';
+        $this->data['discord_webhook'] = $this->record->discord_webhook;
         $this->data['clear_discord_webhook'] = false;
     }
 

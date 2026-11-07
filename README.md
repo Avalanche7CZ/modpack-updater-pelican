@@ -94,7 +94,7 @@ A cleared Pelican restore status alone is not success: the native exact-backup `
 
 Root administrators manage associations, credentials, protection rules and update review. The isolated **Arcturus Modpack** server page is read-only for owners and subusers with Pelican's `file.read` permission on that server. It exposes no provider credentials, worker configuration, host paths or destructive actions.
 
-Settings use Pelican's `HasPluginSettings` API. Values are stored encrypted using Laravel's APP_KEY in the isolated settings table. Saved secrets are never hydrated back into forms; blank fields keep them, and explicit remove switches clear them. Node endpoint configuration remains operator-controlled. Keep APP_KEY stable during upgrades.
+Settings use Pelican's `HasPluginSettings` API. Values are stored encrypted using Laravel's APP_KEY in the isolated settings table. Saved Discord webhooks are available only in root administrator forms, with Show/Hide and Copy controls. Other credentials stay blank. Blank edits keep saved credentials; explicit remove switches clear them. Node endpoint configuration remains operator-controlled. Keep APP_KEY stable during upgrades.
 
 ## Operations and troubleshooting
 
