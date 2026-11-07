@@ -1,3 +1,5 @@
+> Version 0.5 changes comparison to candidate paths only and makes adoption lightweight. See [current comparison and schedule behavior](manifest-updates.md); older inventory examples below describe the explicit full-inventory worker capability.
+
 # One-time local Wings node setup (Ubuntu / Pelican)
 
 Target flow: **One-time host setup → Adopt a local server → Prepare installed baseline**.
@@ -149,4 +151,4 @@ A directory decision save and its comparison intent commit together. The form's 
 
 ## Manual update deployment
 
-The read-only setup above remains sufficient for adoption and comparison. It does not grant update write access. The [manual same-host workflow](manual-deployment.md) adds scoped operator-provisioned permissions, independent runtime evidence, exact administrator approval, native locked Wings backup verification and a full recovery checkpoint. Only installed Forge 1.20.1 / Java 17 runtime reuse is qualified by the current fixture suite. Remote and automatic deployment remain disabled.
+The read-only setup above remains sufficient for adoption and comparison. It does not grant update write access. The [manual same-host workflow](manual-deployment.md) adds scoped operator-provisioned permissions, independent runtime evidence, exact administrator approval, native locked Wings backup verification and a full recovery checkpoint. Only installed Forge 1.20.1 / Java 17 runtime reuse is qualified by the current fixture suite. Remote deployment remains disabled. For daily same-host automation and delta-only comparison, see [manifest updates](manifest-updates.md).

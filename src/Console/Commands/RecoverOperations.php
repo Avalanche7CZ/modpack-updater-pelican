@@ -31,7 +31,7 @@ final class RecoverOperations extends Command
                 } elseif ($op->phase === 'checking_recovery') {
                     (new \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery($op->id))->failed(null);
                 } elseif ($op->phase === 'queued') {
-                    \Arcturus\ModpackManager\Jobs\DeployManagedServer::dispatch($op->managed_server_id, false, $op->context['plan_sha256'], $op->id);
+                    \Arcturus\ModpackManager\Jobs\DeployManagedServer::dispatch($op->managed_server_id, (bool) ($op->context['automatic_approval'] ?? false), $op->context['plan_sha256'], $op->id);
                     $this->line('Dispatched the same administrator-approved queued receipt: '.$op->id);
                 } else {
                     (new \Arcturus\ModpackManager\Jobs\DeployManagedServer($op->managed_server_id, false, $op->context['plan_sha256'], $op->id))->failed(null);

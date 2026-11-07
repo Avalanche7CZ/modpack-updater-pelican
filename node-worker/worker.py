@@ -747,6 +747,66 @@ class Worker:
             update.failed(error)
             raise
 
+    def scoped_inventory(self, server, paths, operation_id=None):
+        """Exact manifest delta. Never enumerate a live directory or inspect unrelated JARs."""
+        if not isinstance(paths, list) or len(paths) > MAX_FILES or len(set(paths)) != len(paths):
+            raise ValueError('Invalid comparison paths')
+        root = Path(self.entry(server)['root'])
+        excluded = sorted(self.world_roots(server))
+        skipped, unreadable, safe = [], [], []
+        report = lambda **v: None
+        cancelled = lambda: False
+        if operation_id is not None:
+            base = self.operation_path(server, operation_id)
+            base.mkdir(mode=0o700, exist_ok=True)
+            report = ProgressState(base / 'comparison.json', {'operation_id': operation_id, 'state': 'comparing'}, self.observer)
+            cancelled = lambda: (base / 'cancel').exists()
+        try:
+            for path in paths:
+                relative(path)
+                if not self.managed(server, path, excluded):
+                    excluded.append(path)
+                    continue
+                # Inspect only ancestors of requested paths; protect symlinks without following them.
+                current = root
+                for index, part in enumerate(path.split('/')):
+                    current = current / part
+                    logical = '/'.join(path.split('/')[:index + 1])
+                    try:
+                        info = current.lstat()
+                    except FileNotFoundError:
+                        break
+                    except PermissionError as error:
+                        excluded.append(logical)
+                        unreadable.append({'path': logical, 'kind': 'unknown', 'phase': 'hashing', 'errno': error.errno})
+                        break
+                    if stat.S_ISLNK(info.st_mode):
+                        excluded.append(logical)
+                        skipped.append(logical)
+                        break
+                if not any(path == r or path.startswith(r + '/') for r in excluded):
+                    safe.append(path)
+            def protect_unreadable(path, kind, phase, number):
+                excluded.append(path)
+                unreadable.append({'path': path, 'kind': kind, 'phase': phase, 'errno': number})
+            hashed = self.hashes(server, safe, report=report, cancelled=cancelled, on_unreadable=protect_unreadable, excluded=excluded)
+            summary = {'files_hashed': len(hashed['files']), 'bytes_hashed': sum(hashed['sizes'].values()),
+                       'unreadable_files_skipped': len(unreadable), 'unreadable_directories': 0,
+                       'unreadable_entries_unknown': len(unreadable)}
+            # Content hashes are the evidence. Embedded metadata is an optional upstream display aid.
+            result = {'complete': True, 'files': hashed['files'], 'missing': hashed['missing'],
+                      'identities': {}, 'metadata': {}, 'scope': 'manifest-delta-v1', 'requested_paths': paths,
+                      'excluded_roots': sorted(set(excluded)), 'skipped_symlinks': sorted(set(skipped)),
+                      'unreadable_paths': unreadable, 'inventory_summary': summary, 'world_path_unreadable': False,
+                      'notice': 'Only update candidate paths were checked. Unrelated files and world data were not scanned.'}
+            if operation_id is not None:
+                report(force=True, state='completed', phase='comparing', files_done=len(safe), files_total=len(safe))
+            return result
+        except Exception as error:
+            if operation_id is not None:
+                report.failed(error)
+            raise
+
     def _inventory(self, server, report=lambda **v: None, cancelled=lambda: False):
         entry = self.entry(server)
         root = Path(entry['root'])
@@ -1291,11 +1351,13 @@ class Worker:
             scoped.settings = {**self.settings, 'servers': {**self.settings['servers'], server: entry}}
             return scoped.handle(server, operation, {k: v for k, v in payload.items() if k != 'directory_scope'})
         if operation == 'capabilities':
-            return {'protocol': 1, 'directory_policy': 1, 'mod_identity': 2, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
+            return {'protocol': 1, 'scoped_inventory': 1, 'directory_policy': 1, 'mod_identity': 2, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
                     'deploy': False, 'preserve_exclusions': False,
                     'reason': 'Remote destructive transactions and restore verification require a disposable Pelican/Wings integration qualification'}
         if operation == 'hashes':
             return self.hashes(server, payload['paths'])
+        if operation == 'inventory' and 'paths' in payload:
+            return self.scoped_inventory(server, payload['paths'], payload.get('operation_id'))
         if operation == 'inventory':
             return self.inventory(server, payload.get('operation_id'))
         if operation == 'prepare':

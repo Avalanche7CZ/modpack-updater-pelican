@@ -181,11 +181,30 @@ final class WingsFiles implements ServerFiles
         return $files;
     }
 
-    public function inventory(): array
+    public function inventory(?array $paths = null): array
     {
-        $data = $this->worker->request('inventory', $this->operationId ? ['operation_id' => $this->operationId] : []);
+        $payload = $this->operationId ? ['operation_id' => $this->operationId] : [];
+        if ($paths !== null) {
+            $capabilities = $this->worker->request('capabilities');
+            if (($capabilities['scoped_inventory'] ?? null) !== 1) { throw new RuntimeException('Upgrade the filesystem worker: manifest-scoped comparison is required.'); }
+            foreach ($paths as $path) { UpdatePlanner::assertPath($path); }
+            $payload['paths'] = array_values(array_unique($paths));
+        }
+        $data = $this->worker->request('inventory', $payload);
+        if ($paths !== null && (($data['scope'] ?? '') !== 'manifest-delta-v1' || ($data['requested_paths'] ?? null) !== $payload['paths'])) {
+            throw new RuntimeException('Worker did not honor the exact manifest comparison scope');
+        }
         if (($data['complete'] ?? false) !== true || ! is_array($data['files'] ?? null)) {
             throw new \Arcturus\ModpackManager\Services\PreparationException(['code' => 'METADATA_INVALID', 'phase' => 'comparing']);
+        }
+        if ($paths !== null) {
+            if (array_diff(array_keys($data['files']), $payload['paths'])) { throw new RuntimeException('Worker returned files outside the requested delta'); }
+            foreach ($payload['paths'] as $path) {
+                if (isset($data['files'][$path]) || in_array($path, $data['missing'] ?? [], true)) { continue; }
+                $excluded = false;
+                foreach ($data['excluded_roots'] ?? [] as $root) { if ($path === $root || str_starts_with($path, $root.'/')) { $excluded = true; break; } }
+                if (! $excluded) { throw new RuntimeException('Worker omitted a requested comparison path'); }
+            }
         }
         (new UpdatePlanner)->plan([], $data['files'], []);
 

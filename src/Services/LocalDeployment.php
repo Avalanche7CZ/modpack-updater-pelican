@@ -79,24 +79,25 @@ final class LocalDeployment
             throw new RuntimeException('Another update is running for this directory');
         }
         try {
-            $decisionPaths = array_column($expectedDecisions ?? [], 'path');
-            foreach ($expectedDecisions ?? [] as $decision) { $decisionPaths = array_merge($decisionPaths, $decision['mod_upgrade']['paths'] ?? []); }
-            $paths = array_unique(array_merge(array_keys($base), array_keys($target), $decisionPaths, array_keys($policyContext['local_mod_files'] ?? [])));
+            $paths = $policyContext['comparison_paths'] ?? ManifestComparison::paths($base, $target, $rules,
+                $policyContext['identities'] ?? [], $policyContext['disabled'] ?? []);
+            if (! isset($policyContext['comparison_paths']) && $expectedDecisions !== null) {
+                foreach ($expectedDecisions as $decision) { $paths = array_merge($paths, $decision['mod_upgrade']['paths'] ?? [$decision['path']]); }
+                $paths = array_values(array_unique($paths));
+            }
+            $base = ManifestComparison::select($base, $paths);
+            $target = ManifestComparison::select($target, $paths);
             $safetyRoots = array_values(array_unique(array_merge($this->inventory->safetyRoots($live), $policyContext['safety_roots'] ?? [])));
             $paths = array_values(array_filter($paths, fn ($p) => SafetyPaths::reason($p, $safetyRoots) === null));
             $local = $this->inventory->hashPaths($live, $paths, $heartbeat);
-            $verified = $this->inventory->hashPaths($stage, array_keys($target), $heartbeat);
-            if (count($verified) !== count($target)) {
-                throw new RuntimeException('Staged release is incomplete');
-            }
-            foreach ($target as $path => $digest) {
-                if (!hash_equals(strtolower($digest), strtolower($verified[$path] ?? ''))) {
-                    throw new RuntimeException("Staged hash mismatch: {$path}");
-                }
-            }
             $plan = $this->planner->plan($base, $local, $target, $rules, $policyContext['identities'] ?? [], $policyContext['disabled'] ?? [], $safetyRoots, $policyContext['metadata'] ?? [], $policyContext['mod_evidence'] ?? []);
             if ($expectedDecisions !== null && $plan['changes'] !== $expectedDecisions) {
                 throw new RuntimeException('Deployment decisions differ from the approved preview');
+            }
+            $installPaths = ManifestComparison::installs($plan['changes']);
+            $verified = $this->inventory->hashPaths($stage, $installPaths, $heartbeat);
+            foreach ($installPaths as $path) {
+                if (! hash_equals(strtolower($target[$path]), strtolower($verified[$path] ?? ''))) { throw new RuntimeException('Staged hash mismatch: '.$path); }
             }
             $mutations = [];
             foreach ($plan['changes'] as $entry) {
@@ -145,16 +146,12 @@ final class LocalDeployment
                     }
                 }
 
-                $expectedMods = $policyContext['local_mod_files'] ?? [];
                 usort($mutations, fn ($a, $b) => (($a['action'] === 'upgrade_mod') ? 0 : 1) <=> (($b['action'] === 'upgrade_mod') ? 0 : 1));
                 foreach ($mutations as $entry) {
                     if ($entry['action'] === 'upgrade_mod') {
                         $transaction = new ModUpgradeTransaction;
-                        $transaction->requireSnapshot($live, $expectedMods, $heartbeat);
                         foreach ($entry['mod_upgrade']['paths'] as $path) { if (! in_array($path, $modified, true)) { $modified[] = $path; } }
                         $transaction->apply($live, $stage, $entry, $receipt, $heartbeat);
-                        unset($expectedMods[$entry['mod_upgrade']['installed']['path']]);
-                        $expectedMods[$entry['mod_upgrade']['target']['path']] = $entry['mod_upgrade']['target']['sha256'];
                         continue;
                     }
                     $heartbeat?->__invoke();
@@ -172,17 +169,14 @@ final class LocalDeployment
                         if (file_exists($dest) && !@unlink($dest)) {
                             throw new RuntimeException("Could not remove: {$path}");
                         }
-                        unset($expectedMods[$path]);
                         continue;
                     }
                     $this->atomicCopy($stage . '/' . $path, $dest, $live, $transactionRoot !== null);
-                    if (UpdatePlanner::isMod($path)) { $expectedMods[$path] = $entry['target_sha256']; }
                     $after = $this->inventory->hashPaths($live, [$path], $heartbeat)[$path] ?? null;
                     if ($after !== $entry['target_sha256']) {
                         throw new RuntimeException("Post-install hash mismatch: {$path}");
                     }
                 }
-                if (array_filter($mutations, fn ($m) => $m['action'] === 'upgrade_mod')) { (new ModUpgradeTransaction)->requireSnapshot($live, $expectedMods, $heartbeat); }
                 if ($backup !== null) {
                     $metadata = [
                         'schema' => 1,

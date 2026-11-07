@@ -3,36 +3,12 @@
 declare(strict_types=1);
 namespace Arcturus\ModpackManager\Services;
 
-use FilesystemIterator;
-use RecursiveDirectoryIterator;
-use RecursiveIteratorIterator;
 use RuntimeException;
 use Throwable;
 
 /** Offline transaction: hide the old JAR before publishing the new JAR, with a durable recovery receipt. */
 final class ModUpgradeTransaction
 {
-    public function requireSnapshot(string $root, array $expected, ?\Closure $heartbeat = null): void
-    {
-        $actual = []; $directory = $root.'/mods';
-        if (is_link($directory) || ! is_dir($directory) || ! is_readable($directory)) { throw new RuntimeException('Cannot verify the active mod directory before a logical upgrade.'); }
-        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST) as $entry) {
-            $heartbeat?->__invoke();
-            if ($entry->isLink()) { throw new RuntimeException('Mod directory contains unscanned symlinks. Logical upgrade needs a complete active-JAR inventory.'); }
-            $path = substr($entry->getPathname(), strlen($root) + 1);
-            if (UpdatePlanner::isMod($path)) {
-                if (! $entry->isFile()) { throw new RuntimeException('Active JAR path is not a regular file.'); }
-                $actual[] = $path;
-            }
-        }
-        $paths = array_keys($expected); sort($paths, SORT_STRING); sort($actual, SORT_STRING);
-        if ($paths !== $actual || (new DirectoryInventory)->hashPaths($root, $paths, $heartbeat) !== $this->sorted($expected)) {
-            throw new RuntimeException('The active JAR set changed since approval. Keep Minecraft stopped; compare again before any upgrade.');
-        }
-    }
-
-    private function sorted(array $hashes): array { ksort($hashes, SORT_STRING); return $hashes; }
-
     public function apply(string $root, string $stage, array $change, \Closure $receipt, ?\Closure $heartbeat = null): void
     {
         $upgrade = $change['mod_upgrade'] ?? [];

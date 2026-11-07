@@ -74,7 +74,7 @@ Http::fake(function ($request) use ($operation, $requirements, $upstream, $upstr
     check(! str_contains($request->body(), 'fixture-api-key'), 'Provider API credential leaked to a node request');
     $url = $request->url();
     if (str_ends_with($url, '/capabilities')) {
-        return Http::response(['curseforge_resolution' => true]);
+        return Http::response(['curseforge_resolution' => true, 'scoped_inventory' => 1]);
     }
     if (str_ends_with($url, '/prepare')) {
         return Http::response(['operation_id' => $operation->node_operation_id,
@@ -94,8 +94,8 @@ Http::fake(function ($request) use ($operation, $requirements, $upstream, $upstr
         return Http::response($upstream);
     }
     if (str_ends_with($url, '/inventory')) {
-        return Http::response(['complete' => true, 'scope' => 'managed-pack-files',
-            'excluded_roots' => ['world'], 'notice' => 'Fixture inventory', 'identities' => [], 'files' => $upstreamFiles]);
+        return Http::response(['complete' => true, 'scope' => 'manifest-delta-v1', 'requested_paths' => $request['paths'],
+            'excluded_roots' => ['world'], 'notice' => 'Fixture inventory', 'identities' => [], 'files' => []]);
     }
     if (str_contains($url, '/files/list-directory')) {
         return Http::response([], 200, ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)']);
@@ -121,7 +121,7 @@ Http::swap(new Factory);
 Http::preventStrayRequests();
 Http::fake(function ($request) use ($cancelled) {
     if (str_ends_with($request->url(), '/capabilities')) {
-        return Http::response(['curseforge_resolution' => true]);
+        return Http::response(['curseforge_resolution' => true, 'scoped_inventory' => 1]);
     }
 
     return Http::response(['operation_id' => $cancelled->node_operation_id, 'state' => 'cancelled', 'error' => 'Cancelled fixture']);

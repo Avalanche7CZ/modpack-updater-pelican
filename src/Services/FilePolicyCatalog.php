@@ -102,7 +102,7 @@ final class FilePolicyCatalog
             'action' => $change['action'] ?? 'not_compared', 'local_sha256' => $snapshot['files'][$path] ?? $change['local_sha256'] ?? null,
             'target_sha256' => $change['target_sha256'] ?? null, 'base_sha256' => $change['base_sha256'] ?? null,
             'disabled' => ($change['action'] ?? '') === 'keep_mod_disabled' || str_ends_with(strtolower($path), '.disabled') || ($identity !== null && array_intersect(explode('+', strtolower($identity)), array_map('strtolower', $server->disabled_mods ?? [])) !== []) || $decision['mode'] === 'disable',
-            'identity_status' => $upgrade ? (($upgrade['identity_verified'] ?? false) ? 'Checksum-bound embedded mod-ID set' : 'Identity review required; replacement disabled') : (($change['action'] ?? '') === 'unsafe_ambiguous_identity' ? 'Ambiguous identity; review mappings' : ($identity === null ? 'Ambiguous / unavailable' : (str_contains($identity, '+') ? 'Multiple metadata IDs; use exact rule or mapping' : 'Metadata / administrator mapping'))),
+            'identity_status' => $upgrade ? (($upgrade['identity_verified'] ?? false) ? 'Upstream manifest and file hashes' : 'Identity review required; replacement disabled') : (($change['action'] ?? '') === 'unsafe_ambiguous_identity' ? 'Ambiguous identity; review mappings' : ($identity === null ? 'File tracked by upstream manifest' : (str_contains($identity, '+') ? 'Multiple metadata IDs; use exact rule or mapping' : 'Metadata / administrator mapping'))),
         ];
     }
 }

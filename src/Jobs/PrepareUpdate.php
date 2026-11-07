@@ -81,6 +81,8 @@ final class PrepareUpdate implements ShouldQueue
             }
             if (! $preparer->tick($server, $operation)) {
                 self::dispatch($server->id, $this->baseline, $operation->id)->delay(now()->addSeconds(10));
+            } elseif (($operation->context['automatic'] ?? false) && $operation->phase === 'completed') {
+                app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->deployPrepared($server, $operation);
             }
         } catch (Throwable $error) {
             $detail = $error instanceof PreparationException ? $error->diagnostic : PreparationDiagnostic::normalize([
@@ -94,6 +96,11 @@ final class PrepareUpdate implements ShouldQueue
                     $operation->update(['error' => $message]);
                     $tracker->transition($operation, $detail['code'] === 'CANCELLED' ? 'cancelled' : 'interrupted');
                 } else { $tracker->fail($operation, $message); }
+            } elseif ($operation && ($operation->context['automatic'] ?? false) && isset($server)) {
+                $event = $server->events()->create(['kind' => 'deploy', 'status' => 'failed',
+                    'message' => 'Automatic update requires review. Open File Changes and resolve the reported blockers.',
+                    'details' => ['operation_id' => $operation->id, 'discord_notification_pending' => true]]);
+                app(\Arcturus\ModpackManager\Services\DiscordNotifier::class)->forEvent($event);
             } elseif (! $operation && isset($server)) {
                 $server->events()->create(['kind' => $this->baseline ? 'baseline' : 'prepare', 'status' => 'failed',
                     'message' => PreparationDiagnostic::message($detail), 'details' => ['diagnostic' => $detail]]);

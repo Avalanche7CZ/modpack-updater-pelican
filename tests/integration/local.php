@@ -119,7 +119,7 @@ check(\Arcturus\ModpackManager\Services\PreparationProgress::percentage(['phase'
 check($record->baseline_status === 'verified' && $record->baseline_provenance['transport'] === 'local', 'Local baseline provenance not verified');
 $manifest = app(ReleaseStore::class)->load($record->base_manifest_path);
 check($manifest['files']['config/custom.cfg'] === hash('sha256', 'upstream'), 'Live customization substituted for upstream baseline');
-check(isset($record->file_inventory['files']['mods/Paradigm.jar'], $record->file_inventory['files']['mods/ArcturusTokens.jar']), 'Local-only protected mods omitted');
+check($record->file_inventory['files'] === [] && $record->file_inventory['requested_paths'] === [], 'Adoption scanned unrelated local mods');
 check(! isset($record->file_inventory['files']['world/level.dat']), 'World entered local inventory');
 $tracker = app(OperationTracker::class);
 $target = $tracker->create($record, 'prepare', ['provider' => 'custom', 'source' => $source, 'version' => '2.0']);

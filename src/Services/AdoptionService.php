@@ -116,7 +116,7 @@ final class AdoptionService
     {
         $base = $this->store->load($server->base_manifest_path);
         (new BaselineGuard)->require($base, $server->provider, $server->source, $server->installed_version);
-        $inventory = $this->files->managed($server, $operation)->inventory();
+        $inventory = $this->files->managed($server, $operation)->inventory([]);
         if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning'); }
         $observed = $this->inspect($server->pelicanServer);
         if (($observed['world_path_verified'] ?? null) === false) {
@@ -130,7 +130,7 @@ final class AdoptionService
         $identities = (new ModIdentityMappings)->apply(
             ['base' => $base['identities'] ?? [], 'local' => $inventory['identities'] ?? [], 'target' => $base['identities'] ?? []],
             $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $inventory['files'], 'target' => $base['files']]);
-        $plan = $this->planner->plan($base['files'], $inventory['files'], $base['files'], $rules, $identities,
+        $plan = $this->planner->plan([], $inventory['files'], [], $rules, $identities,
             $server->disabled_mods ?? [], $safetyRoots, $inventory['metadata'] ?? [], ['base' => $base['metadata'] ?? [], 'target' => $base['metadata'] ?? [], 'local' => $inventory['metadata'] ?? []]);
         if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning', count($plan['changes']), count($plan['changes'])); }
         $report = ['policy_revision' => $server->policy_revision, 'verified_baseline' => true, 'version' => $base['version'], 'counts' => $plan['counts'],
@@ -139,7 +139,7 @@ final class AdoptionService
             'skipped_symlinks' => $inventory['skipped_symlinks'] ?? [],
             'unreadable_paths' => $inventory['unreadable_paths'] ?? [], 'inventory_summary' => $inventory['inventory_summary'] ?? [],
             'world_path_unreadable' => $inventory['world_path_unreadable'] ?? false,
-            'observed_at' => now()->toIso8601String(), 'notice' => $inventory['notice']];
+            'observed_at' => now()->toIso8601String(), 'notice' => 'Installed release associated with the verified upstream manifest. Local changes are checked only when a target update touches them.'];
         $saved = DB::transaction(function () use ($server, $report, $observed, $inventory, $operation): ManagedServer {
             $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
             if ($fresh->policy_revision !== $server->policy_revision || $fresh->base_manifest_path !== $server->base_manifest_path) {

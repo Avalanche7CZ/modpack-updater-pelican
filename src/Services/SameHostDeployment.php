@@ -107,7 +107,15 @@ final class SameHostDeployment
         $startup = (string) $pelican->startup;
         foreach ($variables as $key => $value) { $startup = str_replace('{{'.$key.'}}', (string) $value, $startup); }
         $launchText = $startup;
+        $launchLinks = [];
         foreach (self::LAUNCH_FILES as $path) {
+            // Standard FTB eggs expose the already verified Forge args via this local alias.
+            if ($path === 'unix_args.txt' && is_link($paths['live'].'/'.$path)) {
+                if (realpath($paths['live'].'/'.$path) !== $paths['live'].'/'.$args) { throw new RuntimeException('unix_args.txt must resolve to the verified installed Forge argument file.'); }
+                $launchLinks[$path] = readlink($paths['live'].'/'.$path);
+                $launchText .= "\n".$args."\n".$currentArgs;
+                continue;
+            }
             if (is_file($paths['live'].'/'.$path)) {
                 $launchHashes[$path] = $this->hash($paths['live'], $path);
                 if (! str_ends_with($path, '.jar')) { $launchText .= "\n".$this->read($paths['live'], $path); }
@@ -122,10 +130,11 @@ final class SameHostDeployment
             if (isset($launchHashes[$path])) { throw new RuntimeException('Working runtime/launcher file would change: '.$path.'. Choose Keep local or prepare and qualify a runtime migration separately.'); }
             $this->writableParent($paths['live'], $path);
         }
-        // Re-hash all target files: completion alone is not proof that staging remains intact.
-        $actual = (new DirectoryInventory)->hashPaths($paths['stage'], array_keys($target['files']), $heartbeat);
-        $expected = $target['files']; ksort($expected);
-        if ($actual !== $expected) { throw new RuntimeException('Staged files differ from the authenticated target manifest. Prepare the target again.'); }
+        // Verify only files the approved delta will install, never the whole staged pack.
+        $installPaths = ManifestComparison::installs($plan['changes']);
+        $actual = (new DirectoryInventory)->hashPaths($paths['stage'], $installPaths, $heartbeat);
+        $expected = ManifestComparison::select($target['files'], $installPaths); ksort($expected);
+        if ($actual !== $expected) { throw new RuntimeException('Staged update files differ from the authenticated target manifest. Prepare the target again.'); }
         $this->requireSpace($paths['live'], $paths['stage'], $plan['changes']);
         app(PelicanBackupManager::class)->requireReady($pelican);
         if (($server->backup_mode ?? 'pelican') !== 'pelican') { throw new RuntimeException('Select the Pelican backup backend for same-host deployment.'); }
@@ -146,7 +155,7 @@ final class SameHostDeployment
         $identity = $this->panelFingerprint($pelican);
         return ['protocol' => self::PROTOCOL, 'runtime_strategy' => 'verified_installed_runtime_reuse', 'current' => $observed, 'target' => [...$observed, 'runtime_prepared' => true],
             'runtime_sha256' => hash('sha256', json_encode($launchHashes, JSON_THROW_ON_ERROR)), 'panel_sha256' => $identity,
-            'manifest_sha256' => $paths['manifest_sha256'], 'launch_hashes' => $launchHashes];
+            'manifest_sha256' => $paths['manifest_sha256'], 'launch_hashes' => $launchHashes, 'launch_links' => $launchLinks];
     }
 
     private function panelVariables(\App\Models\Server $server): array

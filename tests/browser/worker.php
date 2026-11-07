@@ -12,9 +12,13 @@ if (($argv[1] ?? '') === 'stale') {
 }
 Http::preventStrayRequests();
 Http::fake(function ($request) use ($directory) {
-    if (str_ends_with($request->url(), '/capabilities')) { return Http::response(['directory_policy' => 1]); }
+    if (str_ends_with($request->url(), '/capabilities')) { return Http::response(['directory_policy' => 1, 'scoped_inventory' => 1]); }
     if (! str_ends_with($request->url(), '/inventory')) { throw new RuntimeException('Unexpected fixture HTTP request'); }
-    return Http::response(file_get_contents($directory.'/inventory.json'), 200, ['Content-Type' => 'application/json']);
+    $inventory = json_decode(file_get_contents($directory.'/inventory.json'), true, flags: JSON_THROW_ON_ERROR);
+    $inventory['files'] = array_intersect_key($inventory['files'], array_fill_keys($request['paths'], true));
+    $inventory['missing'] = array_values(array_diff($request['paths'], array_keys($inventory['files'])));
+    $inventory['scope'] = 'manifest-delta-v1'; $inventory['requested_paths'] = $request['paths'];
+    return Http::response($inventory, 200);
 });
 app('queue.worker')->runNextJob('database', 'default', new Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
 $server->refresh();

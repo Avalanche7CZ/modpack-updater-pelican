@@ -17,6 +17,11 @@ $changes = [['path' => 'config/managed.cfg', 'action' => 'update', 'local_sha256
     ['path' => 'config/new.cfg', 'action' => 'add', 'local_sha256' => null],
     ['path' => 'private-world/playerdata/large.dat', 'action' => 'protected', 'local_sha256' => null]];
 try {
+    symlink('run.sh', $root.'/unix_args.txt');
+    $linked = $verifier->capture($root, $changes, ['run.sh' => $launcher], [], null, ['unix_args.txt' => 'run.sh']);
+    unlink($root.'/unix_args.txt'); symlink('config/managed.cfg', $root.'/unix_args.txt');
+    rejects(fn () => $verifier->verify($root, $linked), 'Changed launcher symlink accepted during restore verification');
+    unlink($root.'/unix_args.txt');
     $receipt = $verifier->capture($root, $changes, ['run.sh' => $launcher]);
     check(count($receipt['hashes']) === 3 && array_key_exists('config/new.cfg', $receipt['hashes']), 'Recovery scope must include mutations, absence and launcher only');
     $verifier->verify($root, $receipt);

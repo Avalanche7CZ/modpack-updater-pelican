@@ -20,12 +20,15 @@ $make = function (array $local, array $localMeta, array $policies = [], array $d
 $rows = fn ($plan) => array_column(array_filter($plan['changes'], fn ($r) => ($r['kind'] ?? '') === 'mod_upgrade'), null, 'identity');
 $plan = $make($base['files'], $base['metadata']);
 check(count($plan['changes']) === 9 && $plan['blocked'] === 0 && ($plan['counts']['upgrade_mod'] ?? 0) === 9, 'Real TFG releases did not produce nine logical mod upgrades');
-check(ModUpgradePlanner::deploymentBlocker($plan['changes']) !== null, 'Unqualified logical operations enabled production deployment');
 foreach ($plan['changes'] as $row) {
     check(count($row['mod_upgrade']['members']) === 2 && $row['classification'] === 'updated_upstream', 'Mod update reverted to unrelated add/remove review');
     check($row['mod_upgrade']['baseline']['sha256'] === $base['files'][$row['path']], 'Baseline evidence mismatched');
 }
 check(isset($rows($plan)['tfc+tfc_textile+tfcambiental+tfg'], $rows($plan)['voicechat+voicechat_api']), 'Bundled embedded IDs were split or guessed');
+
+$optionalMetadata = $planner->plan($base['files'], $base['files'], $target['files'], $rules,
+    ['base' => $base['identities'], 'target' => $target['identities']], [], [], [], ['target' => $target['metadata']]);
+check($optionalMetadata['blocked'] === 0 && ($optionalMetadata['counts']['upgrade_mod'] ?? 0) === 9, 'Missing baseline loader metadata was treated as a loader migration');
 
 $identity = 'ae2'; $old = array_search($identity, $base['identities'], true); $new = array_search($identity, $target['identities'], true);
 $local = $base['files']; $metadata = $base['metadata'];
@@ -52,9 +55,9 @@ $duplicate = $base['files']; $duplicateMeta = $base['metadata']; $duplicate[$ali
 check($rows($make($duplicate, $duplicateMeta))[$identity]['action'] === 'mod_identity_review', 'Duplicate active identities were accepted');
 $unknownTarget = $target['metadata']; unset($unknownTarget[$new]['sha256']);
 $unknown = $make($base['files'], $base['metadata'], [['scope' => 'exact', 'pattern' => $new, 'mode' => 'replace']], [], $unknownTarget);
-check($unknown['blocked'] > 0 && ! isset($rows($unknown)[$identity]), 'Missing bound metadata was guessed or overridden');
+check($unknown['blocked'] === 0 && $rows($unknown)[$identity]['action'] === 'upgrade_mod', 'Missing optional target metadata blocked a manifest-owned replacement');
 $extra = $base['files']; $extraMeta = $base['metadata']; $custom = 'mods/Paradigm.jar'; $hash = hash('sha256', 'synthetic custom mod');
 $extra[$custom] = $hash; $extraMeta[$custom] = ['identity' => 'paradigm', 'ids' => ['paradigm'], 'source' => 'META-INF/mods.toml', 'loader' => 'forge', 'sha256' => $hash];
 $preserved = array_column($make($extra, $extraMeta)['changes'], null, 'path');
 check($preserved[$custom]['action'] === 'preserve', 'Arcturus/Paradigm protection was lost');
-echo "Real TFG nine logical upgrades, bundled IDs, local choices, protections, disabled/missing/duplicate identities and production gate passed\n";
+echo "Real TFG nine logical upgrades, bundled IDs, local choices, protections, disabled/missing/duplicate identities and manifest-owned deployment passed\n";

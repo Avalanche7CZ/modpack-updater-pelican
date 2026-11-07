@@ -19,7 +19,7 @@ final class ServerPolicyService
     public function save(ManagedServer $server, array $rules, array $disabled, int $revision, array $attributes = []): void
     {
         Access::requireAdmin();
-        $allowed = ['directory_decisions', 'label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport', ...DiscordSettings::FIELDS];
+        $allowed = ['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'directory_decisions', 'label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport', ...DiscordSettings::FIELDS];
         if (array_diff(array_keys($attributes), $allowed)) {
             throw new RuntimeException('Invalid policy settings');
         }
@@ -58,10 +58,17 @@ final class ServerPolicyService
                     'provider' => ['sometimes', 'required', Rule::in(array_keys(ProviderRegistry::PROVIDERS))],
                     'source' => ['sometimes', 'required', 'string', 'max:255', 'not_regex:/[\\x00-\\x1f\\x7f]/'],
                     'installed_version' => ['sometimes', 'required', 'string', 'max:120', 'not_regex:/[\\x00-\\x1f\\x7f]/'],
+                    'policy' => ['sometimes', 'in:notify,approve,auto'],
+                    'maintenance_time' => ['sometimes', 'nullable', 'regex:/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/'],
+                    'maintenance_timezone' => ['sometimes', 'required', 'timezone'],
+                    'restart_when_current' => ['sometimes', 'boolean'], 'deploy_enabled' => ['sometimes', 'boolean'],
                     'transport' => ['sometimes', Rule::in(['wings', 'local'])],
                 ])->validate();
                 $transport = $attributes['transport'] ?? $fresh->transport;
                 unset($attributes['transport']);
+                if (array_intersect(array_keys($attributes), ['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'policy'])) {
+                    $attributes['automation_actor_id'] = auth()->id();
+                }
                 $fresh->fill([...$attributes, 'file_rules' => $rules, 'disabled_mods' => $disabled]);
                 $rebound = $fresh->isDirty('pelican_server_uuid');
                 $associationChanged = $fresh->isDirty(['pelican_server_uuid', 'provider', 'source', 'installed_version', 'asset_pattern']);

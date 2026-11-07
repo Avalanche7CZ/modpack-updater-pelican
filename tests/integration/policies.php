@@ -262,7 +262,7 @@ $record->refresh();
 check($record->policy_revision === $beforeRevision + 1 && ! $record->approved_plan_sha256, 'Directory review did not invalidate approval');
 check($directoryPolicy->pending($record) === [] && in_array('tacz', $directoryPolicy->scope($record)['exclude'], true), 'Keep-local decision was not persisted');
 $plan = $previewer->generate($record);
-check(array_column($plan['changes'], 'action', 'path')['tacz/assets/gun.json'] === 'preserve', 'Directory protection did not override missing-local planning');
+check(! isset(array_column($plan['changes'], 'action', 'path')['tacz/assets/gun.json']), 'Unchanged excluded file should not enter the delta');
 check($store->load($record->base_manifest_path)['files']['tacz/assets/gun.json'] === $hash('{}'), 'Directory review changed immutable evidence');
 rejects(fn () => app(ServerPolicyService::class)->save($record, [], [], $record->policy_revision, ['directory_decisions' => [['path' => 'unobserved', 'mode' => 'manage']]]), 'Unobserved directory was approved');
 $record->update(['directory_decisions' => [], 'base_manifest_path' => $originalBase, 'target_manifest_path' => $originalTarget]);
@@ -275,10 +275,11 @@ rmdir($dir);
 $record->update(['transport' => 'wings', 'approved_plan_sha256' => str_repeat('b', 64), 'approved_at' => now()]);
 config(['arcturus-modpack-manager.nodes.'.$record->pelican_server_uuid => ['url' => 'https://worker.fixture.test', 'token' => str_repeat('x', 64)]]);
 Http::fake(function ($request) use ($record, $hash) {
+    if (str_ends_with($request->url(), '/capabilities')) { return Http::response(['scoped_inventory' => 1, 'directory_policy' => 1]); }
     $fresh = ManagedServer::findOrFail($record->id);
     app(ServerPolicyService::class)->save($fresh, [['pattern' => 'config/**', 'mode' => 'protect']], [], $fresh->policy_revision);
 
-    return Http::response(['complete' => true, 'files' => ['config/example.properties' => $hash('value=custom')], 'identities' => [], 'excluded_roots' => ['custom-world']]);
+    return Http::response(['complete' => true, 'scope' => 'manifest-delta-v1', 'requested_paths' => $request['paths'], 'missing' => array_values(array_diff($request['paths'], ['config/example.properties'])), 'files' => ['config/example.properties' => $hash('value=custom')], 'identities' => [], 'excluded_roots' => ['custom-world']]);
 });
 rejects(fn () => $previewer->generate($record), 'Stale comparison overwrote a concurrent policy edit');
 $record->refresh();

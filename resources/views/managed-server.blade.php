@@ -132,7 +132,7 @@
                         x-on:file-decision-result.window="feedback = $event.detail.message; failed = !$event.detail.success; if ($event.detail.success) comparisonPending = true">
                     <p x-cloak x-show="feedback" x-text="feedback" role="status" aria-live="polite" class="mb-3 break-words text-sm"></p>
                     <p wire:loading wire:target="resolve" role="status" class="mb-3 text-sm">Saving decision…</p>
-                    @if($preview && ($preview['mod_plan_schema'] ?? null) !== \Arcturus\ModpackManager\Services\ModUpgradePlanner::SCHEMA)<p class="mb-3 text-sm">This retained comparison predates logical mod upgrades. Use Compare files to rebuild it with verified embedded identities; old physical JAR conflicts are not current evidence.</p>@endif
+                    @if($preview && ($preview['comparison_schema'] ?? null) !== \Arcturus\ModpackManager\Services\ManifestComparison::SCHEMA)<p class="mb-3 text-sm">This comparison uses the previous update engine. Use Compare files to rebuild the manifest delta before applying an update.</p>@endif
                     <p class="mb-3 text-sm">KubeJS follows upstream when the local file matches the verified baseline. Local-only scripts and protected files stay local. Conflicts require Keep local or Use upstream; scripts, recipes and datapacks are never merged.</p>
                     @if(($preview['policy_revision'] ?? $record->policy_revision) !== $record->policy_revision)
                         <p class="mb-3 text-sm">Decisions saved. Showing previous comparison while a fresh comparison is required. No live files changed.</p>
@@ -146,7 +146,7 @@
                             @endforeach
                         </x-filament::input.select></x-filament::input.wrapper>
                     </div>
-                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $changes['total'] }} logical changes · page {{ $changes['page'] }} / {{ $changes['pages'] }}. Worlds are excluded from hashing.</p>
+                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $changes['total'] }} changes · page {{ $changes['page'] }} / {{ $changes['pages'] }}. Only update candidate paths are checked; worlds and unrelated files are not scanned.</p>
                     <div class="overflow-x-auto">
                         <table class="w-full text-left text-sm" style="min-width:48rem;table-layout:fixed"><colgroup><col style="width:40%"><col style="width:20%"><col style="width:15%"><col style="width:25%"></colgroup>
                             <thead><tr><th class="p-2">File / mod upgrade</th><th class="p-2">Classification</th><th class="p-2">Planned action</th><th class="p-2">Resolution</th></tr></thead>

@@ -59,7 +59,6 @@ final class DeployManagedServer implements ShouldQueue
         ExcludedFolderPreserver $preserver,
         DiscordNotifier $discord
     ): void {
-        if ($this->automatic) { throw new RuntimeException('Automatic deployment is disabled. A root administrator must approve each exact plan.'); }
         if ($this->operationId === null && ! config('arcturus-modpack-manager.enable_deploy', false)) {
             throw new RuntimeException('Deploy feature not enabled by operator');
         }
@@ -85,7 +84,7 @@ final class DeployManagedServer implements ShouldQueue
                 $operation = DB::transaction(function () use ($managed): ?Operation {
                     $row = $managed->operations()->lockForUpdate()->findOrFail($this->operationId);
                     if ($row->completed_at || $row->phase !== 'queued') { return null; }
-                    if ($managed->active_operation_id !== $row->id || ($row->context['manual_approval'] ?? false) !== true || ($row->context['plan_sha256'] ?? null) !== $this->approvedPlanSha256 || ($row->context['actor_id'] ?? null) === null) { throw new RuntimeException('Deployment approval receipt does not match the active operation.'); }
+                    if ($managed->active_operation_id !== $row->id || ($row->context['manual_approval'] ?? false) !== true || ($row->context['plan_sha256'] ?? null) !== $this->approvedPlanSha256 || ($row->context['actor_id'] ?? null) === null || ($row->context['automatic_approval'] ?? false) !== $this->automatic) { throw new RuntimeException('Deployment approval receipt does not match the active operation.'); }
                     $row->update(['phase' => 'verifying', 'heartbeat_at' => now()]);
                     return $row;
                 });
@@ -95,13 +94,7 @@ final class DeployManagedServer implements ShouldQueue
             if (! $managed->enabled || ($operation === null && ! $managed->deploy_enabled)) {
                 throw new RuntimeException('Server deployment disabled');
             }
-            if ($this->automatic && (
-                $managed->policy !== 'auto' ||
-                ! config('arcturus-modpack-manager.automatic_deploy', false) ||
-                ($managed->provider !== 'ftb' && ! $managed->available_asset_sha256)
-            )) {
-                throw new RuntimeException('Automatic deployment policy or verified digest not satisfied');
-            }
+            if ($this->automatic) { app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->requireEnabled($managed); }
             $backupMode = $managed->backup_mode ?? 'pelican';
             if (! in_array($backupMode, ['pelican', 'filesystem'], true)) {
                 throw new RuntimeException('Unknown backup backend; aborting');
@@ -169,7 +162,7 @@ final class DeployManagedServer implements ShouldQueue
                 $power->stop($pelican, heartbeat: $heartbeat);
                 if ($backupMode === 'pelican') {
                     $progress('snapshotting', 'Verifying approved file changes and original launcher hashes; complete data backup is handled by Wings');
-                    $restoreReceipt = app(RestoreInventory::class)->capture($managed->local_root, $preview['changes'], $preview['qualification']['launch_hashes'] ?? [], $preview['policy_context']['safety_roots'] ?? [], $heartbeat);
+                    $restoreReceipt = app(RestoreInventory::class)->capture($managed->local_root, $preview['changes'], $preview['qualification']['launch_hashes'] ?? [], $preview['policy_context']['safety_roots'] ?? [], $heartbeat, $preview['qualification']['launch_links'] ?? []);
                     $progress('backing_up', 'Creating a locked Pelican backup; waiting for its exact completion callback', ['restore_receipt' => $restoreReceipt, 'excluded_directories' => $excludedFolders]);
                 }
                 if ($backupMode === 'pelican') {

@@ -41,6 +41,13 @@ final class PreviewService
         $rules = $server->file_rules ?? [];
         $safetyRoots = array_merge($server->runtime_report['protected_roots'] ?? [], (new DirectoryPolicy)->protectedRoots($server, $base, $target));
         $metadata = [];
+        $fullTarget = $target;
+        $upstreamIdentities = (new ModIdentityMappings)->apply(['base' => $base['identities'] ?? [], 'target' => $target['identities'] ?? []],
+            $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'target' => $target['files'], 'local' => []]);
+        $comparisonPaths = ManifestComparison::paths($base['files'], $target['files'], $rules,
+            $upstreamIdentities, $server->disabled_mods ?? []);
+        $base['files'] = ManifestComparison::select($base['files'], $comparisonPaths);
+        $target['files'] = ManifestComparison::select($target['files'], $comparisonPaths);
         if ($server->transport === 'local' && ! isset($server->baseline_provenance['transport'])) {
             $root = realpath((string) $server->local_root);
             $mapping = config('arcturus-modpack-manager.local_server_roots.'.$server->pelican_server_uuid);
@@ -49,24 +56,19 @@ final class PreviewService
             }
             $safetyRoots = array_merge($safetyRoots, $this->inventory->safetyRoots($root));
             // Only managed paths are scanned; world trees never enter the preview pipeline.
-            $paths = array_filter(array_unique(array_merge(array_keys($base['files']), array_keys($target['files']))),
+            $paths = array_filter($comparisonPaths,
                 fn ($p) => SafetyPaths::reason($p, $safetyRoots) === null);
             $local = $this->inventory->hashPaths($root, $paths);
             $identities = [];
         } else {
-            $remote = $this->files->managed($server, $operation)->inventory();
+            $remote = $this->files->managed($server, $operation)->inventory($comparisonPaths);
             $local = $remote['files'];
-            $identities = ['base' => $base['identities'] ?? [], 'target' => $target['identities'] ?? [], 'local' => $remote['identities'] ?? []];
+            $identities = [...$upstreamIdentities, 'local' => $remote['identities'] ?? []];
             $safetyRoots = array_merge($safetyRoots, $remote['excluded_roots'] ?? []);
             $metadata = array_replace($base['metadata'] ?? [], $target['metadata'] ?? [], $remote['metadata'] ?? []);
             $server->file_inventory = [...$remote, 'observed_at' => now()->toIso8601String()];
         }
-        $modEvidence = app(ModUpgradeEvidence::class)->collect($server, $base, $target, $server->file_inventory ?? [], $operation ? fn () => $operation->update(['heartbeat_at' => now()]) : null);
-        foreach (['base' => $base['files'], 'local' => $local, 'target' => $target['files']] as $scope => $hashes) {
-            foreach ($modEvidence[$scope] as $path => $meta) {
-                if (isset($hashes[$path]) && ($id = ModUpgradePlanner::verifiedIdentity($hashes[$path], null, $meta)) !== null) { $identities[$scope][$path] = $id; }
-            }
-        }
+        $modEvidence = ['base' => $base['metadata'] ?? [], 'target' => $target['metadata'] ?? [], 'local' => $remote['metadata'] ?? [], 'diagnostics' => []];
         if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning'); }
         $identities = (new ModIdentityMappings)->apply($identities, $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $local, 'target' => $target['files']]);
         $plan = $this->planner->plan($base['files'], $local, $target['files'], $rules, $identities, $server->disabled_mods ?? [], $safetyRoots, $metadata, $modEvidence);
@@ -80,7 +82,7 @@ final class PreviewService
             try {
                 $lastPulse = 0;
                 $pulse = $operation ? function () use ($operation, &$lastPulse): void { if (time() - $lastPulse >= 10) { $operation->update(['heartbeat_at' => now()]); $lastPulse = time(); } } : null;
-                $qualification = app(SameHostDeployment::class)->qualify($server, $target, $plan, $pulse);
+                $qualification = app(SameHostDeployment::class)->qualify($server, $fullTarget, $plan, $pulse);
             } catch (\Throwable $error) {
                 $qualificationError = get_class($error) === \RuntimeException::class ? $error->getMessage()
                     : 'Same-host qualification unavailable: check approved local paths, runtime files, queue permissions and Pelican backup configuration.';
@@ -90,7 +92,6 @@ final class PreviewService
             ? ['compatible' => false, 'blockers' => [$qualificationError], 'warnings' => [], 'changes_applied' => false, 'current' => $server->runtime_report ?? [], 'target' => $target['runtime'] ?? []]
             : $this->runtime->preflight($qualification['current'] ?? $server->runtime_report ?? [], $qualification['target'] ?? $target['runtime'] ?? []);
         $gateReasons = $modEvidence['diagnostics'];
-        if ($blocker = ModUpgradePlanner::deploymentBlocker($plan['changes'])) { $gateReasons[] = $blocker; }
         if ((new DirectoryPolicy)->pending($server)) {
             $gateReasons[] = 'Review newly discovered upstream directories';
         }
@@ -117,11 +118,11 @@ final class PreviewService
             'directory_decisions' => $server->directory_decisions ?? [], 'decisions' => $plan['changes'], 'identities' => $identities, 'safety_roots' => $safetyRoots, 'disabled' => $server->disabled_mods, 'runtime' => $compatibility, 'backup_mode' => $server->backup_mode,
             'exclusions' => $server->backup_excluded_directories, 'mod_evidence' => $modEvidence, 'qualification' => $qualification];
         $digest = hash('sha256', json_encode($binding, JSON_THROW_ON_ERROR));
-        $preview = ['mod_plan_schema' => ModUpgradePlanner::SCHEMA, 'logical_mod_upgrades' => $plan['counts']['upgrade_mod'] ?? 0, 'qualification' => $qualification, 'policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],
+        $preview = ['comparison_schema' => ManifestComparison::SCHEMA, 'candidate_count' => count($comparisonPaths), 'mod_plan_schema' => ModUpgradePlanner::SCHEMA, 'logical_mod_upgrades' => $plan['counts']['upgrade_mod'] ?? 0, 'qualification' => $qualification, 'policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],
             'counts' => $plan['counts'], 'total' => count($plan['changes']), 'applicable' => $gateReasons === [],
             'plan_sha256' => $digest, 'capability_blockers' => array_values(array_unique($gateReasons)),
             'compatibility' => $compatibility, 'changes' => $plan['changes'],
-            'policy_context' => ['mod_evidence' => $modEvidence, 'local_mod_files' => array_filter($local, fn ($p) => UpdatePlanner::isMod($p), ARRAY_FILTER_USE_KEY), 'identities' => $identities, 'disabled' => $server->disabled_mods ?? [], 'safety_roots' => $safetyRoots, 'metadata' => $metadata],
+            'policy_context' => ['comparison_paths' => $comparisonPaths, 'mod_evidence' => $modEvidence, 'local_mod_files' => array_filter($local, fn ($p) => UpdatePlanner::isMod($p), ARRAY_FILTER_USE_KEY), 'identities' => $identities, 'disabled' => $server->disabled_mods ?? [], 'safety_roots' => $safetyRoots, 'metadata' => $metadata],
             'sample' => array_slice(array_values(array_filter($plan['changes'], fn ($c) => $c['action'] !== 'unchanged')), 0, 250),
             'download_bytes' => $server->target_metadata['download_bytes'] ?? $server->release_metadata['download_bytes'] ?? null,
             'backup' => ['backend' => $server->backup_mode, 'locked_required' => true,

@@ -39,26 +39,38 @@ final class DeploymentApproval
         Access::requireAdmin();
         if (auth()->id() === null) { throw new RuntimeException('An identified root administrator must approve deployment.'); }
         if (! preg_match('/^[a-f0-9]{64}$/D', $digest) || ! \Illuminate\Support\Str::isUuid($requestId)) { throw new RuntimeException('Invalid deployment approval receipt.'); }
-        return DB::transaction(function () use ($server, $digest, $requestId): Operation {
+        return $this->enqueue($server, $digest, $requestId, (int) auth()->id(), false);
+    }
+
+    public function queueAutomatic(ManagedServer $server): Operation
+    {
+        app(ScheduledMaintenance::class)->requireEnabled($server);
+        return $this->enqueue($server, $server->preview_summary['plan_sha256'] ?? '', (string) \Illuminate\Support\Str::uuid(), (int) $server->automation_actor_id, true);
+    }
+
+    private function enqueue(ManagedServer $server, string $digest, string $requestId, int $actorId, bool $automatic): Operation
+    {
+        return DB::transaction(function () use ($server, $digest, $requestId, $actorId, $automatic): Operation {
             $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
             $existing = $fresh->operations()->find($requestId);
             if ($existing) {
-                if ($existing->kind !== 'deploy' || ($existing->context['plan_sha256'] ?? '') !== $digest || ($existing->context['actor_id'] ?? null) !== auth()->id()) {
+                if ($existing->kind !== 'deploy' || ($existing->context['plan_sha256'] ?? '') !== $digest || ($existing->context['actor_id'] ?? null) !== $actorId) {
                     throw new RuntimeException('Approval request already belongs to a different deployment.');
                 }
                 return $existing;
             }
+            if ($automatic) { app(ScheduledMaintenance::class)->requireEnabled($fresh); }
             app(QueuePreparation::class)->requireLocalQueue();
             app(DeploymentGate::class)->requireReady($fresh);
             if (! hash_equals($fresh->preview_summary['plan_sha256'] ?? '', $digest)) { throw new RuntimeException('Plan changed while the approval dialog was open; review it again.'); }
             $snapshot = app(SameHostDeployment::class)->panelSnapshot($fresh->pelicanServer);
             if (! hash_equals($fresh->preview_summary['qualification']['panel_sha256'], hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)))) { throw new RuntimeException('Pelican launch settings changed since comparison; inspect and compare again.'); }
-            $operation = app(OperationTracker::class)->create($fresh, 'deploy', ['actor_id' => auth()->id(), 'manual_approval' => true,
+            $operation = app(OperationTracker::class)->create($fresh, 'deploy', ['actor_id' => $actorId, 'manual_approval' => true, 'automatic_approval' => $automatic,
                 'plan_sha256' => $digest, 'from' => $fresh->installed_version, 'to' => $fresh->targetVersion(),
                 'policy_revision' => $fresh->policy_revision, 'panel_snapshot' => $snapshot, 'panel_sha256' => $fresh->preview_summary['qualification']['panel_sha256'], 'protocol' => SameHostDeployment::PROTOCOL], $requestId);
-            $fresh->update(['approved_plan_sha256' => $digest, 'approved_at' => now(), 'approved_by' => auth()->id()]);
-            DB::afterCommit(function () use ($fresh, $operation, $digest): void {
-                try { Bus::dispatch(new DeployManagedServer($fresh->id, false, $digest, $operation->id)); }
+            $fresh->update(['approved_plan_sha256' => $digest, 'approved_at' => now(), 'approved_by' => $actorId]);
+            DB::afterCommit(function () use ($fresh, $operation, $digest, $automatic): void {
+                try { Bus::dispatch(new DeployManagedServer($fresh->id, $automatic, $digest, $operation->id)); }
                 catch (\Throwable) { $operation->update(['error' => 'Approval saved; queue dispatch unavailable. Scheduler may dispatch this same queued receipt. No server files changed.']); }
             });
             return $operation;

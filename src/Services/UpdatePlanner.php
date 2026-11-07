@@ -77,6 +77,12 @@ final class UpdatePlanner
                 }
             }
         }
+        $heldUnidentified = false;
+        foreach ($base as $file => $hash) {
+            if (! self::isMod($file) || isset($target[$file]) || isset($baseIds[$file])) { continue; }
+            $mode = $policy->effective($file, $rules)['mode'];
+            if ($mode === 'protect' || (isset($local[$file]) && $local[$file] !== $hash && $mode !== 'replace' && $mode !== 'remove')) { $heldUnidentified = true; }
+        }
         foreach ($localIds as $file => $id) {
             if (str_ends_with(strtolower($file), '.disabled')) {
                 foreach (explode('+', strtolower($id)) as $componentId) {
@@ -128,11 +134,9 @@ final class UpdatePlanner
                 $action = 'conflict';
             }
 
-            // No physical filename fallback may bypass the logical identity transaction.
-            $identityMissing = self::isMod($path) && (($old !== $new) || ($current !== $old && $old !== null)) &&
-                (($old !== null && ! isset($modPlan['verified']['base'][$path])) || ($new !== null && ! isset($modPlan['verified']['target'][$path])));
-            if ($invariant === null && $mode !== 'protect' && ($identityMissing || ($identity && (isset($ambiguousIds[$identity]) || isset($modPlan['ambiguous'][$identity]))))) { $action = 'unsafe_unverified_mod_identity'; }
-            if ($action === 'add' && self::isMod($path) && ($missingUnidentified || $modPlan['incomplete_live'] || ($identity && in_array(strtolower($identity), $modPlan['verified']['local'] ?? [], true)))) { $action = 'unsafe_unverified_mod_identity'; }
+            // A missing old JAR without identity evidence is a local deletion, not permission to
+            // re-enable a possible replacement. Review additions only in that specific situation.
+            if ($action === 'add' && self::isMod($path) && ($missingUnidentified || $heldUnidentified)) { $action = 'manual_review'; }
             if ($invariant === null && $mode === 'remove' && ! in_array($action, ['unsafe_ambiguous_identity', 'unsafe_unverified_mod_identity', 'skip_disabled'], true)) {
                 $action = $current === null ? 'already_absent' : 'remove_with_override';
             }

@@ -35,6 +35,7 @@ final class ModpackManagerServiceProvider extends ServiceProvider
             if (! $this->app->runningInConsole()) {
                 return;
             }
+            $this->app->make(Schedule::class)->command('arcturus-modpack:maintenance')->everyMinute()->withoutOverlapping();
             $this->app->make(Schedule::class)->command('arcturus-modpack:recover')->everyFiveMinutes()->withoutOverlapping();
             $hours = max(1, min(24, (int) config('arcturus-modpack-manager.check_interval_hours', 6)));
             $this->app->make(Schedule::class)->command('arcturus-modpack:check')

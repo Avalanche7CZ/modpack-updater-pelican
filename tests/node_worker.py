@@ -65,6 +65,43 @@ class WorkerTests(unittest.TestCase):
             self.worker.handle(self.server, 'stage_file', {'operation_id': operation, 'path': path})
         self.assertEqual(list(self.live.iterdir()), [])
 
+    def test_scoped_comparison_never_enumerates_22000_unrelated_files(self):
+        for index in range(22000):
+            self.put(f'config/generated/{index}.json', b'unchanged')
+        self.put('server.properties', b'level-name=private-world\n')
+        world = self.put('private-world/region/large.mca', b'')
+        with world.open('r+b') as stream:
+            stream.truncate(8 * 1024**3)
+        self.put('mods/old.jar', b'old')
+        self.put('mods/Paradigm.jar', b'custom')
+        paths = ['mods/old.jar', 'mods/new.jar']
+        opened = []
+        original = w.hash_file
+        def observe(root, path, *args, **kwargs):
+            opened.append(path)
+            return original(root, path, *args, **kwargs)
+        with patch.object(w.os, 'walk', side_effect=AssertionError('Unexpected recursive scan')), \
+             patch.object(Path, 'iterdir', side_effect=AssertionError('Unexpected directory listing')), \
+             patch.object(w, 'hash_file', side_effect=observe):
+            result = self.worker.handle(self.server, 'inventory', {'paths': paths, 'operation_id': uuid.uuid4().hex})
+        self.assertEqual(opened, paths)
+        self.assertEqual(result['scope'], 'manifest-delta-v1')
+        self.assertEqual(result['requested_paths'], paths)
+        self.assertEqual(result['missing'], ['mods/new.jar'])
+        self.assertEqual(result['inventory_summary']['files_hashed'], 1)
+        self.assertEqual(result['inventory_summary']['bytes_hashed'], 3)
+
+    def test_scoped_inventory_excludes_custom_world_and_symlink_ancestors(self):
+        self.put('server.properties', b'level-name=private-world\n')
+        self.put('private-world/level.dat', b'world')
+        self.put('config/other.cfg', b'custom')
+        (self.live / 'config/link').symlink_to(self.live / 'private-world', target_is_directory=True)
+        paths = ['private-world/level.dat', 'config/link/private.cfg', 'config/other.cfg']
+        result = self.worker.handle(self.server, 'inventory', {'paths': paths})
+        self.assertEqual(result['files'], {'config/other.cfg': w.hashlib.sha256(b'custom').hexdigest()})
+        self.assertIn('config/link', result['skipped_symlinks'])
+        self.assertIn('private-world', result['excluded_roots'])
+
     def test_inventory_hashes_all_managed_files_and_extras(self):
         self.put('mods/example.jar')
         self.put('config/custom.cfg', b'custom')

@@ -64,7 +64,7 @@ eq('replace_with_override', act($replace, 'config/a.cfg'), 'override');
 $preserve = $p->plan(['config/a.cfg' => h('a')], ['config/a.cfg' => h('custom')], ['config/a.cfg' => h('a')]);
 eq('preserve_local_change', act($preserve, 'config/a.cfg'), 'unchanged upstream but customized');
 $deleted = $p->plan(['mods/missing.jar' => h('a')], [], ['mods/missing.jar' => h('b')]);
-eq('unsafe_unverified_mod_identity', act($deleted, 'mods/missing.jar'), 'locally removed mod should not be re-enabled');
+eq('conflict', act($deleted, 'mods/missing.jar'), 'locally removed mod should not be re-enabled');
 
 foreach (['../escape', '/absolute', 'mods/../../escape', 'mods\\windows.jar', 'mods//double.jar', 'C:/windows', 'mods/./foo'] as $unsafe) {
     fails(fn() => $p->plan([], [$unsafe => h('a')], []), $unsafe);

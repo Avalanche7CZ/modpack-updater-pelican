@@ -4,6 +4,8 @@ Native Pelican tooling for adopting customized Minecraft servers, checking relea
 
 **Read the [capability matrix](docs/capabilities.md) before enabling this plugin. Remote destructive deployment remains disabled.** Adoption, checking, staging and preview do not stop, restart or reinstall the server.
 
+Version 0.5 uses **manifest deltas**: Compare checks candidate files only, with no recursive live inventory. Upgrade the plugin and worker together, run plugin migrations, restart queue workers, and rebuild old comparisons. See [upgrade and scheduling instructions](docs/manifest-updates.md).
+
 Identity is permanently isolated from cosmii02's Modpack Manager:
 
 - Name: `Arcturus Modpack Manager`
@@ -38,7 +40,7 @@ Open **Arcturus Modpack Manager → Managed servers → Adopt Existing Server**.
 2. Enter the actual provider/project and exact installed release ID. FTB uses a numeric version ID; CurseForge a file ID; Modrinth an immutable version ID; GitHub the exact tag. An image tag is a Java hint, not proof of the running runtime.
 3. Set an explicit server asset pattern for GitHub, particularly GTNH's Java/Crucible variants. Choose an editable per-server policy template (or Empty), rules, disabled mod IDs, backup backend and safe exclusions.
 4. Review the final summary and click **Create adoption draft** (or **Adopt for monitoring only**). Choose **Prepare installed baseline** on its detail page. Files are fetched into isolated node staging, independently of the live customized server.
-5. Review **File Changes**: modified configs, local-only mods, missing files, renamed/disabled mods and protected paths. Retain baseline stages for later text-merge review.
+5. Finish adoption after reviewing the upstream association and directory rules. Adoption does not scan the live file tree. Local customizations are checked when a target update would touch those files. Retain baseline stages for text-diff review.
 6. Finish verified adoption. If the exact upstream release cannot be verified, use **Adopt for monitoring only**. Destructive operations stay restricted.
 
 After an independently performed manual update, use **Record a manual update** on Overview to record the exact release now installed. It invalidates the previous baseline/approvals and requires a fresh adoption comparison; it never updates server files itself.
@@ -68,7 +70,7 @@ See [provider setup and custom recipes](docs/providers.md). A version being list
 
 ## Review an update
 
-Check releases, select an exact target, prepare its files and compare them with the installed upstream baseline and actual live file inventory:
+Check releases, select an exact target, prepare its files and compare them with the installed upstream baseline and only the live paths touched by that manifest delta:
 
 `original upstream → locally installed → target upstream`
 
@@ -76,9 +78,9 @@ The planner distinguishes upstream additions/updates/removals, local modificatio
 
 Use **Mods & Files** for searchable inventory and bulk file/mod policies, or **Protection Rules** for templates and the advanced rule editor with Test rule. Exact-path rules outrank mod ID, filename, directory, glob, loader and extension rules; priority then row order resolve ties. World/path invariants remain enforced. Named launchers and Arcturus/Paradigm configs are no longer immutable exceptions. See [per-server policy behavior and upgrade notes](docs/server-policies.md). File count or byte-limit failure never yields a partial-success inventory.
 
-Mod identity comes from Fabric/Quilt metadata, Forge/NeoForge TOML or legacy `mcmod.info`. Use explicit path-to-identity mappings when metadata is absent. Missing upstream mods are kept absent across upstream renames where identity is known; unknown/ambiguous identities block new JARs. Additional local mods are preserved. Strict single-line `.properties` merges can be reviewed as text; unsupported syntax or conflicting keys requires manual work through Pelican's file editor. No merge writes live data automatically.
+Upstream manifests establish file ownership using paths and hashes. Optional mod metadata groups known old/new JARs into one operation; missing metadata in another installed mod never blocks an ordinary replacement. Known disabled/absent mods remain disabled. A missing old JAR with no identity evidence requires review of possible replacement additions. Additional local mods are left untouched. Strict single-line `.properties` merges can be reviewed as text; unsupported syntax or conflicting keys requires manual work through Pelican's file editor. No merge writes live data automatically.
 
-The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Apply Update requires an administrator-approved current plan and qualified same-host Forge 1.20.1 / Java 17 runtime reuse with native Wings backups.** See [manual deployment and recovery](docs/manual-deployment.md). [Logical mod JAR upgrades](docs/mod-upgrades.md) are currently review-only pending transaction and browser qualification. Remote and automatic deployment remain disabled; no environment toggle bypasses missing safety evidence.
+The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Apply Update requires an administrator-approved current plan and qualified same-host Forge 1.20.1 / Java 17 runtime reuse with native Wings backups.** See [manual deployment and recovery](docs/manual-deployment.md). [Mod JAR upgrades](docs/mod-upgrades.md) use the same native backup and recovery workflow. Daily automatic updates and optional no-update restarts are configured per server. Remote deployment remains disabled. See [manifest updates and scheduled maintenance](docs/manifest-updates.md).
 
 ## Backups and recovery
 

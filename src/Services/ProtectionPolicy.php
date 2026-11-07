@@ -110,6 +110,7 @@ final class ProtectionPolicy
             ['scope' => 'glob', 'pattern' => '*.sh', 'mode' => 'review'],
             ['scope' => 'glob', 'pattern' => '*.bat', 'mode' => 'review'],
             ['scope' => 'glob', 'pattern' => '**', 'classification' => 'removed_upstream', 'mode' => 'review']];
+        $rules[] = ['scope' => 'directory', 'pattern' => 'mods', 'classification' => 'removed_upstream', 'mode' => 'follow'];
         foreach (['ops.json', 'ops.txt', 'whitelist.json', 'white-list.txt', 'banned-players.json', 'banned-ips.json', 'eula.txt'] as $file) {
             $rules[] = ['scope' => 'exact', 'pattern' => $file, 'mode' => 'protect'];
         }

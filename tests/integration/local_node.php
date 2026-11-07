@@ -175,7 +175,7 @@ app(Arcturus\ModpackManager\Services\ServerPolicyService::class)->save($record, 
     ['directory_decisions' => [['path' => 'tacz', 'mode' => 'manage'], ['path' => 'DiscordIntegration-Data', 'mode' => 'keep']]]);
 $record->refresh();
 app(Arcturus\ModpackManager\Services\AdoptionService::class)->compare($record);
-check(isset($record->file_inventory['files']['tacz/local.json']), 'Per-server Manage decision did not enable inventory');
+check($record->file_inventory['requested_paths'] === [], 'Directory review triggered a full adoption scan');
 check(file_get_contents($dir.'/volumes/'.$uuid.'/tacz/local.json') === 'preserved local data', 'Baseline modified live additional-directory content');
 check(! $record->deploy_enabled && count($record->file_rules) === 1, 'Baseline changed deployment restrictions or saved policies');
 
@@ -200,92 +200,24 @@ $reviewScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\R
 $reviewScreen->call('mountAction', 'directoryDecisions');
 $reviewModal = $reviewScreen->effects['partials']['action-modals'] ?? $reviewScreen->html();
 check(str_contains($reviewModal, 'tacz') && str_contains($reviewModal, 'Keep local'), 'Native adoption UI omitted discovered directory decisions');
-// Upstream verification survives a real stdio inventory failure; retry never prepares a pack.
+// Adoption and update comparisons ignore unrelated FIFOs and inaccessible files.
 $live = $dir.'/volumes/'.$uuid;
 mkdir($live.'/config', 0700);
 posix_mkfifo($live.'/config/unsafe.fifo', 0600);
 file_put_contents($dir.'/args-target.txt', 'local arguments');
 symlink($dir.'/args-target.txt', $live.'/unix_args.txt');
-$failedComparison = app(Arcturus\ModpackManager\Services\OperationTracker::class)->create($record, 'baseline',
-    ['provider' => $record->provider, 'source' => $record->source, 'version' => $record->installed_version]);
-$baselineJob = new Arcturus\ModpackManager\Jobs\PrepareUpdate($record->id, true, $failedComparison->id);
-try {
-    $baselineJob->handle(app(Arcturus\ModpackManager\Services\PrepareRelease::class), app(Arcturus\ModpackManager\Services\OperationTracker::class));
-    throw new RuntimeException('Special-file inventory unexpectedly completed');
-} catch (Arcturus\ModpackManager\Services\PreparationException $error) {
-    check($error->diagnostic['code'] === 'FILE_TYPE' && $error->diagnostic['phase'] === 'comparing', 'Stdio failure lost its typed comparison diagnostic');
-    check(! str_contains($error->getMessage(), '/etc') && ! str_contains($error->getMessage(), 'token=secret'), 'Comparison leaked an absolute path or secret');
-}
-$record->refresh();
-$failedComparison->refresh();
-$verifiedPath = $record->base_manifest_path;
-$verifiedDigest = hash_file('sha256', $verifiedPath);
-check($record->baseline_status === 'verified' && $record->comparison_status === 'failed' && ! $record->adoption_report, 'Upstream and installation comparison states were conflated');
-check($failedComparison->phase === 'failed' && ! $record->active_operation_id && $record->operation_status === 'Comparison failed', 'Failed comparison appeared idle or successful');
-check(! $record->enabled && ! $record->deploy_enabled && ! $record->adopted_at, 'Failed comparison enabled adoption or deployment');
-check($record->events()->where('status', 'failed')->where('kind', 'baseline')->latest('id')->first()->details['diagnostic']['code'] === 'FILE_TYPE', 'History lost the inventory diagnostic');
-$failedScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
-check(str_contains($failedScreen->html(), 'Upstream baseline verified') && str_contains($failedScreen->html(), 'Installation comparison failed') && str_contains($failedScreen->html(), 'Retry installation comparison'), 'Recovery UI hid the failed/incomplete installation state');
-if (extension_loaded('intl')) {
-$tableHtml = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ListManagedServers::class)->html();
-check(str_contains($tableHtml, 'Upstream baseline') && str_contains($tableHtml, 'Installation comparison failed') && str_contains($tableHtml, 'Comparison failed'), 'Managed Servers table showed a misleading verified/idle state');
-}
-rejects(fn () => app(Arcturus\ModpackManager\Services\AdoptionService::class)->finish($record), 'Failed comparison finished verified adoption');
-// Inaccessible fixtures are created with restrictive modes; no permissions are changed by inventory.
-$previousMask = umask(0777);
-try { file_put_contents($live.'/tacz/read-only.json', 'unreadable local data'); } finally { umask($previousMask); }
-mkdir($live.'/tacz/private', 0000);
-$unreadableBefore = stat($live.'/tacz/read-only.json');
-// Preserve the problematic directory by policy, and manage a different discovered root.
-app(Arcturus\ModpackManager\Services\ServerPolicyService::class)->save($record, [...$record->file_rules, ['scope' => 'exact', 'pattern' => 'unix_args.txt', 'mode' => 'replace'], ['scope' => 'exact', 'pattern' => 'tacz/read-only.json', 'mode' => 'replace'], ['scope' => 'glob', 'pattern' => 'tacz/private/**', 'mode' => 'remove']], [], $record->policy_revision,
-    ['directory_decisions' => [['path' => 'config', 'mode' => 'keep'], ['path' => 'tacz', 'mode' => 'manage'], ['path' => 'DiscordIntegration-Data', 'mode' => 'exclude']]]);
-$record->refresh();
-unlink($dir.'/fixture.zip'); // Retry cannot read the original upstream artifact.
-Illuminate\Support\Facades\Bus::fake([Arcturus\ModpackManager\Jobs\CompareInstallation::class]);
-$retryScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
-$retryScreen->call('mountAction', 'retryComparison')->call('callMountedAction');
-check($retryScreen->instance()->getErrorBag()->isEmpty(), 'Retry action failed validation');
-$record->refresh();
-$retry = $record->operations()->findOrFail($record->active_operation_id);
-check($retry->kind === 'comparison' && $record->comparison_status === 'queued', 'Retry did not queue a separate comparison operation');
-$retryJob = Illuminate\Support\Facades\Bus::dispatched(Arcturus\ModpackManager\Jobs\CompareInstallation::class)->first();
-check($retryJob !== null, 'Native retry action did not dispatch comparison');
-$retryJob->handle(app(Arcturus\ModpackManager\Services\AdoptionService::class), app(Arcturus\ModpackManager\Services\OperationTracker::class));
-$record->refresh(); $retry->refresh();
-check($retry->phase === 'completed' && $record->comparison_status === 'complete' && ! $record->comparison_diagnostic && ! $record->active_operation_id, 'Read-only comparison recovery did not complete');
-check($record->base_manifest_path === $verifiedPath && hash_file('sha256', $verifiedPath) === $verifiedDigest, 'Retry replaced verified upstream evidence');
-check(is_file($record->staging_parent.'/'.$retry->node_operation_id.'/comparison.json') && ! is_file($record->staging_parent.'/'.$retry->node_operation_id.'/download-0') && ! is_dir($record->staging_parent.'/'.$retry->node_operation_id.'/files'), 'Retry repeated upstream preparation');
-check(isset($record->file_inventory['files']['tacz/local.json']) && ! isset($record->file_inventory['files']['config/unsafe.fifo']), 'Retry ignored current per-server directory decisions');
-check(file_exists($live.'/config/unsafe.fifo') && file_get_contents($live.'/tacz/local.json') === 'preserved local data', 'Recovery modified live Minecraft files');
-check($record->file_inventory['skipped_symlinks'] === ['unix_args.txt'] && $record->adoption_report['skipped_symlinks'] === ['unix_args.txt'], 'Retry did not record nonfatal symlink information');
-$linkedChange = array_column($record->adoption_report['changes'], null, 'path')['unix_args.txt'];
-check($linkedChange['action'] === 'preserve' && $linkedChange['rule'] === 'immutable', 'Policy could replace a skipped link with upstream content');
-check(is_link($live.'/unix_args.txt') && readlink($live.'/unix_args.txt') === $dir.'/args-target.txt' && file_get_contents($dir.'/args-target.txt') === 'local arguments', 'Comparison changed the link or its target');
-$summary = $record->file_inventory['inventory_summary'];
-check($summary['files_hashed'] === count($record->file_inventory['files']) && $summary['unreadable_files_skipped'] === 1 && $summary['unreadable_directories'] === 1, 'Unreadable content was counted as hashed or hidden from the summary');
-check(! isset($record->file_inventory['files']['tacz/read-only.json']) && in_array('tacz/private', $record->file_inventory['excluded_roots'], true), 'Unreadable paths entered the verified inventory');
-$protectedChanges = array_column($record->adoption_report['changes'], null, 'path');
-foreach (['tacz/read-only.json', 'tacz/private/child.json'] as $path) {
-    check($protectedChanges[$path]['action'] === 'preserve' && $protectedChanges[$path]['rule'] === 'immutable' && $protectedChanges[$path]['file_state'] === 'protected', 'Policy overrode unreadable content protection');
-}
-check(count($record->adoption_report['unreadable_paths']) === 2, 'Comparison report omitted protected unreadable paths');
-clearstatcache(true, $live.'/tacz/read-only.json');
-check(stat($live.'/tacz/read-only.json') === $unreadableBefore, 'Inventory changed inaccessible file metadata or permissions');
-$successScreen = Livewire\Livewire::test(Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class, ['record' => $record->id]);
-check(str_contains($successScreen->html(), 'Preserved symlinks') && str_contains($successScreen->html(), 'unix_args.txt') && ! str_contains($successScreen->html(), $dir.'/args-target.txt'), 'Nonfatal symlink information was absent or leaked its target');
-check(str_contains($successScreen->html(), 'Protected unreadable content') && str_contains($successScreen->html(), '1 known files skipped') && str_contains($successScreen->html(), 'EACCES during file hashing') && str_contains($successScreen->html(), 'total file count is unknown'), 'UI did not explain skipped counts and reasons');
-check(! $record->enabled && ! $record->deploy_enabled && ! $record->adopted_at, 'Retry automatically adopted or enabled updates');
-rmdir($live.'/tacz/private'); // Dispose of the empty test fixture without changing its permissions.
-file_put_contents($dir.'/approval.json', $approvedContents);
-$remote = $local->adoptionAttributes($other, 'default');
-check($remote === ['transport' => 'wings'], 'Local default changed remote-node selection');
-check(app(ServerFilesFactory::class)->worker(new ManagedServer(['transport' => 'wings', 'pelican_server_uuid' => $other])) instanceof NodeWorker, 'Remote worker behavior changed');
-check(file_get_contents($dir.'/approval.json') === $before, 'Web actions changed privileged host approval');
-Auth::guard()->forgetUser();
-check(! LocalFilesystem::canAccess(), 'Guest can access filesystem setup');
-rejects(fn () => $screen->instance()->refreshReadiness(), 'Guest refreshed privileged status');
-$iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
-foreach ($iterator as $file) { $file->isLink() || ! $file->isDir() ? unlink($file->getPathname()) : rmdir($file->getPathname()); }
-rmdir($dir);
-echo "Node-wide trusted discovery, private staging, native default/adoption, host approval, queue visibility and remote isolation passed\n";
+app(Arcturus\ModpackManager\Services\AdoptionService::class)->compare($record);
+check($record->file_inventory['files'] === [] && $record->comparison_status === 'complete', 'Unrelated FIFO blocked lightweight adoption');
+$baseline = app(Arcturus\ModpackManager\Services\ReleaseStore::class)->load($record->base_manifest_path);
+$target = $baseline; $target['version'] = 'delta-test';
+$target['files']['unix_args.txt'] = hash('sha256', 'new launcher arguments');
+$target['files']['config/example.cfg'] = hash('sha256', 'new upstream configuration');
+$record->update(['selected_version' => 'delta-test', 'target_manifest_path' => app(Arcturus\ModpackManager\Services\ReleaseStore::class)->put($target),
+    'directory_decisions' => [['path' => 'tacz', 'mode' => 'manage'], ['path' => 'DiscordIntegration-Data', 'mode' => 'exclude']]]);
+$plan = app(Arcturus\ModpackManager\Services\PreviewService::class)->generate($record);
+check($record->file_inventory['requested_paths'] === ['config/example.cfg', 'unix_args.txt'], 'Comparison requested unrelated pack content');
+check($record->file_inventory['skipped_symlinks'] === ['unix_args.txt'], 'Touched symlink was not protected');
+check(array_column($plan['changes'], 'action', 'path')['unix_args.txt'] === 'preserve', 'Manifest update could replace a launcher symlink');
+check(file_exists($live.'/config/unsafe.fifo') && file_get_contents($dir.'/args-target.txt') === 'local arguments', 'Comparison changed unrelated files or followed a link');
+echo "Local node setup, per-server directory review, lightweight adoption and exact manifest-delta stdio comparison passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

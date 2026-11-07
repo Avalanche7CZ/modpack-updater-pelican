@@ -3,20 +3,10 @@
 declare(strict_types=1);
 namespace Arcturus\ModpackManager\Services;
 
-/** One logical operation per complete embedded mod-ID set; filenames never establish identity. */
+/** Optional grouping by upstream mod identity; file ownership comes from verified manifests. */
 final class ModUpgradePlanner
 {
-    public const SCHEMA = 'embedded-mod-upgrade-v1';
-
-    public static function deploymentBlocker(array $changes): ?string
-    {
-        foreach ($changes as $change) {
-            if (($change['kind'] ?? null) === 'mod_upgrade' && $change['action'] === 'upgrade_mod') {
-                return 'Logical mod upgrades are prepared for review only. Production deployment remains blocked until the new upgrade transaction and browser actions are qualified.';
-            }
-        }
-        return null;
-    }
+    public const SCHEMA = 'manifest-mod-upgrade-v2';
 
     /** Metadata must describe these exact JAR bytes, rather than a provider project or administrator alias. */
     public static function verifiedIdentity(string $hash, ?string $mapped, mixed $metadata): ?string
@@ -35,11 +25,11 @@ final class ModUpgradePlanner
         return $identity;
     }
 
-    /** @return array{changes:array,consumed:array,verified:array,ambiguous:array,incomplete_live:bool} */
+    /** @return array{changes:array,consumed:array,verified:array,ambiguous:array} */
     public function plan(array $base, array $local, array $target, array $identities, array $evidence, array $rules, array $disabled, array $safetyRoots): array
     {
         $inventories = ['base' => $base, 'local' => $local, 'target' => $target];
-        $groups = []; $verified = []; $components = []; $ambiguous = []; $unknownLive = [];
+        $groups = []; $verified = []; $components = []; $ambiguous = [];
         foreach ($inventories as $scope => $files) {
             foreach ($files as $path => $hash) {
                 if (! UpdatePlanner::isMod($path) && ! (str_starts_with($path, 'mods/') && str_ends_with(strtolower($path), '.jar.disabled'))) { continue; }
@@ -53,11 +43,20 @@ final class ModUpgradePlanner
                 }
                 if (! is_array($meta)) { $meta = []; }
                 $id = self::verifiedIdentity($hash, $identities[$scope][$path] ?? null, $meta);
-                $library = ($meta['kind'] ?? null) === 'library' && ($meta['source'] ?? null) === 'META-INF/MANIFEST.MF' && in_array($meta['fml_mod_type'] ?? '', ['LIBRARY', 'LANGPROVIDER'], true) && ($meta['sha256'] ?? null) === $hash;
-                if ($id === null) { if (! $library && $scope === 'local' && UpdatePlanner::isMod($path)) { $unknownLive[] = $path; } continue; }
+                if ($id === null && $scope !== 'local') { $id = $identities[$scope][$path] ?? null; }
+                if ($id === null && $scope === 'local') {
+                    foreach (['base', 'target'] as $upstream) {
+                        if (($inventories[$upstream][$path] ?? null) === $hash) {
+                            $id = $identities[$upstream][$path] ?? null;
+                            if ($id !== null) { $meta = $evidence[$upstream][$path] ?? []; break; }
+                        }
+                    }
+                }
+                if ($id !== null && ! preg_match('/^[a-z0-9_.+-]{1,1024}$/D', $id)) { $id = null; }
+                if ($id === null) { continue; }
                 $verified[$scope][$path] = $id;
                 $groups[$id][$scope][$path] = ['path' => $path, 'sha256' => $hash, 'version' => $meta['version'] ?? null,
-                    'versions' => $meta['versions'] ?? [], 'loader' => $meta['loader'], 'source' => $meta['source']];
+                    'versions' => $meta['versions'] ?? [], 'loader' => $meta['loader'] ?? null, 'source' => $meta['source'] ?? 'upstream-manifest'];
                 foreach (explode('+', $id) as $component) {
                     if (isset($components[$scope][$component])) { $ambiguous[$id] = $ambiguous[$components[$scope][$component]] = true; }
                     $components[$scope][$component] = $id;
@@ -72,7 +71,6 @@ final class ModUpgradePlanner
                 }
             }
         }
-        $unscannedMods = (bool) array_filter($safetyRoots, fn ($root) => ($root === 'mods' || str_starts_with($root, 'mods/')) && ! isset($local[$root]));
         $changes = []; $consumed = []; $policy = new ProtectionPolicy;
         $disabled = array_map('strtolower', $disabled);
         foreach ($groups as $id => $group) {
@@ -86,12 +84,13 @@ final class ModUpgradePlanner
             if (! $installed && $baseline && isset($local[$baseline['path']])) {
                 $installed = ['path' => $baseline['path'], 'sha256' => $local[$baseline['path']], 'version' => null, 'versions' => [], 'loader' => null];
                 $paths[] = $installed['path'];
+                $verified['local'][$installed['path']] = $id;
             }
             $paths = array_values(array_unique($paths)); sort($paths, SORT_STRING);
             $problem = null;
             if (! $baseline || ! $destination || count($group['local'] ?? []) > 1 || isset($ambiguous[$id])) { $problem = 'Duplicated or overlapping embedded mod IDs. Review all candidate JARs; no version was selected.'; }
-            elseif ($baseline['loader'] !== $destination['loader']) { $problem = 'Mod loader metadata changes. Prepare and qualify a loader migration separately.'; }
-            elseif ($installed && ($verified['local'][$installed['path']] ?? null) !== $id) { $problem = 'The installed JAR changed and its embedded identity is unverified. Refresh inventory before choosing an upstream replacement.'; }
+            elseif ($baseline['loader'] !== null && $destination['loader'] !== null && $baseline['loader'] !== $destination['loader']) { $problem = 'Mod loader metadata changes. Prepare and qualify a loader migration separately.'; }
+            elseif ($installed && ($verified['local'][$installed['path']] ?? null) !== $id) { $problem = 'The installed JAR cannot be associated with this upstream operation. Review this replacement.'; }
             elseif ($destination && isset($local[$destination['path']]) && ($installed['path'] ?? null) !== $destination['path']) { $problem = 'The target filename is already occupied. Review installed mod identities before upgrading.'; }
             $alreadyTarget = $installed && $destination && $installed['path'] === $destination['path'] && $installed['sha256'] === $destination['sha256'];
             $modified = ! $alreadyTarget && $installed !== null && $baseline !== null && $installed['sha256'] !== $baseline['sha256'];
@@ -108,10 +107,8 @@ final class ModUpgradePlanner
             $reason = $problem;
             if ($invariant !== null || $protected) { $action = 'keep_mod'; $class = 'protected'; $reason = $invariant ?? 'An existing rule protects a member of this mod upgrade. Keep the installed mod; do not add a second version.'; }
             elseif ($problem !== null) { $action = 'mod_identity_review'; $class = 'unsafe_or_ambiguous'; }
-            elseif (! $installed && $unknownLive) { $action = 'mod_identity_review'; $class = 'unsafe_or_ambiguous'; $reason = 'The original JAR is absent and some installed JAR identities are unavailable. Refresh metadata before interpreting this as an intentional removal.'; }
             elseif (! $installed || str_ends_with(strtolower($installed['path']), '.disabled')) { $action = 'keep_mod_disabled'; $class = 'disabled_mod'; $reason = 'Preserving an intentionally absent or disabled installed mod; the target is not re-enabled.'; }
             elseif ($disabledIdentity || $disable) { $action = 'mod_upgrade_review'; $class = 'disabled_mod'; $reason = 'This mod is configured as disabled but an active JAR remains. Disable it explicitly before considering an upgrade.'; }
-            elseif ($unknownLive || $unscannedMods) { $action = 'mod_identity_review'; $class = 'unsafe_or_ambiguous'; $reason = 'Some installed JARs lack checksum-bound embedded identity metadata. Refresh inventory so a duplicate active version can be excluded.'; }
             elseif ($review) { $action = 'mod_upgrade_review'; $reason = 'An explicit member rule requires review. Choose a policy for this whole mod operation.'; }
             elseif ($installed['path'] === $destination['path'] && $installed['sha256'] === $destination['sha256']) { $action = 'unchanged'; $class = 'unchanged_upstream'; $reason = 'The verified target is already installed.'; }
             elseif ($modified && ! $replace) { $action = 'mod_upgrade_conflict'; $reason = 'The installed JAR differs from the verified installed-release baseline. Keep the installed mod or upgrade the entire mod to the verified target.'; }
@@ -124,7 +121,7 @@ final class ModUpgradePlanner
                 $members[] = ['path' => $destination['path'], 'action' => 'install', 'local_sha256' => $local[$destination['path']] ?? null, 'target_sha256' => $destination['sha256']];
             }
             $canonical = $baseline['path'] ?? array_key_first($group['base']);
-            $upgrade = ['schema' => self::SCHEMA, 'identity' => $id, 'identity_verified' => $problem === null, 'upstream_choice_allowed' => $problem === null && ! $unknownLive && ! $unscannedMods && ! $disabledIdentity && ! $disable,
+            $upgrade = ['schema' => self::SCHEMA, 'identity' => $id, 'identity_verified' => $problem === null, 'upstream_choice_allowed' => $problem === null && ! $disabledIdentity && ! $disable,
                 'baseline' => $baseline, 'installed' => $installed, 'target' => $destination,
                 'candidates' => $group, 'paths' => $paths, 'locally_modified' => $modified, 'reason' => $reason, 'members' => $members];
             $changes[] = ['path' => $canonical, 'kind' => 'mod_upgrade', 'action' => $action, 'mod_upgrade' => $upgrade, 'identity' => $id,
@@ -137,7 +134,7 @@ final class ModUpgradePlanner
                 'local_sha256' => $installed['sha256'] ?? null, 'target_sha256' => $destination['sha256'] ?? null, 'blocked' => $blocked];
             foreach ($paths as $path) { $consumed[$path] = true; }
         }
-        return ['changes' => $changes, 'consumed' => $consumed, 'verified' => $verified, 'ambiguous' => $ambiguous, 'incomplete_live' => (bool) $unknownLive || $unscannedMods];
+        return ['changes' => $changes, 'consumed' => $consumed, 'verified' => $verified, 'ambiguous' => $ambiguous];
     }
 
     /** Expand only the already approved physical mutations; UI and approval retain one logical row. */

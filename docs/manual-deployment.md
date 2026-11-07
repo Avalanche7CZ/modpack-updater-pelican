@@ -1,3 +1,5 @@
+> Daily automation is an explicit per-server opt-in using this same transaction. Comparison and staging checks are limited to the manifest delta; see [manifest updates and upgrade instructions](manifest-updates.md).
+
 # Manual same-host deployment
 
 Apply Update is available only for a current, conflict-free, qualified plan on an approved same-host Pelican installation. It requires a root administrator to approve that exact plan. Automatic deployment is disabled, including for servers with a previously saved automatic policy. Remote destructive deployment remains disabled.

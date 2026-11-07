@@ -218,7 +218,11 @@ Http::fake(function ($request) use (&$requests, &$snapshots, &$states, &$starts,
     if (str_ends_with($url, '/power')) {
         if ($request['action'] === 'stop') { $states[$uuid] = 'offline'; }
         else {
-            check(($daemonConfigurations[$uuid]['suspended'] ?? true) === false && ($daemonConfigurations[$uuid]['crash_detection_enabled'] ?? true) === false, 'Controlled startup did not disable automatic crash recovery');
+            if ($scenario === 'scheduled_restart') {
+                check(($daemonConfigurations[$uuid]['suspended'] ?? true) === false && ($daemonConfigurations[$uuid]['crash_detection_enabled'] ?? false) === true, 'Ordinary scheduled restart changed deployment guard settings');
+            } else {
+                check(($daemonConfigurations[$uuid]['suspended'] ?? true) === false && ($daemonConfigurations[$uuid]['crash_detection_enabled'] ?? true) === false, 'Controlled startup did not disable automatic crash recovery');
+            }
             $starts[$uuid]++;
             $failBoot = (in_array($scenario, ['failed_start', 'failed_restore', 'corrupt_restore', 'corrupt_launcher', 'added_file_leftover', 'pending_restore'], true) && $starts[$uuid] === 1) || $scenario === 'failed_recovery_start';
             $states[$uuid] = $failBoot ? 'offline' : 'running';
@@ -266,12 +270,16 @@ Http::fake(function ($request) use (&$requests, &$snapshots, &$states, &$starts,
     }
     return Http::response(['state' => $states[$uuid], 'utilization' => ['uptime' => 60000], 'configuration' => $daemonConfigurations[$uuid]], 200, $headers);
 });
-// New logical operations remain blocked by the real production gate, before power or backup.
-$modGate = $make('unqualified logical mod upgrade', true);
+// Manifest-bound mod replacement runs through the same native backup/restore workflow.
+$modGate = $make('manifest mod upgrade', true);
 $gatedPlan = app(PreviewService::class)->generate($modGate);
-check(($gatedPlan['counts']['upgrade_mod'] ?? 0) === 1 && ! $gatedPlan['applicable'], 'Unqualified logical upgrade did not reach the production safety gate');
-rejects(fn () => app(DeploymentApproval::class)->queue($modGate, $gatedPlan['plan_sha256'], (string) \Illuminate\Support\Str::uuid()), 'Unqualified logical mod deployment was approved');
-check($states[$modGate->pelican_server_uuid] === 'running' && ! $modGate->refresh()->active_operation_id, 'Rejected logical upgrade changed power or operation ownership');
+check(($gatedPlan['counts']['upgrade_mod'] ?? 0) === 1 && $gatedPlan['applicable'], 'Manifest-owned mod upgrade was blocked');
+$modOperation = app(DeploymentApproval::class)->queue($modGate, $gatedPlan['plan_sha256'], (string) \Illuminate\Support\Str::uuid());
+Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+check($modOperation->refresh()->phase === 'completed' && $modGate->refresh()->installed_version === '0.13.17', 'Native mod upgrade did not complete');
+$modLive = $fixtures[$modGate->pelican_server_uuid]['live'];
+check(! is_file($modLive.'/mods/fixturemod-1.jar') && file_get_contents($modLive.'/mods/fixturemod-2.jar') === $jarBytes['2'] && file_get_contents($modLive.'/mods/Paradigm.jar') === $jarBytes['custom'], 'Mod update left old JAR or changed custom mod');
+Auth::guard()->setUser($adminUser);
 $server = $make('successful manual update');
 $plan = app(PreviewService::class)->generate($server);
 check($plan['applicable'], 'Qualified fixture blocked: '.implode('; ', $plan['capability_blockers']));
@@ -388,6 +396,48 @@ Auth::guard()->setUser($adminUser); $view->call('selectTab', 'updates')->call('m
 Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
 check($server->refresh()->installed_version === '0.13.17' && file_get_contents($fixtures[$uuid]['live'].'/kubejs/server_scripts/recipes.js') === 'custom recipe kept', 'Conflict resolution was ignored during deployment');
 check(config('arcturus-modpack-manager.automatic_deploy') === false && ! $server->deploy_enabled, 'Workflow relied on an automatic/deploy boolean toggle');
+
+// Scheduled updates have explicit administrator opt-in and use the very same native deployment job.
+$rootRoleGranted = true;
+User::retrieved(function (User $user) use (&$rootRoleGranted): void {
+    $user->setRelation('roles', new \Illuminate\Database\Eloquent\Collection($rootRoleGranted ? [(new \App\Models\Role)->forceFill(['name' => \App\Models\Role::ROOT_ADMIN])] : []));
+});
+$auto = $make('automatic manifest mod upgrade', true);
+$auto->update(['policy' => 'auto', 'deploy_enabled' => true, 'maintenance_time' => '07:00', 'maintenance_timezone' => 'Europe/Prague', 'automation_actor_id' => 1]);
+symlink('libraries/net/minecraftforge/forge/1.20.1-47.4.13/unix_args.txt', $fixtures[$auto->pelican_server_uuid]['live'].'/unix_args.txt');
+$autoPlan = app(PreviewService::class)->generate($auto);
+check(isset($autoPlan['qualification']['launch_links']['unix_args.txt']), 'Standard Forge args symlink blocked qualified deployment');
+Auth::guard()->forgetUser();
+$autoOperation = app(DeploymentApproval::class)->queueAutomatic($auto);
+check(($autoOperation->context['automatic_approval'] ?? false) === true, 'Automatic approval source was not recorded');
+app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+check($autoOperation->refresh()->phase === 'completed' && $auto->refresh()->installed_version === '0.13.17', 'Automatic mod deployment failed');
+$rootRoleGranted = false;
+rejects(fn () => app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->requireEnabled($auto), 'Revoked administrator authority still enabled automation');
+$rootRoleGranted = true;
+// With no new release the scheduled path performs a normal restart, with no file inventory or backup.
+$scenario = 'scheduled_restart';
+$restart = $make('scheduled current-version restart');
+$restart->update(['source' => 'https://recipes.fixture.test/current', 'selected_version' => null, 'available_version' => $restart->installed_version, 'policy' => 'auto', 'deploy_enabled' => true,
+    'maintenance_time' => now('Europe/Prague')->format('H:i'), 'maintenance_timezone' => 'Europe/Prague', 'restart_when_current' => true, 'automation_actor_id' => 1]);
+$restartUuid = $restart->pelican_server_uuid;
+$app->instance(\Arcturus\ModpackManager\Modpacks\JsonClient::class, new class extends \Arcturus\ModpackManager\Modpacks\JsonClient {
+    public function get(string $url, array $headers = []): array {
+        return ['schema' => 2, 'version' => '0.13.15', 'downloads' => [['artifact_id' => 'fixture', 'path' => 'config/upstream.cfg', 'hashes' => ['sha256' => str_repeat('a', 64)]]]];
+    }
+});
+$before = count($requests);
+$day = now('Europe/Prague')->toDateString();
+app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->run($restart->id, $day);
+check($starts[$restartUuid] === 1 && $states[$restartUuid] === 'running' && ! $restart->refresh()->active_operation_id, 'Current-version maintenance did not restart the server');
+check(! collect(array_slice($requests, $before))->contains(fn ($row) => str_contains($row[2], '/backup')), 'Current-version restart requested an update backup');
+$before = count($requests);
+app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->run($restart->id, $day);
+check(count($requests) === $before && $starts[$restartUuid] === 1, 'Duplicate schedule restarted the server twice');
+// A preparation completion cannot authorize an update after its settings or authority changed.
+$restart->refresh();
+$stalePreparation = new Operation; $stalePreparation->context = ['policy_revision' => $restart->policy_revision - 1, 'actor_id' => 1];
+rejects(fn () => app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->deployPrepared($restart, $stalePreparation), 'Stale automatic preparation was deployed');
 
 echo "Manual Filament approval, real database worker, offline locked native backups, full restore callbacks, world/custom preservation and failed/corrupt recovery passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

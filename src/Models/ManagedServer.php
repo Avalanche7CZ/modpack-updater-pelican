@@ -79,7 +79,7 @@ final class ManagedServer extends Model
             'approved_at' => 'datetime', 'last_check_attempt_at' => 'datetime',
             'enabled' => 'boolean',
             'discord_enabled' => 'boolean', 'discord_webhook' => 'encrypted', 'discord_notify_events' => 'array',
-            'deploy_enabled' => 'boolean',
+            'deploy_enabled' => 'boolean', 'restart_when_current' => 'boolean', 'automation_actor_id' => 'integer',
             'directory_decisions' => 'array', 'file_rules' => 'array', 'file_inventory' => 'array', 'policy_revision' => 'integer',
             'backup_excluded_directories' => 'array',
             'preview_summary' => 'array',
@@ -95,7 +95,7 @@ final class ManagedServer extends Model
             if ($server->isDirty(['base_manifest_path', 'provider', 'source', 'installed_version'])) {
                 $server->forceFill(['comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'adoption_report' => null]);
             }
-            if ($server->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
+            if ($server->isDirty(['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'policy', 'directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
                 (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->normalize($server->directory_decisions ?? []);
                 (new UpdatePlanner)->plan([], [], [], $server->file_rules ?? [], [], $server->disabled_mods ?? []);
                 $server->forceFill(['approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null,

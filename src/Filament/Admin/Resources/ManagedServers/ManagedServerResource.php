@@ -137,15 +137,21 @@ final class ManagedServerResource extends Resource
                     ->helperText('Same-host access uses the approved node setup and trusted server UUID. Backend changes require a new baseline; paths and permissions cannot be granted from this form.'),
             ]),
             Section::make('Update policy')
-                ->description('Deployment remains disabled pending transaction and restore qualification, including for same-host installations.')
+                ->description('Scheduled updates use the same checked file plan, Pelican backup and rollback as manual updates. Resolve conflicts before the scheduled run.')
                 ->columns(2)->schema([
                     Select::make('policy')->required()->default('notify')->native(false)
                         ->options(['notify' => 'Notify only', 'approve' => 'Require admin approval',
-                            'auto' => 'Legacy automatic policy (deployment remains gated)']),
+                            'auto' => 'Automatic at scheduled time']),
                     Toggle::make('enabled')->label('Monitor this server')->default(true),
-                    Toggle::make('deploy_enabled')->label('Allow deployment for this server')->default(false)->disabled()
-                        ->helperText('Deployment is gated while remote transactions and restore behavior are not qualified.'),
+                    Toggle::make('deploy_enabled')->label('Allow scheduled deployment')->default(false)
+                        ->helperText('Enable only after a successful manual update on this server. Same-host deployment is required.'),
                 ]),
+            Section::make('Scheduled maintenance')->columns(2)->schema([
+                \Filament\Forms\Components\TextInput::make('maintenance_time')->label('Daily time (HH:MM)')->nullable()
+                    ->regex('/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/')->helperText('Leave empty to disable. Replaces your separate restart schedule.'),
+                \Filament\Forms\Components\TextInput::make('maintenance_timezone')->label('Timezone')->default(config('app.timezone', 'UTC'))->required()->rules(['timezone']),
+                Toggle::make('restart_when_current')->label('Restart when no update is available')->default(false),
+            ]),
             DiscordFields::section(),
             Section::make('Backups')->columns(1)->schema([
                 Select::make('backup_mode')->label('Backup backend')->required()->native(false)

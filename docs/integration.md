@@ -97,7 +97,7 @@ Verification recorded for this change: Chromium completed four repeated decision
 
 ## First-class embedded mod upgrades (pending verification)
 
-The later [logical mod upgrade implementation](mod-upgrades.md) supersedes the earlier linked physical remove/add rows. Its real [TFG 0.13.15 → 0.13.17 fixtures](../tests/fixtures/tfg-0.13.15-to-0.13.17/README.md) contain nine server upgrade pairs with all eighteen upstream-checksummed embedded descriptors. No tests or browser execution were run for this new operation at the user's request. Earlier successful physical-pair tests do not qualify its new row schema, transaction or logical actions. Production `upgrade_mod` deployment is explicitly blocked pending that verification.
+The [manifest mod upgrade implementation](mod-upgrades.md) uses optional identity grouping with mandatory path/hash ownership. Native deployment fixtures exercise manual and automatic queued replacements with actual Pelican backup/restore services and mocked Wings callbacks; there is no blanket logical-mod deployment block. See [manifest update verification](manifest-updates.md#verification).
 
 ## CI repair after the first-class mod schema
 

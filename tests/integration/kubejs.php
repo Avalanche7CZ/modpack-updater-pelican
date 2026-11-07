@@ -87,8 +87,9 @@ Http::preventStrayRequests();
 $reads = 0;
 Http::fake(function ($request) use ($path, $hash, &$live, &$upstream, &$reads) {
     $url = $request->url();
+    if (str_ends_with($url, '/capabilities')) { return Http::response(['scoped_inventory' => 1, 'directory_policy' => 1]); }
     if (str_ends_with($url, '/inventory')) {
-        return Http::response(['complete' => true, 'files' => [$path => $hash($live)], 'identities' => [], 'metadata' => [], 'excluded_roots' => ['world']], 200);
+        return Http::response(['complete' => true, 'scope' => 'manifest-delta-v1', 'requested_paths' => $request['paths'], 'missing' => array_values(array_diff($request['paths'], [$path])), 'files' => [$path => $hash($live)], 'identities' => [], 'metadata' => [], 'excluded_roots' => ['world']], 200);
     }
     if (str_ends_with($url, '/stage_file')) { $reads++; return Http::response(['content' => $upstream, 'sha256' => $hash($upstream)], 200); }
     $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
@@ -136,6 +137,6 @@ $live = 'changed after comparison';
 rejects(fn () => app(KubeJsDiff::class)->review($server, $path), 'Changed local bytes accepted by diff');
 rejects(fn () => app(KubeJsDiff::class)->review($server, 'kubejs/playerdata/private.js'), 'Protected persistent data read');
 rejects(fn () => app(KubeJsDiff::class)->review($server, 'kubejs/assets/template.nbt'), 'NBT offered as editable text');
-check(collect(Http::recorded())->every(fn ($pair) => $pair[0]->method() === 'GET' || str_ends_with($pair[0]->url(), '/inventory') || str_ends_with($pair[0]->url(), '/stage_file')), 'Review wrote to live files');
+check(collect(Http::recorded())->every(fn ($pair) => $pair[0]->method() === 'GET' || str_ends_with($pair[0]->url(), '/capabilities') || str_ends_with($pair[0]->url(), '/inventory') || str_ends_with($pair[0]->url(), '/stage_file')), 'Review wrote to live files');
 echo "Native KubeJS diff/decisions, queued replanning, snapshot validation and disabled deployment passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

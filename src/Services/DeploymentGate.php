@@ -12,8 +12,7 @@ final class DeploymentGate
     public function requireReady(ManagedServer $server): void
     {
         $preview = $server->preview_summary ?? [];
-        if (($preview['mod_plan_schema'] ?? null) !== ModUpgradePlanner::SCHEMA) { throw new RuntimeException('Compare files again: this plan predates logical embedded mod upgrades. Previous approvals cannot qualify the new operation.'); }
-        if (($preview['logical_mod_upgrades'] ?? 0) > 0) { throw new RuntimeException('Logical mod upgrade deployment is blocked pending transaction and browser qualification. Compare and review only.'); }
+        if (($preview['comparison_schema'] ?? null) !== ManifestComparison::SCHEMA) { throw new RuntimeException('Compare files again: this plan predates manifest-scoped comparison. Previous approvals cannot be reused.'); }
         if ($server->transport !== 'local' || ($preview['qualification']['protocol'] ?? null) !== SameHostDeployment::PROTOCOL ||
             ($server->baseline_provenance['transport'] ?? null) !== 'local' ||
             ($server->target_metadata['prepared']['transport'] ?? null) !== 'local') {
@@ -44,7 +43,6 @@ final class DeploymentGate
             throw new RuntimeException('Verified adoption is required before deployment');
         }
         $preview = $server->preview_summary ?? [];
-        if (($preview['logical_mod_upgrades'] ?? 0) > 0) { throw new RuntimeException('Logical mod upgrade deployment is blocked pending transaction and browser qualification. Compare and review only.'); }
         if (($preview['policy_revision'] ?? null) !== $server->policy_revision || ! ($preview['applicable'] ?? false) || ! $approvedDigest ||
             ! hash_equals($server->approved_plan_sha256 ?? '', $approvedDigest) ||
             ! hash_equals($preview['plan_sha256'] ?? '', $approvedDigest) ||

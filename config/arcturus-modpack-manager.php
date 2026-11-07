@@ -38,14 +38,14 @@ return [
     'default_policy' => 'approve',
     'default_backup_exclusions' => ['backup', 'backups'],
     'download_concurrency' => 1,
-    // The plugin never updates a server just because a release exists.
-    'automatic_deploy' => false, // Manual exact-plan approval only, including after a release check.
+    // Legacy global flags do not enable scheduling; use explicit per-server maintenance settings.
+    'automatic_deploy' => false,
     'enable_deploy' => (bool) env('ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY', false),
     'ftb_installer_binary' => env('ARCTURUS_MODPACK_MANAGER_FTB_INSTALLER_BINARY'),
     'max_archive_bytes' => (int) env('ARCTURUS_MODPACK_MANAGER_MAX_ARCHIVE_BYTES', 8589934592),
     'discord_webhook' => env('ARCTURUS_MODPACK_MANAGER_DISCORD_WEBHOOK'),
     'discord_events' => (bool) env('ARCTURUS_MODPACK_MANAGER_DISCORD_EVENTS', true),
-    'user_agent' => 'Arcturus-Modpack-Manager/0.4 (+https://github.com/Avalanche7CZ/modpack-updater-pelican)',
+    'user_agent' => 'Arcturus-Modpack-Manager/0.5 (+https://github.com/Avalanche7CZ/modpack-updater-pelican)',
     'release_timeout_seconds' => 20,
     'curseforge_api_key' => env('ARCTURUS_MODPACK_MANAGER_CURSEFORGE_API_KEY'),
     'custom_manifest_directory' => env('ARCTURUS_MODPACK_MANAGER_CUSTOM_MANIFEST_DIRECTORY', ''),

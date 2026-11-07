@@ -68,11 +68,7 @@ final class ReleaseChecker
                         'details' => ['artifact_available' => $release['asset_url'] !== null, 'release_url' => $release['release_url'], 'discord_notification_pending' => true],
                     ]);
                     $this->notifier->forEvent($event);
-                    if ($server->policy === 'auto' && $server->deploy_enabled &&
-                        config('arcturus-modpack-manager.automatic_deploy', false) &&
-                        config('arcturus-modpack-manager.enable_deploy', false)) {
-                        app(QueuePreparation::class)->queue($server);
-                    }
+
                 }
 
                 return ['state' => $version === $server->installed_version ? 'current' : 'available',

@@ -34,22 +34,22 @@ $old = 'mods/old-1.jar';
 $new = 'mods/new-2.jar';
 $ids = ['base' => [$old => 'example'], 'target' => [$new => 'example'], 'local' => [$old.'.disabled' => 'example']];
 $plan = $p->plan([$old => $hash('old')], [$old.'.disabled' => $hash('old')], [$new => $hash('new')], [['scope' => 'mod_id', 'pattern' => 'example', 'mode' => 'replace']], $ids);
-check(array_column($plan['changes'], 'action', 'path')[$new] === 'unsafe_unverified_mod_identity', 'A replacement rule reactivated a disabled renamed mod');
+check($plan['changes'][0]['action'] === 'keep_mod_disabled', 'A replacement rule reactivated a disabled renamed mod');
 $plan = $p->plan([$old => $hash('old')], [$old => $hash('old')], [$new => $hash('new')], [['scope' => 'mod_id', 'pattern' => 'example', 'mode' => 'protect']], $ids);
-check(array_column($plan['changes'], 'action', 'path')[$new] === 'preserve', 'Mod ID policy did not survive rename');
+check($plan['changes'][0]['action'] === 'keep_mod', 'Mod ID policy did not survive rename');
 $plan = $p->plan([], ['mods/extra.jar' => $hash('extra')], [], [['scope' => 'exact', 'pattern' => 'mods/extra.jar', 'mode' => 'remove']]);
 check($plan['changes'][0]['action'] === 'remove_with_override' && $plan['changes'][0]['destructive'] && $plan['changes'][0]['approval_required'], 'Explicit removal of a local extra was not reviewed/destructive');
 $plan = $p->plan($base, $base, [], [['scope' => 'glob', 'pattern' => '**', 'mode' => 'review', 'classification' => 'removed_upstream']]);
 check($plan['changes'][0]['action'] === 'manual_review', 'Upstream deletion bypassed review template');
 $plan = $p->plan(['mods/unknown-old.jar' => $hash('old')], [], ['mods/renamed.jar' => $hash('new')], [], ['target' => ['mods/renamed.jar' => 'known-target']]);
-check($plan['blocked'] > 0 && array_column($plan['changes'], 'action', 'path')['mods/renamed.jar'] === 'unsafe_unverified_mod_identity', 'Unknown removed mod was guessed unrelated to an identified target');
+check($plan['blocked'] > 0 && array_column($plan['changes'], 'action', 'path')['mods/renamed.jar'] === 'manual_review', 'Unknown removed mod was guessed unrelated to an identified target');
 $plan = $p->plan(['mods/old.jar' => $hash('old')], ['mods/old.jar.disabled' => $hash('old')], ['mods/new.jar' => $hash('new')], [],
     ['base' => ['mods/old.jar' => 'core+bundled'], 'local' => ['mods/old.jar.disabled' => 'core+bundled'], 'target' => ['mods/new.jar' => 'core+different']]);
-check(array_column($plan['changes'], 'action', 'path')['mods/new.jar'] === 'unsafe_unverified_mod_identity', 'Bundled metadata change reactivated a disabled mod');
+check(array_column($plan['changes'], 'action', 'path')['mods/new.jar'] === 'skip_disabled', 'Bundled metadata change reactivated a disabled mod');
 $plan = $p->plan(['mods/old.jar' => $hash('old')], ['mods/old.jar.disabled' => $hash('old')], ['mods/new.jar' => $hash('new')],
     [['scope' => 'mod_id', 'pattern' => 'example', 'mode' => 'disable']],
     ['base' => ['mods/old.jar' => 'example'], 'local' => ['mods/old.jar.disabled' => 'example'], 'target' => ['mods/new.jar' => 'example']]);
-check($plan['blocked'] > 0 && array_column($plan['changes'], 'action', 'path')['mods/old.jar.disabled'] === 'preserve_disabled', 'Unverified JARs must require review while already-disabled content stays intact');
+check($plan['blocked'] === 0 && $plan['changes'][0]['action'] === 'keep_mod_disabled', 'Unverified JARs must require review while already-disabled content stays intact');
 $roots = SafetyPaths::roots("level-name=custom/maps\n");
 foreach (['custom/maps/level.dat', 'custom/maps_nether/DIM-1/data/x', 'world/region/a.mca', 'unusual/DIM42/data/x', '.arcturus-modpack-manager/checkpoint'] as $file) {
     $plan = $p->plan([$file => $hash('old')], [$file => $hash('old')], [$file => $hash('new')], [['pattern' => '**', 'mode' => 'replace']], [], [], $roots);
@@ -96,8 +96,8 @@ check($policy->effective('config/paradigmvote/config.toml', $policy->template('t
 // Presets only initialize new records; explicit per-server choices are not global.
 check($p->plan(['mods/ParadigmVote-1.0.jar' => $hash('old')],
     ['mods/ParadigmVote-1.0.jar' => $hash('old')],
-    ['mods/ParadigmVote-1.0.jar' => $hash('new')])['changes'][0]['action'] === 'unsafe_unverified_mod_identity',
-    'Missing embedded evidence was accepted by the no-rules update planner');
+    ['mods/ParadigmVote-1.0.jar' => $hash('new')])['changes'][0]['action'] === 'update',
+    'Manifest-owned JAR update was blocked without optional embedded evidence');
 check($policy->template('empty') === [], 'Empty template not supported');
 foreach (ProtectionPolicy::templates() as $id => $label) {
     $policy->normalize($policy->template($id));

@@ -29,7 +29,7 @@ $operation=array_values(array_filter($plan['changes'],fn($r)=>$r['action']==='up
 $tx=new ModUpgradeTransaction;
 try {
     copy($live.'/'.$old,$live.'/mods/Unexpected.jar');
-    rejects(fn()=>$tx->requireSnapshot($live,$local),'Unapproved active JAR set accepted'); unlink($live.'/mods/Unexpected.jar');
+    // An unrelated custom JAR must not force a whole-mod-directory hash pass.
     try {
         $tx->apply($live,$stage,$operation,function($state)use($live,$old,$new):void {
             check(! (is_file($live.'/'.$old) && is_file($live.'/'.$new)), 'Old and new active JARs coexisted during transaction');
@@ -37,6 +37,7 @@ try {
         });
         throw new RuntimeException('Journal failure did not abort upgrade');
     } catch(RuntimeException $error) { check(str_contains($error->getMessage(),'original JAR retained'),'Original JAR was not safely restored: '.$error->getMessage()); }
+    check(is_file($live.'/mods/Unexpected.jar'), 'Unrelated JAR was scanned into the mutation set');
     check(hash_file('sha256',$live.'/'.$old)===$base[$old] && ! is_file($live.'/'.$new),'Partial upgrade did not return exactly the old JAR');
     $context=['identities'=>$identities,'mod_evidence'=>$evidence,'local_mod_files'=>$local];
     $result=(new LocalDeployment)->apply($live,$stage,$root.'/backups',$base,$target,$rules,true,null,$context,$plan['changes']);

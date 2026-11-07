@@ -8,7 +8,7 @@ use RuntimeException;
 /** Bounded recovery receipt. Complete server data belongs to Pelican/Wings backups. */
 final class RestoreInventory
 {
-    public function capture(string $root, array $changes, array $launchHashes, array $safetyRoots = [], ?\Closure $heartbeat = null): array
+    public function capture(string $root, array $changes, array $launchHashes, array $safetyRoots = [], ?\Closure $heartbeat = null, array $launchLinks = []): array
     {
         $safetyRoots = array_values(array_unique([...$safetyRoots, ...(new DirectoryInventory)->safetyRoots($root)]));
         $hashes = $launchHashes;
@@ -20,7 +20,7 @@ final class RestoreInventory
             $hashes[$path] = $change['local_sha256'];
         }
         ksort($hashes);
-        $receipt = ['schema' => 1, 'hashes' => $hashes, 'safety_roots' => $safetyRoots];
+        $receipt = ['schema' => 1, 'hashes' => $hashes, 'safety_roots' => $safetyRoots, 'links' => $launchLinks];
         $this->verify($root, $receipt, $heartbeat);
         return $receipt;
     }
@@ -35,6 +35,12 @@ final class RestoreInventory
             UpdatePlanner::assertPath($path);
             if (SafetyPaths::reason($path, $receipt['safety_roots']) !== null || ($hash !== null && (! is_string($hash) || ! preg_match('/^[a-f0-9]{64}$/D', $hash)))) {
                 throw new RuntimeException('Unsafe recovery verification scope; keep Minecraft stopped.');
+            }
+        }
+        foreach ($receipt['links'] ?? [] as $path => $target) {
+            // Only the qualified root-level Forge argument alias is supported, never arbitrary links.
+            if ($path !== 'unix_args.txt' || ! is_string($target) || ! is_link($root.'/'.$path) || readlink($root.'/'.$path) !== $target) {
+                throw new RuntimeException('Original launcher symlink changed. Restore the exact backup and keep Minecraft stopped.');
             }
         }
         $inventory = new DirectoryInventory;

@@ -76,7 +76,7 @@ final class ModpackManagerPlugin implements HasPluginSettings, Plugin
             Section::make('Safety policy')->description(
                 'Runtime changes require administrator review. Deployments require a verified baseline and backup. '
                 .'Node endpoints and per-server secrets are configured in the operator-owned node configuration. '
-                .'Remote deployment and automatic rollback remain disabled pending integration qualification.'),
+                .'Same-host updates use Pelican backups and restore on failure. Automatic maintenance requires explicit per-server opt-in; remote deployment remains disabled.'),
         ];
     }
 

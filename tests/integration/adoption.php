@@ -61,6 +61,7 @@ $upstream = ['schema' => 2, 'provider' => 'custom', 'project' => $source, 'versi
 Http::preventStrayRequests();
 Http::fake(function ($request) use ($operation, $upstream, $local) {
     $url = $request->url();
+    if (str_ends_with($url, '/capabilities')) { return Http::response(['scoped_inventory' => 1, 'directory_policy' => 1]); }
     if (str_ends_with($url, '/prepare')) {
         return Http::response(['operation_id' => $operation->node_operation_id, 'state' => 'completed', 'manifest_sha256' => hash('sha256', json_encode($upstream))]);
     }
@@ -68,9 +69,9 @@ Http::fake(function ($request) use ($operation, $upstream, $local) {
         return Http::response($upstream);
     }
     if (str_ends_with($url, '/inventory')) {
-        return Http::response(['complete' => true, 'scope' => 'managed-pack-files',
+        return Http::response(['complete' => true, 'scope' => 'manifest-delta-v1', 'requested_paths' => $request['paths'],
             'excluded_roots' => ['world'], 'notice' => 'Fixture point-in-time scan', 'identities' => [],
-            'files' => ['config/a.properties' => $local, 'mods/local-extra.jar' => hash('sha256', 'local extra')]]);
+            'files' => []]);
     }
     if (str_contains($url, '/files/list-directory')) {
         return Http::response([], 200, ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)']);
@@ -84,8 +85,8 @@ check(app(PrepareRelease::class)->tick($managed, $operation), 'Exact baseline pr
 $managed = ManagedServer::findOrFail($managed->id);
 $managed->setRelation('pelicanServer', $server);
 check($managed->baseline_status === 'verified', 'Upstream baseline was not verified');
-check(($managed->adoption_report['counts']['preserve_local_change'] ?? 0) === 1, 'Customized config not identified');
-check(($managed->adoption_report['counts']['preserve_local_extra'] ?? 0) === 1, 'Local-only mod not identified');
+check($managed->adoption_report['changes'] === [], 'Adoption scanned or invented observations of unchanged live files');
+check($managed->file_inventory['requested_paths'] === [], 'Adoption requested a full inventory');
 check(! $managed->adopted_at, 'Preparation silently finalized adoption');
 $stored = app(ReleaseStore::class)->load($managed->base_manifest_path);
 check($stored['files']['config/a.properties'] === $original && $stored['files']['config/a.properties'] !== $local,
