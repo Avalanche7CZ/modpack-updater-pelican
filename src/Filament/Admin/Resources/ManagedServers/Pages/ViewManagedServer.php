@@ -87,6 +87,17 @@ final class ViewManagedServer extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('verifyRecovery')->label('Verify restored original snapshot')->button()->color('warning')
+                ->visible(fn () => $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('kind', 'deploy')->where('phase', 'manual_intervention')->exists())
+                ->requiresConfirmation()->modalDescription('First restore the exact locked Pelican backup while Minecraft is stopped. This verifies the complete original offline inventory, returns any preserved excluded folders, and tests the original startup. It never reapplies the update.')
+                ->action(function (): void {
+                    try {
+                        app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->verifyRecovery($this->getRecord());
+                        $this->queued('Original snapshot verification queued; recovery checkpoint stays locked until verification succeeds');
+                    } catch (\Throwable $error) {
+                        Notification::make()->title('Recovery verification was not queued')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Check the current recovery checkpoint and database/queue connectivity.')->danger()->send();
+                    }
+                }),
             Action::make('filesystemBackend')->label('Filesystem backend')->button()->color('gray')
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->fillForm(fn () => ['transport' => $this->getRecord()->transport ?? 'wings'])
@@ -387,6 +398,36 @@ final class ViewManagedServer extends ViewRecord
             \Arcturus\ModpackManager\Jobs\CompareInstallation::dispatch($op->managed_server_id, $op->id);
         } else { PrepareUpdate::dispatch($op->managed_server_id, $op->kind === 'baseline', $op->id); }
         $this->queued('Preparation reconciliation queued');
+    }
+
+    public function applyUpdateAction(): Action
+    {
+        return Action::make('applyUpdate')->label('Apply Update')->button()->color('danger')
+            ->visible(fn () => $this->tab === 'updates')->disabled(fn () => ! $this->canApplyUpdate())
+            ->fillForm(fn () => ['digest' => $this->getRecord()->preview_summary['plan_sha256'] ?? '', 'request_id' => (string) \Illuminate\Support\Str::uuid()])
+            ->schema([Hidden::make('digest'), Hidden::make('request_id'),
+                Checkbox::make('confirm')->label('I reviewed this exact file plan and approve stopping Minecraft, creating a locked Pelican backup, applying the staged update and verifying startup. A failed update may require restoring the full offline backup.')->required()->accepted(),
+            ])->modalHeading('Approve this exact manual update')
+            ->modalDescription(fn () => ($this->getRecord()->preview_summary['from'] ?? '').' → '.($this->getRecord()->preview_summary['to'] ?? '').'. Plan: '.($this->getRecord()->preview_summary['plan_sha256'] ?? 'unavailable'))
+            ->modalSubmitActionLabel('Approve and queue update')
+            ->action(function (array $data): void {
+                Access::requireAdmin();
+                try {
+                    $operation = app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->queue($this->getRecord(), $data['digest'], $data['request_id']);
+                    $this->queued('Manual update approved; deployment operation '.$operation->id);
+                } catch (\Throwable $error) {
+                    Notification::make()->title('Update was not queued')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Deployment approval failed. Verify database/queue connectivity and compare the current plan again.')->danger()->send();
+                }
+            });
+    }
+
+    public function canApplyUpdate(): bool
+    {
+        if (! Access::admin()) { return false; }
+        $record = $this->getRecord();
+        if ($record->active_operation_id) { return false; }
+        try { app(\Arcturus\ModpackManager\Services\DeploymentGate::class)->requireReady($record); return true; }
+        catch (\Throwable) { return false; }
     }
 
     public function changeRows(): array

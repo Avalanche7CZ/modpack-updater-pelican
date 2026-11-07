@@ -1,0 +1,84 @@
+<?php
+
+declare(strict_types=1);
+namespace Arcturus\ModpackManager\Jobs;
+
+use Arcturus\ModpackManager\Local\LocalWorker;
+use Arcturus\ModpackManager\Models\ManagedServer;
+use Arcturus\ModpackManager\Models\Operation;
+use Arcturus\ModpackManager\Services\ExcludedFolderPreserver;
+use Arcturus\ModpackManager\Services\OperationTracker;
+use Arcturus\ModpackManager\Services\PelicanPowerController;
+use Arcturus\ModpackManager\Services\RestoreInventory;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\DB;
+use RuntimeException;
+use Throwable;
+
+/** Explicit verification of an operator-restored snapshot. Never replays apply or initiates a restore. */
+final class VerifyDeploymentRecovery implements ShouldQueue
+{
+    use Queueable;
+    public int $tries = 1;
+    public int $timeout = 10800;
+    public function __construct(public readonly string $operationId) {}
+
+    public function handle(PelicanPowerController $power): void
+    {
+        $operation = DB::transaction(function (): ?Operation {
+            $row = Operation::lockForUpdate()->findOrFail($this->operationId);
+            if ($row->phase !== 'recovery_queued' || $row->completed_at) { return null; }
+            $row->update(['phase' => 'checking_recovery', 'heartbeat_at' => now()]); return $row;
+        });
+        if (! $operation) { return; }
+        $server = ManagedServer::lightweight()->findOrFail($operation->managed_server_id);
+        $requireOpen = function () use ($operation): void { if ($operation->fresh()->completed_at) { throw new RuntimeException('Recovery verification receipt is closed. Retain its stopped recovery checkpoint.'); } };
+        $pulseAt = 0;
+        $heartbeat = function () use ($operation, &$pulseAt, $requireOpen): void { if (time() - $pulseAt >= 10) { $requireOpen(); $operation->update(['heartbeat_at' => now()]); $pulseAt = time(); } };
+        try {
+            if ($server->active_operation_id !== $operation->id || ($operation->context['recovery_actor_id'] ?? null) === null) { throw new RuntimeException('Recovery verification receipt is not active.'); }
+            $pelican = $server->pelicanServer;
+            $power->deploymentGuard($pelican, false);
+            if ($power->state($pelican) !== 'exited' || $pelican->status !== null || $pelican->backups()->whereNull('completed_at')->exists()) {
+                throw new RuntimeException('Confirm Minecraft stopped and all Pelican backup/restore callbacks completed before verification.');
+            }
+            $entries = (new LocalWorker($server))->configuration(); $root = $entries[$server->pelican_server_uuid]['root'];
+            $expected = $operation->context['recovery_fingerprint'] ?? null;
+            if (! $expected) { throw new RuntimeException('No offline recovery inventory was recorded. Retain evidence and request host-operator recovery.'); }
+            $stash = $operation->context['preserved_stash'] ?? null;
+            if ($stash) { app(ExcludedFolderPreserver::class)->moveBack($root, $stash); $operation->update(['context' => [...$operation->context, 'preserved_stash' => null]]); }
+            if (app(RestoreInventory::class)->fingerprint($root, $operation->context['excluded_directories'] ?? [], $heartbeat) !== $expected) {
+                throw new RuntimeException('Restored world/custom/runtime files do not match the complete original offline inventory. Do not start or reapply; restore the correct locked backup.');
+            }
+            if (app(\Arcturus\ModpackManager\Services\SameHostDeployment::class)->panelFingerprint($pelican->refresh()) !== ($operation->context['panel_sha256'] ?? null)) { throw new RuntimeException('Restore the original Pelican startup/image/egg variables before verifying recovery.'); }
+            $requireOpen();
+            $operation->update(['phase' => 'recovery_starting', 'progress' => ['message' => 'Original offline inventory verified; checking its Minecraft startup']]);
+            $power->deploymentGuard($pelican, true);
+            $power->startAndVerify($pelican, $root, timeoutSeconds: (int) config('arcturus-modpack-manager.deployment_start_timeout', 900), heartbeat: $heartbeat);
+            $requireOpen();
+            $server->update(['last_error' => 'Previous update failed; the original offline snapshot and startup were verified after operator recovery.']);
+            $operation->update(['error' => null, 'progress' => ['message' => 'Operator recovery verified; original Minecraft startup confirmed']]);
+            app(OperationTracker::class)->transition($operation, 'restored', ['restore_verified' => true, 'recovery_startup_verified' => true]);
+            try { $power->sync($pelican); } catch (Throwable) { $operation->update(['error' => 'Original snapshot recovered; sync server configuration to release maintenance.']); }
+        } catch (Throwable $error) {
+            if ($operation->fresh()->completed_at) { return; }
+            $operation->update(['phase' => 'restoring']);
+            try { $power->guardAndStop($server->pelicanServer, $heartbeat); } catch (Throwable) { /* Keep the durable recovery lock and show offline confirmation requirement. */ }
+            $message = get_class($error) === RuntimeException::class ? $error->getMessage() : 'Recovery verification infrastructure unavailable. Confirm Wings offline state and inspect the retained backup/journal.';
+            $operation->update(['error' => $message]);
+            app(OperationTracker::class)->transition($operation, 'manual_intervention');
+        }
+    }
+
+    public function failed(?Throwable $error): void
+    {
+        $row = Operation::find($this->operationId);
+        if (! $row || $row->completed_at) { return; }
+        $server = ManagedServer::lightweight()->findOrFail($row->managed_server_id);
+        $row->update(['phase' => 'restoring']);
+        try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); } catch (Throwable) { }
+        $row->update(['error' => 'Recovery verification interrupted. Confirm Wings offline state and retain the locked backup; do not reapply the update.']);
+        app(OperationTracker::class)->transition($row, 'manual_intervention');
+    }
+}

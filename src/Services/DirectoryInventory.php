@@ -11,11 +11,12 @@ use RuntimeException;
 final class DirectoryInventory
 {
     /** @param list<string> $paths @return array<string,string> */
-    public function hashPaths(string $root, array $paths): array
+    public function hashPaths(string $root, array $paths, ?\Closure $heartbeat = null): array
     {
         $base = $this->requireRoot($root);
         $result = [];
         foreach ($paths as $path) {
+            $heartbeat?->__invoke();
             UpdatePlanner::assertPath($path);
             if (isset($result[$path])) {
                 continue;
@@ -32,7 +33,14 @@ final class DirectoryInventory
             if ($before === false) {
                 throw new RuntimeException("Cannot stat: {$path}");
             }
-            $hash = @hash_file('sha256', $file);
+            if ($heartbeat === null) { $hash = @hash_file('sha256', $file); }
+            else {
+                $stream = fopen($file, 'rb'); $digest = hash_init('sha256');
+                if (! $stream) { throw new RuntimeException('Cannot read managed file during deployment verification'); }
+                try { while (! feof($stream)) { $chunk = fread($stream, 1048576); if ($chunk === false) { throw new RuntimeException('Cannot hash managed file during deployment verification'); } hash_update($digest, $chunk); $heartbeat(); } }
+                finally { fclose($stream); }
+                $hash = hash_final($digest);
+            }
             clearstatcache(true, $file);
             $after = @stat($file);
             if ($hash === false || $after === false ||

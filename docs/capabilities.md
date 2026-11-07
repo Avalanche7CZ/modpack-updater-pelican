@@ -1,12 +1,12 @@
 # Capability and qualification status
 
-This release provides remote inspection, adoption, upstream staging and review. **It is not a qualified remote deployment release.** The Apply Update control is disabled. Setting an environment flag does not enable missing node transactions.
+This release provides remote inspection, adoption, upstream staging and review. **It is not a qualified remote deployment release.** Manual Apply Update is available only for the [qualified same-host workflow](manual-deployment.md): unchanged installed Forge 1.20.1 / Java 17 runtime reuse and native Wings backups. Automatic deployment stays disabled. Setting an environment flag does not enable missing node transactions.
 
 | Capability | Implemented behavior | Qualification |
 | --- | --- | --- |
 | File operations | Native Pelican `DaemonFileRepository`: list/stat, bounded text reads, text writes, mkdir, rename/move, delete, copy-with-daemon-selected-name | Actual rc.1 classes with HTTP fixtures; no live Wings write test |
 | SHA-256 inventory | Server-scoped worker streams every managed file; accounts for missing requested files; rejects partial/oversized responses | Real disposable filesystem and worker HTTP tests |
-| Worlds | No recursive world hashing; `level-name` is excluded even when it names a managed directory | Fixture tested; unsupported escaped properties must be reviewed |
+| Worlds | Comparison never hashes worlds; offline manual-deployment recovery fingerprints the whole recoverable volume read-only | Custom `level-name` is excluded from mutations; unsupported property keys fail closed |
 | Provider metadata | Independent FTB, GitHub, Modrinth, CurseForge, ATLauncher and custom adapters | Fixtures; live FTB/Modrinth/GitHub metadata smoke checks |
 | Preparation | Node-side downloads with upstream checksums, bounded ZIP extraction, normalized manifest, durable progress | Full small local-artifact staging test; no full modpack installation |
 | Adoption | Native read-only inspection, exact upstream baseline, customized-file report, explicit finish or unverified monitoring | Planner/provenance/framework tests; live Wings inspection not exercised |
@@ -20,11 +20,11 @@ This release provides remote inspection, adoption, upstream staging and review. 
 | Per-server policies | Exact/mod-ID/filename/directory/glob/loader/extension selectors, editable templates, bulk file rules, native rule testing, audit and approval invalidation | Native Livewire wizard/modal submission, server isolation/reload, race and exact preview/deploy fixture tests; see [policy limits](server-policies.md) |
 | Text merging | Strict single-line `.properties` three-way merge output for administrator review | Escapes, continuations, duplicate keys and conflicts refuse success; no automatic write-back |
 | Runtime preflight | Forge/NeoForge args paths, legacy Forge JARs, Fabric/Quilt launchers, Crucible, image hints | Unknown actual Java or incompatible runtime blocks deployment; no egg/image/startup mutation |
-| Native backups | Existing Pelican locked backups, quota checks, metadata and exact restore-callback checks | Pure safety fixtures and actual API signature audit; no live backup/restore callback test |
+| Native backups | Locked Wings backups, quota checks, exact backup and restore callbacks, full offline recovery verification | Native callback controllers and archive/restore failure fixtures on rc.1/rc.2; no live Wings test; other adapters blocked for manual deployment |
 | Remote rollback exclusions | Standard Wings cannot move excluded data outside its volume | Automatic truncating restore is blocked; operator preservation/recovery required |
-| Deployment / rollback | Existing local offline CLI retained; native orchestration gated | Remote node transaction/apply/restore capabilities return false; no live or Minecraft qualification |
+| Deployment / rollback | Exact manual approval, acknowledged per-UUID maintenance guard, stopped-server transaction, fresh startup and verified full rollback or stopped checkpoint | Native Filament/database queue/Wings HTTP fixtures on rc.1/rc.2; no actual TFG/Minecraft or live Wings qualification; remote and automatic deployment disabled |
 | Native UI | Admin dashboard, adoption wizard, detail tabs, conflict decisions, encrypted plugin settings; owner/subuser read-only page | Filament 5 component construction, Livewire tab rendering, Blade compilation and 36 Chromium viewport/theme fixture checks |
-| Same-host filesystem | One-time root-owned node approval, trusted UUID discovery, inherited read ACLs and private staging on adoption; existing unprivileged stdio preparation/inventory | Local archive, checksum, permission/path, lock/recovery, Laravel/Filament and remote compatibility fixtures; deployment stays disabled; no live TFG runtime proof |
+| Same-host filesystem | One-time root-owned node approval, trusted UUID discovery, inherited read ACLs and private staging on adoption; existing unprivileged stdio preparation/inventory | Local archive, checksum, permission/path, lock/recovery, Laravel/Filament and remote compatibility fixtures; qualified manual updates require additional scoped deployment/read-only recovery ACLs; no live TFG runtime proof |
 | Database | Additive Arcturus-only migration; previous records become unverified, default transport Wings | SQLite install/upgrade/down tests and row-size guard; no MariaDB runtime test |
 
 Preparation completion means **the published files were staged and checksummed**. It does not mean a loader is installed, a launch script is trusted, the pack is deployable, or a world migration has been tested. Generated runtime files remain outside a published-file baseline.

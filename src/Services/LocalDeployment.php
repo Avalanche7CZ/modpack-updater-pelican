@@ -45,7 +45,9 @@ final class LocalDeployment
         bool $offlineConfirmed = false,
         ?string $verifiedPelicanBackupUuid = null,
         array $policyContext = [],
-        ?array $expectedDecisions = null
+        ?array $expectedDecisions = null,
+        ?string $transactionRoot = null,
+        ?\Closure $heartbeat = null
     ): array {
         if (!$offlineConfirmed) {
             throw new RuntimeException('Server stop must be explicitly confirmed before deployment');
@@ -68,7 +70,7 @@ final class LocalDeployment
         } else {
             $this->checkSeparate($live, $stage, $backups);
         }
-        $lockPath = dirname($live) . '/.' . basename($live) . '.arcturus-modpack-manager.lock';
+        $lockPath = $transactionRoot !== null ? $this->root($transactionRoot).'/.deployment.lock' : dirname($live) . '/.' . basename($live) . '.arcturus-modpack-manager.lock';
         if (is_link($lockPath)) {
             throw new RuntimeException('Unsafe lock file');
         }
@@ -77,11 +79,11 @@ final class LocalDeployment
             throw new RuntimeException('Another update is running for this directory');
         }
         try {
-            $paths = array_unique(array_merge(array_keys($base), array_keys($target)));
+            $paths = array_unique(array_merge(array_keys($base), array_keys($target), array_column($expectedDecisions ?? [], 'path')));
             $safetyRoots = array_values(array_unique(array_merge($this->inventory->safetyRoots($live), $policyContext['safety_roots'] ?? [])));
             $paths = array_values(array_filter($paths, fn ($p) => SafetyPaths::reason($p, $safetyRoots) === null));
-            $local = $this->inventory->hashPaths($live, $paths);
-            $verified = $this->inventory->hashPaths($stage, array_keys($target));
+            $local = $this->inventory->hashPaths($live, $paths, $heartbeat);
+            $verified = $this->inventory->hashPaths($stage, array_keys($target), $heartbeat);
             if (count($verified) !== count($target)) {
                 throw new RuntimeException('Staged release is incomplete');
             }
@@ -121,6 +123,17 @@ final class LocalDeployment
                 }
             }
             $modified = [];
+            $journal = $transactionRoot !== null ? $transactionRoot.'/deploy-'.$verifiedPelicanBackupUuid.'.jsonl' : null;
+            $journalStream = $journal !== null ? @fopen($journal, 'x+b') : null;
+            if ($journal !== null && ! $journalStream) { throw new RuntimeException('Deployment recovery journal already exists or is unavailable; do not replay apply.'); }
+            $recorded = 0;
+            $receipt = function (string $state) use ($journalStream, $verifiedPelicanBackupUuid, &$modified, &$recorded): void {
+                if (! $journalStream) { return; }
+                $line = json_encode(['state' => $state, 'backup_uuid' => $verifiedPelicanBackupUuid, 'touched' => array_slice($modified, $recorded)], JSON_THROW_ON_ERROR)."\n";
+                if (fwrite($journalStream, $line) !== strlen($line) || ! fflush($journalStream) || ! fsync($journalStream)) { throw new RuntimeException('Cannot persist deployment recovery journal'); }
+                $recorded = count($modified);
+            };
+            $receipt('applying');
             try {
                 if ($backup !== null) {
                     $this->copyTree($live, $backup);
@@ -131,13 +144,15 @@ final class LocalDeployment
                 }
 
                 foreach ($mutations as $entry) {
+                    $heartbeat?->__invoke();
                     $path = $entry['path'];
                     $dest = $live . '/' . $path;
-                    $current = $this->inventory->hashPaths($live, [$path])[$path] ?? null;
+                    $current = $this->inventory->hashPaths($live, [$path], $heartbeat)[$path] ?? null;
                     if ($current !== $entry['local_sha256']) {
                         throw new RuntimeException("File changed after planning: {$path}");
                     }
                     $modified[] = $path;
+                    $receipt('applying');
                     if (in_array($entry['action'], [
                         'remove', 'remove_with_override', 'disable_requires_enforcement'
                     ], true)) {
@@ -146,8 +161,8 @@ final class LocalDeployment
                         }
                         continue;
                     }
-                    $this->atomicCopy($stage . '/' . $path, $dest, $live);
-                    $after = $this->inventory->hashPaths($live, [$path])[$path] ?? null;
+                    $this->atomicCopy($stage . '/' . $path, $dest, $live, $transactionRoot !== null);
+                    $after = $this->inventory->hashPaths($live, [$path], $heartbeat)[$path] ?? null;
                     if ($after !== $entry['target_sha256']) {
                         throw new RuntimeException("Post-install hash mismatch: {$path}");
                     }
@@ -166,6 +181,7 @@ final class LocalDeployment
                         throw new RuntimeException('Could not save backup metadata');
                     }
                 }
+                $receipt('applied');
                 return [
                     'backup' => $backup,
                     'external_backup_uuid' => $verifiedPelicanBackupUuid,
@@ -204,6 +220,7 @@ final class LocalDeployment
                     $backup . '. Cause: ' . $error->getMessage(), previous: $error);
             }
         } finally {
+            if (isset($journalStream) && is_resource($journalStream)) { fclose($journalStream); }
             flock($lock, LOCK_UN);
             fclose($lock);
         }
@@ -297,7 +314,7 @@ final class LocalDeployment
         }
     }
 
-    private function atomicCopy(string $source, string $dest, string $root): void
+    private function atomicCopy(string $source, string $dest, string $root, bool $inheritPermissions = false): void
     {
         $relative = ltrim(substr($dest, strlen($root)), '/');
         UpdatePlanner::assertPath($relative);
@@ -309,7 +326,7 @@ final class LocalDeployment
             if (is_link($dir)) {
                 throw new RuntimeException("Symlink in destination: {$relative}");
             }
-            if (!is_dir($dir) && !@mkdir($dir, 0750)) {
+            if (!is_dir($dir) && !@mkdir($dir, $inheritPermissions ? 0770 : 0750)) {
                 throw new RuntimeException("Could not create destination directory: {$relative}");
             }
         }
@@ -322,8 +339,10 @@ final class LocalDeployment
                 throw new RuntimeException("Copy failed: {$relative}");
             }
             $mode = @fileperms($source);
-            if ($mode !== false) {
+            if ($mode !== false && ! $inheritPermissions) {
                 @chmod($tmp, $mode & 0777);
+            } elseif ($mode !== false && ($mode & 0111)) {
+                @chmod($tmp, (fileperms($tmp) & 0777) | 0110);
             }
             if (!@rename($tmp, $dest)) {
                 throw new RuntimeException("Atomic move failed: {$relative}");

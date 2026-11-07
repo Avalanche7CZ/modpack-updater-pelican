@@ -21,7 +21,7 @@ Modpack-specific roots require explicit operator review. For the reported TFG-Mo
 
 ## Requirements and installation
 
-Target: Pelican Panel **1.0.0-rc.1**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. For remote preparation, keep queue `retry_after` above its 150-second tick timeout (180 seconds or more). Approved local-node setup configures a longer effective retry window for bounded local preparation; see the local setup guide. Native legacy deployment jobs have a much longer timeout and are not enabled by this release.
+Target: Pelican Panel **1.0.0-rc.1**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. For remote preparation, keep queue `retry_after` above its 150-second tick timeout (180 seconds or more). Approved local-node setup configures a longer effective retry window for bounded local preparation; see the local setup guide. Manual deployment jobs have a 10,800-second timeout; the local queue requires a longer effective visibility window. See [manual deployment](docs/manual-deployment.md) for host permissions, supported runtimes and recovery requirements.
 
 1. Download `arcturus-modpack-manager.zip` and `SHA256SUMS.txt` from a successful [GitHub Release](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases).
 2. Verify `sha256sum -c SHA256SUMS.txt`.
@@ -78,7 +78,7 @@ Use **Mods & Files** for searchable inventory and bulk file/mod policies, or **P
 
 Mod identity comes from Fabric/Quilt metadata, Forge/NeoForge TOML or legacy `mcmod.info`. Use explicit path-to-identity mappings when metadata is absent. Missing upstream mods are kept absent across upstream renames where identity is known; unknown/ambiguous identities block new JARs. Additional local mods are preserved. Strict single-line `.properties` merges can be reviewed as text; unsupported syntax or conflicting keys requires manual work through Pelican's file editor. No merge writes live data automatically.
 
-The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Apply Update is disabled while remote deployment/recovery has not been qualified.** No environment toggle makes a missing capability safe.
+The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Apply Update requires an administrator-approved current plan and qualified same-host Forge 1.20.1 / Java 17 runtime reuse with native Wings backups.** See [manual deployment and recovery](docs/manual-deployment.md). Remote and automatic deployment remain disabled; no environment toggle bypasses missing safety evidence.
 
 ## Backups and recovery
 
@@ -104,7 +104,7 @@ Background Operation shows persisted phase progress, actual downloaded bytes, kn
 - **Unverified baseline:** prepare the exact original release, not a manifest derived from live customized files.
 - **Missing checksum / restricted download:** select the correct official server pack or provide an independently pinned custom recipe. Do not invent digests or mirror prohibited files.
 - **Unknown Java/loader or startup change:** review the real container/runtime and pack migration notes. Image names alone do not establish compatibility.
-- **Stale operation:** use Reconcile preparation or `php artisan arcturus-modpack:recover`. This resumes only non-destructive preparations. An uncertain deployment remains locked for manual recovery.
+- **Stale operation:** use Reconcile preparation or `php artisan arcturus-modpack:recover`. This resumes non-destructive preparations and may redispatch the same untouched queued approval receipt. Interrupted destructive work remains locked for [manual recovery](docs/manual-deployment.md#failed-update-and-recovery).
 - **Queue not running:** checks/staging remain queued. Configure Pelican's normal queue worker and scheduler.
 - **Database/APP_KEY problems:** restore the Panel database/key; retained node stages can support operator investigation, but are not silently adopted as trusted server identity.
 

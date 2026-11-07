@@ -25,4 +25,7 @@ check(SafetyPaths::reason('TFGWorld/region/r.0.0.mca', $roots) !== null,
 rejects(fn () => SafetyPaths::roots('level-name=TFG\\ World'), 'Escaped custom world name must require verification');
 rejects(fn () => SafetyPaths::roots('level-name=../escape'), 'Unsafe world path must remain blocked');
 
+\Arcturus\ModpackManager\Services\BackupExclusions::requireSafeForWorld(['backups'], $properties);
+rejects(fn () => \Arcturus\ModpackManager\Services\BackupExclusions::requireSafeForWorld(['TFGWorld'], $properties), 'Escaped MOTD bypassed custom-world backup protection');
+rejects(fn () => SafetyPaths::roots('level\\u002dname=hidden-world'), 'Escaped level-name key bypassed world protection');
 echo "Server.properties unrelated escapes and strict custom world safety tests passed\n";

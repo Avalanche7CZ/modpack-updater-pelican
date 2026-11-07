@@ -54,24 +54,7 @@ final class BackupExclusions
 
     public static function requireSafeForWorld(array $folders, string $properties): void
     {
-        $worlds = ['world'];
-        foreach (preg_split('/\r?\n/', $properties) as $line) {
-            if (preg_match('/^\s*[#!]/', $line) || trim($line) === '') {
-                continue;
-            }
-            if (str_contains($line, '\\')) {
-                throw new InvalidArgumentException('Escaped server.properties requires manual exclusion verification; use a complete backup');
-            }
-            if (preg_match('/^\s*level-name(?:\s*[=:]\s*|\s+)(.+?)\s*$/D', $line, $m)) {
-                $parts = explode('/', $m[1]);
-                if (array_intersect($parts, ['', '.', '..']) || str_contains($m[1], ':')) {
-                    throw new InvalidArgumentException('Unsafe configured world path');
-                }
-                foreach (['', '_nether', '_the_end'] as $suffix) {
-                    $worlds[] = $parts[0].$suffix;
-                }
-            }
-        }
+        $worlds = array_values(array_unique(array_map(fn ($root) => explode('/', $root)[0], SafetyPaths::roots($properties))));
         foreach (self::normalize($folders) as $folder) {
             if (in_array(mb_strtolower($folder), array_map('mb_strtolower', $worlds), true)) {
                 throw new InvalidArgumentException('The configured world directory cannot be excluded from recovery backups');

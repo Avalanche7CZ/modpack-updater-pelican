@@ -29,6 +29,19 @@ final class PelicanBackupManager
         private readonly PelicanPowerController $power,
     ) {}
 
+    public function requireReady(Server $server): void
+    {
+        if ($server->status !== null || ! $server->backup_limit || $server->backups()->nonFailed()->count() >= $server->backup_limit) {
+            throw new RuntimeException('Pelican backup quota is full or the server is busy. Free a slot without deleting the recovery backup.');
+        }
+        $host = $server->node->backupHosts()->first() ?? \App\Models\BackupHost::doesntHave('nodes')->first();
+        if (! $host || ! app(\App\Extensions\BackupAdapter\BackupAdapterService::class)->get($host->schema)) {
+            throw new RuntimeException('Configure a working Pelican backup host/adapter before approving deployment.');
+        }
+        if ($host->schema !== 'wings') { throw new RuntimeException('Manual same-host deployment currently qualifies the native Wings backup adapter. Other backup adapters remain blocked pending complete restore integration qualification.'); }
+        if (! $server->user) { throw new RuntimeException('Server owner must be resolvable for authenticated backup restore.'); }
+    }
+
     /** Start a locked, complete backup without evicting any existing backup. */
     public function initiate(Server $server, string $name, array $excludedFolders = []): Backup
     {
@@ -57,7 +70,7 @@ final class PelicanBackupManager
     }
 
     /** Wait for Wings' completion callback rather than treating HTTP 2xx as a backup. */
-    public function awaitSuccessful(Backup $backup, array $excludedFolders = [], int $timeoutSeconds = 3600): Backup
+    public function awaitSuccessful(Backup $backup, array $excludedFolders = [], int $timeoutSeconds = 3600, ?\Closure $heartbeat = null): Backup
     {
         $deadline = microtime(true) + $timeoutSeconds;
         do {
@@ -67,7 +80,8 @@ final class PelicanBackupManager
 
                 return $backup;
             }
-            sleep(3);
+            $heartbeat?->__invoke();
+            sleep(1);
         } while (microtime(true) < $deadline);
 
         throw new RuntimeException("Pelican backup {$backup->uuid} did not finish before timeout; deployment cancelled");
@@ -80,14 +94,17 @@ final class PelicanBackupManager
      * A restored Pelican server status of NULL is NOT proof of success:
      * Pelican clears this flag on both successful and failed restores.
      */
-    public function restoreAndWait(Server $server, Backup $backup, array $excludedFolders = [], int $timeoutSeconds = 3600, ?string $preservedStash = null): void
+    public function restoreAndWait(Server $server, Backup $backup, array $excludedFolders = [], int $timeoutSeconds = 3600, ?string $preservedStash = null, ?\Closure $heartbeat = null): void
     {
         $this->requireStopped($server);
         if ($backup->server_id !== $server->id) {
             throw new RuntimeException('Refusing restore: backup belongs to a different server');
         }
         if ($excludedFolders !== []) {
-            $root = config('arcturus-modpack-manager.local_server_roots.'.$server->uuid);
+            $managed = \Arcturus\ModpackManager\Models\ManagedServer::lightweight()->where('pelican_server_uuid', $server->uuid)->first();
+            $root = $managed && isset($managed->baseline_provenance['transport'])
+                ? app(SameHostDeployment::class)->paths($managed)['live']
+                : config('arcturus-modpack-manager.local_server_roots.'.$server->uuid);
             if (! $root) {
                 throw new RuntimeException('Automatic truncating restore is blocked: excluded directories cannot be preserved outside this remote Wings volume');
             }
@@ -146,7 +163,8 @@ final class PelicanBackupManager
             )) {
                 return;
             }
-            sleep(3);
+            $heartbeat?->__invoke();
+            sleep(1);
         } while (microtime(true) < $deadline);
 
         throw new RuntimeException(

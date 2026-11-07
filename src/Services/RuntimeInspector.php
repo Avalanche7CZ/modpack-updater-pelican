@@ -179,6 +179,19 @@ final class RuntimeInspector
         return $result;
     }
 
+    /** Read actual Forge/ModLauncher startup output, never infer Java from an image name. */
+    public function fromStartupLog(string $log): array
+    {
+        $result = ['minecraft' => null, 'loader' => 'forge', 'loader_version' => null, 'java' => null];
+        foreach (['minecraft' => '--fml.mcVersion', 'loader_version' => '--fml.forgeVersion'] as $key => $flag) {
+            if (preg_match('/'.preg_quote($flag, '/').'[=,\s]+["\x27]?([0-9]+(?:\.[0-9]+)+)/', $log, $match)) { $result[$key] = $match[1]; }
+        }
+        if (preg_match('/ModLauncher[^\r\n]*starting:[^\r\n]*java version ([0-9]+)(?:\.[0-9]+)*/i', $log, $match)) {
+            $result['java'] = (int) $match[1];
+        }
+        return $result;
+    }
+
     private function withoutComments(string $text): string
     {
         return implode("\n", array_filter(preg_split('/\r?\n/', $text), fn ($line) => ! preg_match('/^\s*#/', $line)));

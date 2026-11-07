@@ -68,7 +68,21 @@ final class PreviewService
         if ($server->file_inventory) {
             $server->file_inventory = [...$server->file_inventory, 'target_metadata' => $target['metadata'] ?? []];
         }
-        $compatibility = $this->runtime->preflight($server->runtime_report ?? [], $target['runtime'] ?? []);
+        $qualification = null;
+        $qualificationError = null;
+        if ($server->transport === 'local' && isset($server->baseline_provenance['transport'])) {
+            try {
+                $lastPulse = 0;
+                $pulse = $operation ? function () use ($operation, &$lastPulse): void { if (time() - $lastPulse >= 10) { $operation->update(['heartbeat_at' => now()]); $lastPulse = time(); } } : null;
+                $qualification = app(SameHostDeployment::class)->qualify($server, $target, $plan, $pulse);
+            } catch (\Throwable $error) {
+                $qualificationError = get_class($error) === \RuntimeException::class ? $error->getMessage()
+                    : 'Same-host qualification unavailable: check approved local paths, runtime files, queue permissions and Pelican backup configuration.';
+            }
+        }
+        $compatibility = $qualificationError !== null
+            ? ['compatible' => false, 'blockers' => [$qualificationError], 'warnings' => [], 'changes_applied' => false, 'current' => $server->runtime_report ?? [], 'target' => $target['runtime'] ?? []]
+            : $this->runtime->preflight($qualification['current'] ?? $server->runtime_report ?? [], $qualification['target'] ?? $target['runtime'] ?? []);
         $gateReasons = [];
         if ((new DirectoryPolicy)->pending($server)) {
             $gateReasons[] = 'Review newly discovered upstream directories';
@@ -86,17 +100,17 @@ final class PreviewService
             $gateReasons[] = $plan['blocked'].' unresolved file changes';
         }
         $gateReasons = array_merge($gateReasons, $compatibility['blockers']);
-        if ($server->transport !== 'local' || isset($server->baseline_provenance['transport'])) {
+        if ($server->transport !== 'local' || (isset($server->baseline_provenance['transport']) && $qualification === null)) {
             $gateReasons[] = $server->transport === 'local'
-                ? 'Local filesystem preparation provides inventory and staging only; deployment remains disabled'
+                ? ($qualificationError ?? 'Complete same-host deployment qualification before approval')
                 : 'Remote deployment is disabled pending transaction/restore integration qualification';
         }
         $binding = ['uuid' => $server->pelican_server_uuid, 'from' => $base['version'], 'to' => $target['version'],
             'base' => $base['files'], 'local' => $local, 'target' => $target['files'], 'rules' => $rules,
             'directory_decisions' => $server->directory_decisions ?? [], 'decisions' => $plan['changes'], 'identities' => $identities, 'safety_roots' => $safetyRoots, 'disabled' => $server->disabled_mods, 'runtime' => $compatibility, 'backup_mode' => $server->backup_mode,
-            'exclusions' => $server->backup_excluded_directories];
+            'exclusions' => $server->backup_excluded_directories, 'qualification' => $qualification];
         $digest = hash('sha256', json_encode($binding, JSON_THROW_ON_ERROR));
-        $preview = ['policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],
+        $preview = ['qualification' => $qualification, 'policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],
             'counts' => $plan['counts'], 'total' => count($plan['changes']), 'applicable' => $gateReasons === [],
             'plan_sha256' => $digest, 'capability_blockers' => array_values(array_unique($gateReasons)),
             'compatibility' => $compatibility, 'changes' => $plan['changes'],
@@ -114,7 +128,7 @@ final class PreviewService
                 }
             }
             $stillApproved = $fresh->approved_plan_sha256 === $digest;
-            $fresh->forceFill(['preview_summary' => $preview, 'last_preview_at' => now(), 'file_inventory' => $server->file_inventory,
+            $fresh->forceFill(['comparison_status' => 'complete', 'comparison_diagnostic' => null, 'preview_summary' => $preview, 'last_preview_at' => now(), 'file_inventory' => $server->file_inventory,
                 'approved_plan_sha256' => $stillApproved ? $digest : null, 'approved_at' => $stillApproved ? $fresh->approved_at : null,
                 'approved_by' => $stillApproved ? $fresh->approved_by : null])->save();
 

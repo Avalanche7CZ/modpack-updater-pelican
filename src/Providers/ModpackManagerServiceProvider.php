@@ -14,6 +14,7 @@ final class ModpackManagerServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->bind(\App\Services\Servers\ServerConfigurationStructureService::class, \Arcturus\ModpackManager\Services\Pelican\GuardedServerConfiguration::class);
         $this->mergeConfigFrom(plugin_path('arcturus-modpack-manager', 'config/arcturus-modpack-manager.php'), 'arcturus-modpack-manager');
     }
 

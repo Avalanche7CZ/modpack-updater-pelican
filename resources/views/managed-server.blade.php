@@ -3,6 +3,7 @@
     @php($preview = $record->preview_summary ?? [])
     @php($inventory = $record->file_inventory ?? [])
     @php($warnings = $this->inventoryWarnings())
+    @php($runtimeObservation = array_replace($record->runtime_report ?? [], $preview['qualification']['current'] ?? []))
     @php($target = $record->target_metadata ?? $record->release_metadata ?? [])
     <div wire:poll.10s>
         <x-filament::tabs label="Modpack management">
@@ -11,8 +12,9 @@
             @endforeach
         </x-filament::tabs>
         <div class="mt-4 space-y-4">
+            @livewire(\Arcturus\ModpackManager\Livewire\DeploymentStatus::class, ['managedServerId' => $record->id], key('deployment-status-'.$record->id))
             @livewire(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id], key('preparation-status-'.$record->id))
-            @if($record->active_operation_id)
+            @if($record->active_operation_id && $record->operations()->whereKey($record->active_operation_id)->whereIn('kind', ['baseline', 'prepare', 'comparison'])->exists())
                 <div class="flex flex-wrap gap-2">
                     <x-filament::button color="gray" wire:click="resumePreparation">Reconcile preparation</x-filament::button>
                     <x-filament::button color="warning" wire:click="cancelPreparation">Cancel preparation</x-filament::button>
@@ -78,8 +80,8 @@
                 @endif
                 <x-filament::section heading="Observed runtime">
                     <dl class="grid gap-4 sm:grid-cols-2">
-                        @foreach(['state' => 'Last observed state', 'loader' => 'Loader', 'loader_version' => 'Loader version', 'minecraft' => 'Minecraft', 'java' => 'Java image hint', 'image' => 'Docker image', 'egg' => 'Egg', 'startup' => 'Startup command', 'observed_at' => 'Observed at'] as $field => $label)
-                            <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd class="break-all">{{ $record->runtime_report[$field] ?? 'Unknown' }}</dd></div>
+                        @foreach(['state' => 'Last observed state', 'loader' => 'Loader', 'loader_version' => 'Loader version', 'minecraft' => 'Minecraft', 'java' => (($runtimeObservation['java_confidence'] ?? '') === 'verified' ? 'Java (startup verified)' : 'Java image hint'), 'image' => 'Docker image', 'egg' => 'Egg', 'startup' => 'Startup command', 'observed_at' => 'Observed at'] as $field => $label)
+                            <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd class="break-all">{{ $runtimeObservation[$field] ?? 'Unknown' }}</dd></div>
                         @endforeach
                     </dl>
                 </x-filament::section>
@@ -93,14 +95,16 @@
                             @endforeach
                         </dl>
                     @endif
+                    @if($preview['qualification']['runtime_strategy'] ?? null)<p class="mt-3 text-sm">Runtime: reuse verified installed Forge {{ $preview['qualification']['current']['loader_version'] }} / Minecraft {{ $preview['qualification']['current']['minecraft'] }} / Java {{ $preview['qualification']['current']['java'] }}. No installer is run and working launch settings are preserved.</p>@endif
                     <p class="mt-4">A completed, locked Pelican backup is required before deployment. Runtime settings are preserved.</p>
                     <p class="text-sm text-gray-500 dark:text-gray-400">Estimated download: {{ isset($target['download_bytes']) ? number_format($target['download_bytes']) . ' bytes' : 'Unavailable' }}</p>
                     <ul class="mt-3 list-inside list-disc text-sm">
-                        @foreach(array_unique(array_merge($target['blockers'] ?? [], $preview['capability_blockers'] ?? [], ['Remote deployment is disabled pending transaction and restore integration qualification.'])) as $reason)
+                        @foreach(array_unique(array_merge($target['blockers'] ?? [], $preview['capability_blockers'] ?? [], $record->transport !== 'local' ? ['Remote deployment remains disabled. Select and qualify an approved same-host backend.'] : [])) as $reason)
                             <li class="break-words">{{ $reason }}</li>
                         @endforeach
                     </ul>
-                    <x-filament::button color="danger" disabled class="mt-4">Apply Update — blocked</x-filament::button>
+                    @if(!$this->canApplyUpdate() && !$record->active_operation_id)<p class="mt-2 text-sm">Resolve the listed blockers and Compare files again. Qualified readiness expires after 15 minutes; each manual deployment needs a new exact-plan approval.</p>@endif
+                    <x-filament::button color="danger" wire:click="mountAction('applyUpdate')" :disabled="!$this->canApplyUpdate()" class="mt-4">Apply Update{{ $this->canApplyUpdate() ? '' : ' — blocked' }}</x-filament::button>
                 </x-filament::section>
                 <x-filament::section heading="Release notes">
                     <div class="whitespace-pre-wrap break-words text-sm">{{ $target['notes'] ?? 'No release notes available.' }}</div>

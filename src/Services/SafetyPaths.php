@@ -16,6 +16,8 @@ final class SafetyPaths
             if (trim($line) === '' || preg_match('/^\s*[#!]/', $line)) {
                 continue;
             }
+            $key = preg_split('/[=:\s]/', ltrim($line), 2)[0];
+            if (str_contains($key, '\\')) { throw new InvalidArgumentException('Escaped properties keys require manual world-path verification'); }
             // Java server.properties frequently contains escaped MOTDs, unicode
             // codes, passwords or unrelated escaped properties. Those cannot
             // influence the world directory. Only level-name is path-sensitive.

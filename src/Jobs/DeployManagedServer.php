@@ -18,6 +18,11 @@ use Arcturus\ModpackManager\Services\PelicanBackupManager;
 use Arcturus\ModpackManager\Services\PelicanPowerController;
 use Arcturus\ModpackManager\Services\PreviewService;
 use Arcturus\ModpackManager\Services\ReleaseStore;
+use Arcturus\ModpackManager\Services\SameHostDeployment;
+use Arcturus\ModpackManager\Services\RestoreInventory;
+use Arcturus\ModpackManager\Services\OperationTracker;
+use Arcturus\ModpackManager\Models\Operation;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Cache;
@@ -40,7 +45,8 @@ final class DeployManagedServer implements ShouldQueue
     public function __construct(
         public readonly int $managedServerId,
         public readonly bool $automatic = false,
-        public readonly ?string $approvedPlanSha256 = null
+        public readonly ?string $approvedPlanSha256 = null,
+        public readonly ?string $operationId = null
     ) {}
 
     public function handle(
@@ -53,18 +59,40 @@ final class DeployManagedServer implements ShouldQueue
         ExcludedFolderPreserver $preserver,
         DiscordNotifier $discord
     ): void {
-        if (! config('arcturus-modpack-manager.enable_deploy', false)) {
+        if ($this->automatic) { throw new RuntimeException('Automatic deployment is disabled. A root administrator must approve each exact plan.'); }
+        if ($this->operationId === null && ! config('arcturus-modpack-manager.enable_deploy', false)) {
             throw new RuntimeException('Deploy feature not enabled by operator');
         }
         $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$this->managedServerId, 14400);
         if (! $lock->get()) {
+            if ($this->operationId !== null) { return; }
             throw new RuntimeException('Another deploy already holds this server lock');
         }
 
+        $operation = null;
+        $stopAttempted = false;
+        $committed = false;
+        $pulseAt = 0;
+        $heartbeat = function () use (&$operation, &$pulseAt): void { if ($operation && time() - $pulseAt >= 10) { if ($operation->fresh()->completed_at) { throw new RuntimeException('Deployment receipt is closed; retain its recovery checkpoint and do not continue apply.'); } $operation->update(['heartbeat_at' => now()]); $pulseAt = time(); } };
+        $progress = function (string $phase, string $message, array $context = []) use (&$operation): void {
+            if (! $operation) { return; }
+            if ($operation->fresh()->completed_at) { throw new RuntimeException('Deployment receipt is closed; retain its recovery checkpoint and do not continue apply.'); }
+            $operation->update(['phase' => $phase, 'progress' => ['message' => $message], 'context' => array_replace($operation->context ?? [], $context), 'heartbeat_at' => now()]);
+        };
         try {
             $managed = ManagedServer::findOrFail($this->managedServerId);
+            if ($this->operationId !== null) {
+                $operation = DB::transaction(function () use ($managed): ?Operation {
+                    $row = $managed->operations()->lockForUpdate()->findOrFail($this->operationId);
+                    if ($row->completed_at || $row->phase !== 'queued') { return null; }
+                    if ($managed->active_operation_id !== $row->id || ($row->context['manual_approval'] ?? false) !== true || ($row->context['plan_sha256'] ?? null) !== $this->approvedPlanSha256 || ($row->context['actor_id'] ?? null) === null) { throw new RuntimeException('Deployment approval receipt does not match the active operation.'); }
+                    $row->update(['phase' => 'verifying', 'heartbeat_at' => now()]);
+                    return $row;
+                });
+                if (! $operation) { return; }
+            } elseif (isset($managed->baseline_provenance['transport'])) { throw new RuntimeException('Same-host deployment requires a durable administrator approval receipt.'); }
             app(DeploymentGate::class)->require($managed, $this->approvedPlanSha256);
-            if (! $managed->enabled || ! $managed->deploy_enabled) {
+            if (! $managed->enabled || ($operation === null && ! $managed->deploy_enabled)) {
                 throw new RuntimeException('Server deployment disabled');
             }
             if ($this->automatic && (
@@ -92,7 +120,8 @@ final class DeployManagedServer implements ShouldQueue
             if (! in_array($original, ['running', 'exited'], true)) {
                 throw new RuntimeException('Unsafe Pelican server state: '.$original);
             }
-            $preview = $previewer->generate($managed);
+            $progress('verifying', 'Rechecking exact plan, stage, runtime, permissions and backup capacity');
+            $preview = $previewer->generate($managed, $operation);
             app(DeploymentGate::class)->require($managed->refresh(), $this->approvedPlanSha256);
             if ($preview['blocked'] > 0) {
                 throw new RuntimeException('Cannot deploy with unresolved dry-run conflicts');
@@ -104,8 +133,9 @@ final class DeployManagedServer implements ShouldQueue
 
             $base = app(ReleaseStore::class)->load($managed->base_manifest_path);
             $target = app(ReleaseStore::class)->load($managed->target_manifest_path);
-            $stage = realpath($managed->prepared_root);
-            $stageParent = realpath((string) $managed->staging_parent);
+            $sameHost = $operation ? app(SameHostDeployment::class)->paths($managed) : null;
+            $stage = $sameHost['stage'] ?? realpath($managed->prepared_root);
+            $stageParent = $sameHost['transactions'] ?? realpath((string) $managed->staging_parent);
             if (! $stage || ! $stageParent ||
                 ! str_starts_with($stage, rtrim($stageParent, '/').'/') ||
                 ! is_dir($stage) || is_link($managed->prepared_root)) {
@@ -131,6 +161,7 @@ final class DeployManagedServer implements ShouldQueue
                 }
             }
             $beforeHashes = [];
+            $recoveryFingerprint = null;
 
             $pelicanBackup = null;
             $filesystemBackup = null;
@@ -140,18 +171,28 @@ final class DeployManagedServer implements ShouldQueue
             $deploymentStarted = false;
             $restored = false;
             try {
-                $power->stop($pelican);
+                $progress('stopping', 'Stopping Minecraft; waiting for Wings offline confirmation');
+                $stopAttempted = true;
+                if ($operation) { $power->deploymentGuard($pelican, false); }
+                $power->stop($pelican, heartbeat: $heartbeat);
                 $beforeHashes = $backupMode === 'pelican'
-                    ? $inventory->hashPaths($managed->local_root, $trackedPaths) : [];
+                    ? $inventory->hashPaths($managed->local_root, $trackedPaths, $heartbeat) : [];
 
+                if ($operation) {
+                    $progress('snapshotting', 'Hashing the offline recovery inventory, including worlds and protected/custom content');
+                    $recoveryFingerprint = app(RestoreInventory::class)->fingerprint($managed->local_root, $excludedFolders, $heartbeat);
+                    $progress('backing_up', 'Creating a locked Pelican backup; waiting for its exact completion callback', ['recovery_fingerprint' => $recoveryFingerprint, 'excluded_directories' => $excludedFolders]);
+                }
                 if ($backupMode === 'pelican') {
                     // Pelican uses configured Wings/S3 hosts, quota and retention.
                     // No override: reaching backup quota stops the update instead
                     // of deleting someone's existing backup.
                     $name = 'Pre-update '.mb_substr($managed->label, 0, 70).
                         ' '.$base['version'].' -> '.$target['version'];
-                    $pelicanBackup = $backups->initiate($pelican, $name, $excludedFolders);
                     $backupInitiated = true;
+                    $progress('backing_up', 'Pelican backup request initiated; no deployment before callback verification', ['backup_requested' => true]);
+                    $pelicanBackup = $backups->initiate($pelican, $name, $excludedFolders);
+                    $progress('backing_up', 'Waiting for completed, locked, checksummed backup', ['backup_uuid' => $pelicanBackup->uuid]);
                     $managed->forceFill(['last_backup_uuid' => $pelicanBackup->uuid])->save();
                     $managed->events()->create([
                         'kind' => 'backup', 'status' => 'info',
@@ -159,7 +200,7 @@ final class DeployManagedServer implements ShouldQueue
                         'message' => 'Pelican locked backup started',
                         'details' => ['backup_uuid' => $pelicanBackup->uuid, 'backend' => 'pelican'],
                     ]);
-                    $backups->awaitSuccessful($pelicanBackup, $excludedFolders);
+                    $backups->awaitSuccessful($pelicanBackup, $excludedFolders, timeoutSeconds: (int) config('arcturus-modpack-manager.deployment_backup_timeout', 3600), heartbeat: $heartbeat);
                     $backupCompleted = true;
                     $managed->events()->create([
                         'kind' => 'backup', 'status' => 'success',
@@ -173,6 +214,15 @@ final class DeployManagedServer implements ShouldQueue
                     ]);
                 }
 
+                if ($operation) {
+                    if (app(RestoreInventory::class)->fingerprint($managed->local_root, $excludedFolders, $heartbeat) !== $recoveryFingerprint) { throw new RuntimeException('Offline files changed while creating the backup. No update applied; review concurrent SFTP/node changes.'); }
+                    foreach ($preview['qualification']['launch_hashes'] as $path => $hash) {
+                        $full = app(SameHostDeployment::class)->regular($managed->local_root, $path);
+                        if (! hash_equals($hash, ($inventory->hashPaths($managed->local_root, [$path], $heartbeat)[$path] ?? ''))) { throw new RuntimeException('Runtime/launcher changed after approval; no changes applied.'); }
+                    }
+                    app(SameHostDeployment::class)->requireSpace($managed->local_root, $stage, $preview['changes']);
+                    $progress('applying', 'Applying only approved staged changes; protected and local-only content is preserved', ['backup_complete' => true, 'journal' => $sameHost['transactions'].'/deploy-'.$pelicanBackup->uuid.'.jsonl']);
+                }
                 $deploymentStarted = true;
                 $result = $deployer->apply(
                     $managed->local_root,
@@ -182,45 +232,70 @@ final class DeployManagedServer implements ShouldQueue
                     true,
                     $pelicanBackup?->uuid,
                     $preview['policy_context'] ?? [],
-                    $preview['changes']
+                    $preview['changes'],
+                    $sameHost['transactions'] ?? null, $heartbeat
                 );
                 $filesystemBackup = $result['backup'];
-                $power->startAndVerify($pelican, $managed->local_root);
+                if ($operation && app(SameHostDeployment::class)->panelFingerprint($pelican->refresh()) !== $preview['qualification']['panel_sha256']) { throw new RuntimeException('Pelican startup/image/egg variables changed during deployment. Restore the approved settings before recovery.'); }
+                $progress('starting', 'Starting Minecraft and waiting for a fresh Done marker');
+                if ($operation) { $power->deploymentGuard($pelican, true); }
+                $power->startAndVerify($pelican, $managed->local_root, timeoutSeconds: (int) config('arcturus-modpack-manager.deployment_start_timeout', 900), heartbeat: $heartbeat);
                 if ($original === 'exited') {
                     $power->stop($pelican);
                 }
 
                 $releaseUrl = $managed->target_metadata['release_url'] ?? ($managed->available_version === $target['version'] ? $managed->available_release_url : null);
-                $managed->forceFill([
-                    'installed_version' => $target['version'],
-                    'base_manifest_path' => $managed->target_manifest_path,
-                    'target_manifest_path' => null,
-                    'selected_version' => null, 'target_metadata' => null,
-                    'prepared_root' => null,
-                    'preview_summary' => null,
-                    'last_preview_at' => null,
-                    'last_success_at' => now(),
-                    'last_error' => null,
-                    'approved_plan_sha256' => null, 'approved_at' => null,
-                ])->save();
-                $successEvent = $managed->events()->create([
-                    'kind' => 'deploy', 'status' => 'success',
-                    'from_version' => $base['version'], 'to_version' => $target['version'],
-                    'message' => 'Update installed; Minecraft startup marker confirmed',
-                    'details' => [
-                        'backup_backend' => $backupMode,
-                        'backup_uuid' => $pelicanBackup?->uuid,
-                        'filesystem_backup' => $filesystemBackup,
-                        'modified' => $result['modified'], 'startup_verified' => true,
-                        'release_url' => $releaseUrl, 'discord_notification_pending' => true,
-                    ],
-                ]);
+                $successEvent = DB::transaction(function () use ($managed, $target, $base, $backupMode, $pelicanBackup, $filesystemBackup, $result, $releaseUrl, $preview, $operation) {
+                    $managed->forceFill([
+                        'baseline_provenance' => $managed->target_metadata['prepared'] ?? $managed->baseline_provenance,
+                        'runtime_report' => array_replace($managed->runtime_report ?? [], $preview['qualification']['current'] ?? []),
+                        'installed_version' => $target['version'],
+                        'base_manifest_path' => $managed->target_manifest_path,
+                        'target_manifest_path' => null,
+                        'selected_version' => null, 'target_metadata' => null,
+                        'prepared_root' => null,
+                        'preview_summary' => null,
+                        'last_preview_at' => null,
+                        'last_success_at' => now(),
+                        'last_error' => null,
+                        'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null,
+                    ])->save();
+                    $event = $managed->events()->create([
+                        'kind' => 'deploy', 'status' => 'success',
+                        'from_version' => $base['version'], 'to_version' => $target['version'],
+                        'message' => 'Update installed; Minecraft startup marker confirmed',
+                        'details' => [
+                            'backup_backend' => $backupMode,
+                            'backup_uuid' => $pelicanBackup?->uuid,
+                            'filesystem_backup' => $filesystemBackup,
+                            'modified' => $result['modified'], 'startup_verified' => true,
+                            'release_url' => $releaseUrl, 'discord_notification_pending' => true,
+                        ],
+                    ]);
+                    if ($operation) {
+                        $operation->update(['progress' => ['message' => 'Minecraft startup verified; update completed']]);
+                        app(OperationTracker::class)->transition($operation, 'completed', ['startup_verified' => true]);
+                    }
+                    return $event;
+                });
+                $committed = true;
+                if ($operation) {
+                    try { $power->sync($pelican); }
+                    catch (Throwable) { $operation->update(['error' => 'Update completed; maintenance release could not be confirmed. Sync this server configuration in Wings. Do not replay apply.']); }
+                }
                 $discord->forEvent($successEvent);
             } catch (Throwable $error) {
+                if ($committed) { throw $error; }
+                $managed->refresh();
+                if ($operation && $operation->fresh()->phase === 'completed' && $managed->installed_version === $target['version']) { throw new RuntimeException('Update completion was committed; inspect its recorded result. Do not replay apply or restore.'); }
+                $progress('restoring', 'Update failed; stopping Minecraft before recovery. Keep the locked backup and retained stages.');
+                $recoveryRuntimeVerified = false;
                 $recovery = 'not attempted';
                 try {
+                    if ($operation) { $power->guardAndStop($pelican, $heartbeat); }
+                    elseif ($stopAttempted) { $power->stop($pelican, heartbeat: $heartbeat); }
                     if ($deploymentStarted) {
-                        $power->stop($pelican);
+                        $power->stop($pelican, heartbeat: $heartbeat);
                         if ($backupMode === 'pelican' && $pelicanBackup && $backupCompleted) {
                             // Pelican truncate=true deletes *everything* in the
                             // live directory, including folders intentionally
@@ -229,15 +304,18 @@ final class DeployManagedServer implements ShouldQueue
                             $preservedStash = $preserver->moveOut(
                                 $managed->local_root, $managed->staging_parent, $excludedFolders
                             );
-                            $backups->restoreAndWait($pelican, $pelicanBackup, $excludedFolders, preservedStash: $preservedStash);
+                            $progress('restoring', 'Restoring the exact locked backup; waiting for its restore-complete callback', ['preserved_stash' => $preservedStash]);
+                            $backups->restoreAndWait($pelican, $pelicanBackup, $excludedFolders, timeoutSeconds: (int) config('arcturus-modpack-manager.deployment_restore_timeout', 3600), preservedStash: $preservedStash, heartbeat: $heartbeat);
                             if ($preservedStash !== null) {
                                 $preserver->moveBack($managed->local_root, $preservedStash);
                                 $preservedStash = null;
+                                $progress('restoring', 'Excluded folders returned after confirmed restore', ['preserved_stash' => null]);
                             }
-                            $actual = $inventory->hashPaths($managed->local_root, $trackedPaths);
+                            $actual = $inventory->hashPaths($managed->local_root, $trackedPaths, $heartbeat);
                             if ($actual !== $beforeHashes) {
                                 throw new RuntimeException('Wings reported restore success, but managed files differ');
                             }
+                            if ($recoveryFingerprint !== null && app(RestoreInventory::class)->fingerprint($managed->local_root, $excludedFolders, $heartbeat) !== $recoveryFingerprint) { throw new RuntimeException('Restore callback succeeded but full recovery inventory differs, including world/custom content. Keep server stopped.'); }
                             $restored = true;
                             $recovery = 'Pelican full restore confirmed ('.$pelicanBackup->uuid.')';
                         } elseif ($backupMode === 'filesystem' && $filesystemBackup !== null) {
@@ -260,17 +338,23 @@ final class DeployManagedServer implements ShouldQueue
 
                     if ($original === 'running' &&
                         (! $deploymentStarted && ! $backupInitiated || $restored)) {
-                        $power->startAndVerify($pelican, $managed->local_root);
+                        if ($operation && app(SameHostDeployment::class)->panelFingerprint($pelican->refresh()) !== $operation->context['panel_sha256']) { throw new RuntimeException('Restore the original Pelican startup/image/egg variables before restarting the verified original snapshot. Server left stopped.'); }
+                        $progress('restarting_original', 'Snapshot verified; checking the original Minecraft installation startup');
+                        if ($operation) { $power->deploymentGuard($pelican, true); }
+                        $power->startAndVerify($pelican, $managed->local_root, timeoutSeconds: (int) config('arcturus-modpack-manager.deployment_start_timeout', 900), heartbeat: $heartbeat);
+                        $recoveryRuntimeVerified = true;
                     }
                 } catch (Throwable $rollbackError) {
-                    $recovery = 'RECOVERY FAILED: '.$rollbackError->getMessage().
+                    $recovery = 'RECOVERY FAILED: '.$this->failureMessage($rollbackError).
                         ($preservedStash !== null
                             ? ' | Excluded folders preserved at: '.$preservedStash
                             : '');
-                    report($rollbackError);
+                    $progress('restoring', 'Recovery failed; retaining the stopped maintenance checkpoint');
+                    try { if ($operation) { $power->guardAndStop($pelican, $heartbeat); } else { $power->stop($pelican, heartbeat: $heartbeat); } } catch (Throwable) { $recovery .= ' | Cannot confirm maintenance guard or stopped state; check Wings and stop the server before any recovery.'; }
+                    report(new RuntimeException('Arcturus recovery needs manual intervention; inspect the deployment operation and locked backup.'));
                 }
-                $message = mb_substr($error->getMessage().' | '.$recovery, 0, 1800);
-                $managed->forceFill(['last_error' => $message])->save();
+                $message = mb_substr($this->failureMessage($error).' | '.$recovery, 0, 1800);
+                $managed->forceFill(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null])->save();
                 $failureEvent = $managed->events()->create([
                     'kind' => 'deploy', 'status' => 'failed',
                     'from_version' => $base['version'], 'to_version' => $target['version'],
@@ -291,10 +375,53 @@ final class DeployManagedServer implements ShouldQueue
                         'details' => ['restore_verified' => true, 'discord_notification_pending' => true]]);
                     $discord->forEvent($rollbackEvent);
                 }
-                throw new RuntimeException('Update failed: '.$message, previous: $error);
+                if ($operation) {
+                    $operation->update(['error' => $message]);
+                    app(OperationTracker::class)->transition($operation, $restored && $recoveryRuntimeVerified ? 'restored' : 'manual_intervention', ['recovery' => $recovery, 'restore_verified' => $restored]);
+                    try { $power->sync($pelican); } catch (Throwable) { /* Checkpoint/result remains authoritative; never reapply. */ }
+                }
+                throw new RuntimeException('Update failed: '.$message);
             }
+        } catch (Throwable $error) {
+            if ($operation && ! $operation->fresh()->completed_at) {
+                $message = $stopAttempted ? 'Deployment interrupted after stop was requested. Keep the server stopped; inspect the operation, locked backup UUID and retained journal. Never replay apply blindly.' : 'Deployment preflight rejected: '.$this->failureMessage($error).'. Compare and approve again. No game files were changed.';
+                if (! $committed) { ManagedServer::whereKey($this->managedServerId)->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]); }
+                $operation->update(['error' => $message]);
+                app(OperationTracker::class)->transition($operation, $committed ? 'completed' : ($stopAttempted ? 'manual_intervention' : 'cancelled'));
+            }
+            throw new RuntimeException($this->failureMessage($error));
         } finally {
             $lock->release();
         }
     }
+    private function failureMessage(Throwable $error): string
+    {
+        if (get_class($error) === RuntimeException::class) { return mb_substr($error->getMessage(), 0, 1500); }
+        if ($error instanceof \Illuminate\Http\Client\RequestException) { return 'Wings returned HTTP '.$error->response->status().'; inspect node permissions and the exact backup/restore callback.'; }
+        if ($error instanceof \Illuminate\Http\Client\ConnectionException) { return 'Wings connection interrupted. Confirm node state and the backup/restore outcome before recovery.'; }
+        return 'Deployment infrastructure failed ('.class_basename($error).' at '.basename($error->getFile()).':'.$error->getLine().'). Inspect the recorded phase, queue/database connectivity and Wings backup/restore state.';
+    }
+
+    public function failed(?Throwable $error): void
+    {
+        if (! $this->operationId) { return; }
+        $operation = Operation::where('managed_server_id', $this->managedServerId)->find($this->operationId);
+        if (! $operation || $operation->completed_at) { return; }
+        if (in_array($operation->phase, ['queued', 'verifying'], true)) {
+            $message = 'Queue worker failed before deployment began. No Minecraft files were changed; compare and approve again.';
+            $operation->update(['error' => $message]);
+            ManagedServer::whereKey($this->managedServerId)->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
+            app(OperationTracker::class)->transition($operation, 'cancelled');
+            return;
+        }
+        $server = ManagedServer::lightweight()->findOrFail($this->managedServerId);
+        $message = 'Worker interrupted. Do not replay the deployment. Inspect the locked backup and retained deployment journal before recovery.';
+        $operation->update(['context' => [...$operation->context, 'interrupted_phase' => $operation->phase], 'phase' => 'restoring']);
+        try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); }
+        catch (Throwable) { $message .= ' Wings could not confirm offline state; stop the server manually first.'; }
+        $operation->update(['error' => $message]);
+        $server->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
+        app(OperationTracker::class)->transition($operation, 'manual_intervention');
+    }
+
 }

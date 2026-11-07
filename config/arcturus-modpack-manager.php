@@ -39,7 +39,7 @@ return [
     'default_backup_exclusions' => ['backup', 'backups'],
     'download_concurrency' => 1,
     // The plugin never updates a server just because a release exists.
-    'automatic_deploy' => (bool) env('ARCTURUS_MODPACK_MANAGER_AUTOMATIC_DEPLOY', false),
+    'automatic_deploy' => false, // Manual exact-plan approval only, including after a release check.
     'enable_deploy' => (bool) env('ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY', false),
     'ftb_installer_binary' => env('ARCTURUS_MODPACK_MANAGER_FTB_INSTALLER_BINARY'),
     'max_archive_bytes' => (int) env('ARCTURUS_MODPACK_MANAGER_MAX_ARCHIVE_BYTES', 8589934592),

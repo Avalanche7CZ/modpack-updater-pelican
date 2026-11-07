@@ -9,10 +9,28 @@ use RuntimeException;
 
 final class DeploymentGate
 {
+    public function requireReady(ManagedServer $server): void
+    {
+        $preview = $server->preview_summary ?? [];
+        if ($server->transport !== 'local' || ($preview['qualification']['protocol'] ?? null) !== SameHostDeployment::PROTOCOL ||
+            ($server->baseline_provenance['transport'] ?? null) !== 'local' ||
+            ($server->target_metadata['prepared']['transport'] ?? null) !== 'local') {
+            throw new RuntimeException('A qualified same-host stage and verified installed baseline are required. Run Compare files and inspect its blockers.');
+        }
+        if ($server->comparison_status !== 'complete' || ! $server->enabled || ! $server->adopted_at || $server->baseline_status !== 'verified' ||
+            ! ($preview['applicable'] ?? false) || ($preview['blocked'] ?? 1) !== 0 ||
+            ($preview['policy_revision'] ?? null) !== $server->policy_revision ||
+            ($preview['from'] ?? null) !== $server->installed_version || ($preview['to'] ?? null) !== $server->targetVersion() ||
+            ! $server->last_preview_at || $server->last_preview_at->lt(now()->subMinutes(15)) ||
+            ($server->backup_mode ?? 'pelican') !== 'pelican') {
+            throw new RuntimeException('A current conflict-free qualified plan, verified adoption and Pelican backup backend are required. Compare again before approval.');
+        }
+    }
+
     public function require(ManagedServer $server, ?string $approvedDigest): void
     {
         if (isset($server->baseline_provenance['transport'])) {
-            throw new RuntimeException('Preparation backends provide read-only inventory and staging only; deployment remains disabled');
+            $this->requireReady($server);
         }
         if ($server->transport !== 'local') {
             throw new RuntimeException('Remote deployment is disabled: a qualified node transaction and exclusion-preserving restore are not available');
