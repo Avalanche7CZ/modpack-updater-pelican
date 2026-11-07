@@ -12,10 +12,10 @@ python3 tests/tfg_managed_paths.py
 python3 tests/preparation_progress.py
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
-mkdir -p "$TEMP_DIR/base/mods" "$TEMP_DIR/target/mods" "$TEMP_DIR/live/mods"
-printf old > "$TEMP_DIR/base/mods/A.jar"
-printf new > "$TEMP_DIR/target/mods/A.jar"
-printf old > "$TEMP_DIR/live/mods/A.jar"
+mkdir -p "$TEMP_DIR/base/config" "$TEMP_DIR/target/config" "$TEMP_DIR/live/config"
+printf old > "$TEMP_DIR/base/config/A.cfg"
+printf new > "$TEMP_DIR/target/config/A.cfg"
+printf old > "$TEMP_DIR/live/config/A.cfg"
 php bin/modpack.php manifest "$TEMP_DIR/base" 1.0 > "$TEMP_DIR/base.json"
 php bin/modpack.php manifest "$TEMP_DIR/target" 2.0 > "$TEMP_DIR/target.json"
 php bin/modpack.php preview "$TEMP_DIR/base.json" "$TEMP_DIR/target.json" "$TEMP_DIR/live" > "$TEMP_DIR/preview.json"

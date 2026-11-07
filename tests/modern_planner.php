@@ -14,13 +14,13 @@ $base = ['mods/old.jar' => $h('old')];
 $target = ['mods/renamed.jar' => $h('new')];
 $ids = ['base' => ['mods/old.jar' => 'example'], 'target' => ['mods/renamed.jar' => 'example']];
 $plan = $p->plan($base, [], $target, [], $ids);
-check(collectAction($plan, 'mods/renamed.jar') === 'skip_disabled', 'Deleted mod reactivated after upstream rename');
+check(collectAction($plan, 'mods/renamed.jar') === 'unsafe_unverified_mod_identity', 'Deleted mod reactivated after upstream rename');
 $plan = $p->plan($base, ['mods/old.jar.disabled' => $h('old')], $target, [], $ids);
-check(collectAction($plan, 'mods/renamed.jar') === 'skip_disabled', 'Disabled JAR was reactivated');
+check(collectAction($plan, 'mods/renamed.jar') === 'unsafe_unverified_mod_identity', 'Disabled JAR was reactivated');
 $plan = $p->plan($base, [], $target, [], ['base' => [], 'target' => []]);
 check($plan['blocked'] > 0, 'Unidentified missing mod did not block ambiguous new JAR');
 $plan = $p->plan($base, ['mods/renamed-local.jar' => $h('local')], $target, [], [...$ids, 'local' => ['mods/renamed-local.jar' => 'example']]);
-check(collectAction($plan, 'mods/renamed.jar') === 'skip_disabled', 'Manually renamed mod gained a duplicate active upstream copy');
+check(collectAction($plan, 'mods/renamed.jar') === 'unsafe_unverified_mod_identity', 'Manually renamed mod gained a duplicate active upstream copy');
 check($p->plan(['config/a.cfg' => strtoupper($h('same'))], ['config/a.cfg' => $h('same')], ['config/a.cfg' => $h('same')])['counts']['unchanged'] === 1, 'Hash case caused a false conflict');
 foreach (['world/level.dat', 'custom/region/r.0.0.mca', '.arcturus-modpack-manager/state.json'] as $path) {
     check(collectAction($p->plan([$path => $h('a')], [$path => $h('b')], [$path => $h('c')], [['pattern' => $path, 'mode' => 'replace']]), $path) === 'preserve', 'Protected path could be replaced');

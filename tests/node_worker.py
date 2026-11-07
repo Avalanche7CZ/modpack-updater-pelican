@@ -229,10 +229,10 @@ class WorkerTests(unittest.TestCase):
         self.put('mods/restricted.jar', b'jar')
         self.put('config/readable.cfg', b'keep')
         original = w.mod_metadata
-        def metadata(root, path):
+        def metadata(root, path, expected_sha256=None):
             if path == 'mods/restricted.jar':
                 raise PermissionError(errno.EPERM, '/absolute/private?token=secret')
-            return original(root, path)
+            return original(root, path, expected_sha256)
         with patch.object(w, 'mod_metadata', side_effect=metadata):
             inventory = self.worker.inventory(self.server)
         self.assertEqual(set(inventory['files']), {'config/readable.cfg'})

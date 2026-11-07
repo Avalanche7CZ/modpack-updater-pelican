@@ -21,36 +21,33 @@ function fails(callable $f, string $label): void {
 
 $p = new UpdatePlanner();
 $base = [
-    'mods/update.jar' => h('a'), 'mods/conflict.jar' => h('a'),
-    'mods/old.jar' => h('a'), 'config/protected.cfg' => h('a'),
-    'config/merge.cfg' => h('a'), 'mods/Angelica-1.jar' => h('a'),
+    'config/merge.cfg' => h('a'),
+    'config/update.cfg' => h('a'), 'config/conflict.cfg' => h('a'),
+    'config/old.cfg' => h('a'), 'config/protected.cfg' => h('a'),
     'world/level.dat' => h('a'), 'server.properties' => h('a'),
 ];
 $local = [
-    'mods/update.jar' => h('a'), 'mods/conflict.jar' => h('custom'),
+    'mods/custom.jar' => h('custom'),
+    'config/update.cfg' => h('a'), 'config/conflict.cfg' => h('custom'),
     'config/protected.cfg' => h('custom'), 'config/merge.cfg' => h('custom'),
-    'mods/Angelica-1.jar' => h('a'), 'mods/custom.jar' => h('custom'),
     'world/level.dat' => h('a'), 'server.properties' => h('custom'),
 ];
 $target = [
-    'mods/update.jar' => h('b'), 'mods/conflict.jar' => h('b'),
-    'mods/add.jar' => h('b'), 'config/protected.cfg' => h('b'),
-    'config/merge.cfg' => h('b'), 'mods/Angelica-2.jar' => h('b'),
+    'config/merge.cfg' => h('b'),
+    'config/update.cfg' => h('b'), 'config/conflict.cfg' => h('b'),
+    'config/add.cfg' => h('b'), 'config/protected.cfg' => h('b'),
     'world/level.dat' => h('b'), 'server.properties' => h('b'),
 ];
 $rules = [
     ['pattern' => 'config/protected.cfg', 'mode' => 'protect'],
     ['pattern' => 'config/merge.cfg', 'mode' => 'merge'],
-    ['pattern' => 'mods/Angelica-*.jar', 'mode' => 'disable'],
     ['pattern' => 'server.properties', 'mode' => 'replace'],
 ];
-$plan = $p->plan($base, $local, $target, $rules, ['base' => ['mods/old.jar' => 'old'], 'target' => ['mods/add.jar' => 'added']]);
+$plan = $p->plan($base, $local, $target, $rules);
 foreach ([
-    'mods/update.jar' => 'update', 'mods/conflict.jar' => 'conflict',
-    'mods/old.jar' => 'skip_disabled', 'mods/add.jar' => 'add',
+    'config/update.cfg' => 'update', 'config/conflict.cfg' => 'conflict',
+    'config/old.cfg' => 'already_absent', 'config/add.cfg' => 'add',
     'config/protected.cfg' => 'preserve', 'config/merge.cfg' => 'merge_required',
-    'mods/Angelica-1.jar' => 'disable_requires_enforcement',
-    'mods/Angelica-2.jar' => 'skip_disabled',
     'mods/custom.jar' => 'preserve_local_extra',
     'world/level.dat' => 'preserve', 'server.properties' => 'replace_with_override',
 ] as $path => $expected) {
@@ -67,7 +64,7 @@ eq('replace_with_override', act($replace, 'config/a.cfg'), 'override');
 $preserve = $p->plan(['config/a.cfg' => h('a')], ['config/a.cfg' => h('custom')], ['config/a.cfg' => h('a')]);
 eq('preserve_local_change', act($preserve, 'config/a.cfg'), 'unchanged upstream but customized');
 $deleted = $p->plan(['mods/missing.jar' => h('a')], [], ['mods/missing.jar' => h('b')]);
-eq('conflict', act($deleted, 'mods/missing.jar'), 'locally removed mod should not be re-enabled');
+eq('unsafe_unverified_mod_identity', act($deleted, 'mods/missing.jar'), 'locally removed mod should not be re-enabled');
 
 foreach (['../escape', '/absolute', 'mods/../../escape', 'mods\\windows.jar', 'mods//double.jar', 'C:/windows', 'mods/./foo'] as $unsafe) {
     fails(fn() => $p->plan([], [$unsafe => h('a')], []), $unsafe);

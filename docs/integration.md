@@ -98,3 +98,9 @@ Verification recorded for this change: Chromium completed four repeated decision
 ## First-class embedded mod upgrades (pending verification)
 
 The later [logical mod upgrade implementation](mod-upgrades.md) supersedes the earlier linked physical remove/add rows. Its real [TFG 0.13.15 → 0.13.17 fixtures](../tests/fixtures/tfg-0.13.15-to-0.13.17/README.md) contain nine server upgrade pairs with all eighteen upstream-checksummed embedded descriptors. No tests or browser execution were run for this new operation at the user's request. Earlier successful physical-pair tests do not qualify its new row schema, transaction or logical actions. Production `upgrade_mod` deployment is explicitly blocked pending that verification.
+
+## CI repair after the first-class mod schema
+
+The GitHub validation run for `1c0ee84` failed because the standalone CLI/test loader did not resolve `ModUpgradePlanner`, and the native deployment fixture still expected a renamed JAR to deploy through the pre-existing physical-file contract. The regression suite also contained old add/remove expectations and a two-argument metadata mock after the reader gained its checksum argument.
+
+The CLI and pure tests now share a namespace loader. Generic file-copy/backup/restore fixtures use ordinary managed files; mod-specific cases use the real TFG identity evidence and real small synthetic JARs. The native orchestration fixture retains a fixed installed Forge mod and explicitly asserts that a logical JAR upgrade is rejected before any power/backup action. No deployment gate was removed or bypassed. Local verification passed on PHP 8.4/8.5, both Pelican rc.1/rc.2 suites, the actual 22,000-file browser workflow, and package/feed checksum checks. Hosted Actions must rerun on the repair commit before a hosted-CI success can be claimed.

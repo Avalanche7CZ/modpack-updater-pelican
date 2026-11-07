@@ -7,9 +7,7 @@ use Arcturus\ModpackManager\Services\LocalDeployment;
 use Arcturus\ModpackManager\Services\ManifestJson;
 use Arcturus\ModpackManager\Services\UpdatePlanner;
 
-foreach (['SafetyPaths', 'ProtectionPolicy', 'UpdatePlanner', 'DirectoryInventory', 'ManifestJson', 'LocalDeployment'] as $service) {
-    require_once __DIR__ . '/../src/Services/' . $service . '.php';
-}
+require_once __DIR__.'/autoload.php';
 
 function usage(): never
 {

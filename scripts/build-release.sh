@@ -54,6 +54,7 @@ php -r '
   }
   $required = [
       "arcturus-modpack-manager/plugin.json",
+      "arcturus-modpack-manager/bin/autoload.php",
       "arcturus-modpack-manager/src/ModpackManagerPlugin.php",
       "arcturus-modpack-manager/src/Providers/ModpackManagerServiceProvider.php",
       "arcturus-modpack-manager/resources/views/overview.blade.php",

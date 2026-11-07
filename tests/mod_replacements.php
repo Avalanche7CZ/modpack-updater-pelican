@@ -1,48 +1,60 @@
 <?php
-/** Version-renamed mods retain identity without weakening deletion, local or custom-rule safeguards. */
+/** Real TFG identities exercise the logical schema; production deployment stays gated. */
 declare(strict_types=1);
 require __DIR__.'/bootstrap.php';
-use Arcturus\ModpackManager\Services\UpdatePlanner;
+use Arcturus\ModpackManager\Services\ModUpgradePlanner;
 use Arcturus\ModpackManager\Services\ProtectionPolicy;
-$p = new UpdatePlanner;
-$h = fn ($x) => hash('sha256', $x);
-$base = ['mods/example-1.jar' => $h('old')]; $target = ['mods/example-2.jar' => $h('new')];
-$ids = ['base' => ['mods/example-1.jar' => 'example'], 'target' => ['mods/example-2.jar' => 'example'], 'local' => ['mods/example-1.jar' => 'example']];
-$rows = fn ($plan) => array_column($plan['changes'], null, 'path');
+use Arcturus\ModpackManager\Services\UpdatePlanner;
+
+$directory = __DIR__.'/fixtures/tfg-0.13.15-to-0.13.17/';
+$base = json_decode(file_get_contents($directory.'0.13.15.json'), true, flags: JSON_THROW_ON_ERROR);
+$target = json_decode(file_get_contents($directory.'0.13.17.json'), true, flags: JSON_THROW_ON_ERROR);
 $rules = (new ProtectionPolicy)->template('tfg_arcturus');
-$plan = $p->plan($base, $base, $target, $rules, $ids); $r = $rows($plan);
-check($plan['blocked'] === 0 && $r['mods/example-1.jar']['action'] === 'remove' && $r['mods/example-2.jar']['action'] === 'add', 'Normal verified replacement required deletion review');
-check($r['mods/example-1.jar']['classification'] === 'updated_upstream' && $r['mods/example-2.jar']['replacement']['base_path'] === 'mods/example-1.jar', 'Replacement linkage missing');
-foreach (['mods/example-1.jar', 'mods/example-2.jar'] as $path) {
-    $protected = $rows($p->plan($base, $base, $target, [...$rules, ['scope' => 'exact', 'pattern' => $path, 'mode' => 'protect']], $ids));
-    check($protected['mods/example-1.jar']['action'] === 'preserve' && $protected['mods/example-2.jar']['action'] === 'preserve', 'Exact custom protection left a duplicate or removed the working version');
+$planner = new UpdatePlanner;
+$make = function (array $local, array $localMeta, array $policies = [], array $disabled = [], ?array $targetMeta = null) use ($base, $target, $planner, $rules): array {
+    $ids = ['base' => $base['identities'], 'local' => [], 'target' => $target['identities']];
+    foreach ($localMeta as $path => $meta) { $ids['local'][$path] = $meta['identity']; }
+    return $planner->plan($base['files'], $local, $target['files'], [...$rules, ...$policies], $ids, $disabled, [], [],
+        ['base' => $base['metadata'], 'local' => $localMeta, 'target' => $targetMeta ?? $target['metadata']]);
+};
+$rows = fn ($plan) => array_column(array_filter($plan['changes'], fn ($r) => ($r['kind'] ?? '') === 'mod_upgrade'), null, 'identity');
+$plan = $make($base['files'], $base['metadata']);
+check(count($plan['changes']) === 9 && $plan['blocked'] === 0 && ($plan['counts']['upgrade_mod'] ?? 0) === 9, 'Real TFG releases did not produce nine logical mod upgrades');
+check(ModUpgradePlanner::deploymentBlocker($plan['changes']) !== null, 'Unqualified logical operations enabled production deployment');
+foreach ($plan['changes'] as $row) {
+    check(count($row['mod_upgrade']['members']) === 2 && $row['classification'] === 'updated_upstream', 'Mod update reverted to unrelated add/remove review');
+    check($row['mod_upgrade']['baseline']['sha256'] === $base['files'][$row['path']], 'Baseline evidence mismatched');
 }
-foreach ([['scope' => 'mod_id', 'pattern' => 'example'], ['scope' => 'mod_filename', 'pattern' => 'example-*.jar']] as $selector) {
-    $protected = $rows($p->plan($base, $base, $target, [...$rules, [...$selector, 'mode' => 'protect']], $ids));
-    check($protected['mods/example-1.jar']['action'] === 'preserve' && $protected['mods/example-2.jar']['action'] === 'preserve', 'Existing mod protection was lost');
+check(isset($rows($plan)['tfc+tfc_textile+tfcambiental+tfg'], $rows($plan)['voicechat+voicechat_api']), 'Bundled embedded IDs were split or guessed');
+
+$identity = 'ae2'; $old = array_search($identity, $base['identities'], true); $new = array_search($identity, $target['identities'], true);
+$local = $base['files']; $metadata = $base['metadata'];
+$local[$old] = hash('sha256', 'synthetic locally modified ae2'); $metadata[$old]['sha256'] = $local[$old];
+$conflict = $make($local, $metadata);
+check($conflict['blocked'] === 1 && $rows($conflict)[$identity]['action'] === 'mod_upgrade_conflict', 'A modified mod was hidden or counted as two conflicts');
+$use = $make($local, $metadata, [['scope' => 'mod_id', 'pattern' => $identity, 'mode' => 'replace']]);
+check($rows($use)[$identity]['action'] === 'upgrade_mod', 'Whole-mod upstream choice did not resolve the local conflict');
+foreach ([$old, $new] as $path) {
+    $keep = $make($local, $metadata, [['scope' => 'exact', 'pattern' => $path, 'mode' => 'protect']]);
+    check($rows($keep)[$identity]['action'] === 'keep_mod' && ! $rows($keep)[$identity]['mod_upgrade']['members'], 'A protected member lost the installed JAR or added a second copy');
 }
-$custom = ['mods/example-1.jar' => $h('locally edited')];
-$plan = $p->plan($base, $custom, $target, $rules, $ids);
-check($plan['blocked'] === 2 && $rows($plan)['mods/example-2.jar']['action'] === 'conflict', 'Locally modified JAR received an additional upstream copy');
-$use = $p->plan($base, $custom, $target, [...$rules, ['scope' => 'mod_id', 'pattern' => 'example', 'mode' => 'replace']], $ids);
-check($use['blocked'] === 0 && $rows($use)['mods/example-1.jar']['action'] === 'remove_with_override', 'Explicit identity decision did not resolve the pair');
-$keep = $rows($p->plan($base, $custom, $target, [...$rules, ['scope' => 'mod_id', 'pattern' => 'example', 'mode' => 'protect']], $ids));
-check($keep['mods/example-1.jar']['action'] === 'preserve' && $keep['mods/example-2.jar']['action'] === 'preserve', 'Keep local re-added the target version');
-$review = $p->plan($base, $base, $target, [...$rules, ['scope' => 'exact', 'pattern' => 'mods/example-1.jar', 'mode' => 'review']], $ids);
-check($review['blocked'] === 2, 'Explicit custom review was bypassed by automatic pairing');
-check($rows($p->plan($base, [], $target, [], $ids))['mods/example-2.jar']['action'] === 'skip_disabled', 'Deleted mod was re-enabled');
-$unknown = $p->plan($base, $base, $target, $rules, []);
-check($unknown['blocked'] > 0 && $rows($unknown)['mods/example-1.jar']['replacement'] === null, 'Filename similarity guessed an unverified identity');
-$duplicate = $p->plan($base, $base, [...$target, 'mods/duplicate.jar' => $h('duplicate')], [], [...$ids, 'target' => [...$ids['target'], 'mods/duplicate.jar' => 'example']]);
-check($duplicate['blocked'] > 0 && $rows($duplicate)['mods/example-1.jar']['replacement'] === null, 'Duplicate identities were paired');
-$removed = $p->plan($base, $base, [], $rules, $ids);
-check($removed['blocked'] === 1, 'Genuine upstream removal lost manual review');
-$changed = $p->plan($base, $custom, ['mods/example-1.jar' => $h('changed upstream')], [], $ids);
-check($changed['blocked'] === 1, 'Same-filename genuine local conflict was hidden');
-// Reported shape: six removal reviews are normal version pairs; three local edits remain genuine conflicts.
-$b=[]; $l=[]; $t=[]; $map=['base'=>[], 'local'=>[], 'target'=>[]];
-for ($i=0;$i<6;$i++) { $old="mods/mod$i-1.jar"; $new="mods/mod$i-2.jar"; $b[$old]=$l[$old]=$h("old$i"); $t[$new]=$h("new$i"); $map['base'][$old]=$map['local'][$old]=$map['target'][$new]="mod$i"; }
-for ($i=0;$i<3;$i++) { $file="mods/custom$i.jar"; $b[$file]=$h('base'); $l[$file]=$h('local'); $t[$file]=$h('target'); }
-$plan=$p->plan($b,$l,$t,$rules,$map);
-check(($plan['counts']['manual_review'] ?? 0) === 0 && $plan['blocked'] === 3, 'Normal replacement reviews or genuine local conflicts were misclassified');
-echo "Verified mod replacement pairing, custom protections, disabled/ambiguous identities and genuine conflicts passed\n";
+$review = $make($base['files'], $base['metadata'], [['scope' => 'exact', 'pattern' => $old, 'mode' => 'review']]);
+check($rows($review)[$identity]['action'] === 'mod_upgrade_review', 'Explicit member review was bypassed');
+$disabledLocal = $base['files']; $disabledMeta = $base['metadata'];
+$disabledLocal[$old.'.disabled'] = $disabledLocal[$old]; $disabledMeta[$old.'.disabled'] = $disabledMeta[$old]; unset($disabledLocal[$old], $disabledMeta[$old]);
+check($rows($make($disabledLocal, $disabledMeta))[$identity]['action'] === 'keep_mod_disabled', 'Disabled mod was re-enabled');
+$absent = $base['files']; $absentMeta = $base['metadata']; unset($absent[$old], $absentMeta[$old]);
+check($rows($make($absent, $absentMeta))[$identity]['action'] === 'keep_mod_disabled', 'Intentionally absent mod was re-enabled');
+$renamed = $base['files']; $renamedMeta = $base['metadata']; $alias = 'mods/manually-renamed.jar';
+$renamed[$alias] = $renamed[$old]; $renamedMeta[$alias] = $renamedMeta[$old]; unset($renamed[$old], $renamedMeta[$old]);
+check($rows($make($renamed, $renamedMeta))[$identity]['mod_upgrade']['installed']['path'] === $alias, 'Installed identity was matched by filename instead of embedded IDs');
+$duplicate = $base['files']; $duplicateMeta = $base['metadata']; $duplicate[$alias] = $duplicate[$old]; $duplicateMeta[$alias] = $duplicateMeta[$old];
+check($rows($make($duplicate, $duplicateMeta))[$identity]['action'] === 'mod_identity_review', 'Duplicate active identities were accepted');
+$unknownTarget = $target['metadata']; unset($unknownTarget[$new]['sha256']);
+$unknown = $make($base['files'], $base['metadata'], [['scope' => 'exact', 'pattern' => $new, 'mode' => 'replace']], [], $unknownTarget);
+check($unknown['blocked'] > 0 && ! isset($rows($unknown)[$identity]), 'Missing bound metadata was guessed or overridden');
+$extra = $base['files']; $extraMeta = $base['metadata']; $custom = 'mods/Paradigm.jar'; $hash = hash('sha256', 'synthetic custom mod');
+$extra[$custom] = $hash; $extraMeta[$custom] = ['identity' => 'paradigm', 'ids' => ['paradigm'], 'source' => 'META-INF/mods.toml', 'loader' => 'forge', 'sha256' => $hash];
+$preserved = array_column($make($extra, $extraMeta)['changes'], null, 'path');
+check($preserved[$custom]['action'] === 'preserve', 'Arcturus/Paradigm protection was lost');
+echo "Real TFG nine logical upgrades, bundled IDs, local choices, protections, disabled/missing/duplicate identities and production gate passed\n";
