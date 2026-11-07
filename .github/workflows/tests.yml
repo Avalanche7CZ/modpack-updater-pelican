@@ -54,6 +54,7 @@ jobs:
           php tests/integration/curseforge.php
           php tests/integration/runtime.php
           php tests/integration/policies.php
+          php tests/integration/kubejs.php
           php -d memory_limit=128M tests/integration/memory.php
           php tests/integration/discord.php
           php tests/integration/discord_deployment.php

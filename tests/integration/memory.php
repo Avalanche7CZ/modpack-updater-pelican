@@ -182,6 +182,23 @@ check(app(ReleaseStore::class)->directories($smallPath)===[['path'=>'config','cl
 $bytes=file_get_contents($smallPath);file_put_contents($smallPath,str_replace('config','configs',$bytes));unset($bytes);
 rejects(fn()=>app(ReleaseStore::class)->directories($smallPath),'Tampered upstream directory evidence was accepted');
 unlink($smallPath);
+// File decisions must remain bounded even when the server owns 22,000 evidence rows.
+config(['queue.default'=>'database']);
+$server=ManagedServer::lightweight()->findOrFail($id);
+app(ServerPolicyService::class)->save($server,$server->file_rules ?? [],$server->disabled_mods ?? [],$server->policy_revision,['directory_decisions'=>[['path'=>'config','mode'=>'manage']]]);
+Illuminate\Support\Facades\Bus::fake([Arcturus\ModpackManager\Jobs\CompareInstallation::class]);
+$decisionView=Livewire\Livewire::test(ViewManagedServer::class,['record'=>$id])->call('selectTab','changes');
+$decisionPath='config/mod-000/recipes/file-00000.json';
+foreach (['protect','replace'] as $choice) {
+    $decisionView->call('resolve',$decisionPath,$choice);
+    $fresh=ManagedServer::lightweight()->findOrFail($id);
+    check((new Arcturus\ModpackManager\Services\ProtectionPolicy)->effective($decisionPath,$fresh->file_rules)['mode']===$choice,'Large-inventory decision did not persist');
+    check($fresh->active_operation_id && ! $fresh->approved_plan_sha256 && ! $fresh->deploy_enabled,'File choice bypassed queue/approval/deployment guards');
+    app(Arcturus\ModpackManager\Services\OperationTracker::class)->transition($fresh->operations()->findOrFail($fresh->active_operation_id),'completed');
+}
+$decisionView->set('changePage',440)->set('pathSearch','file-00000');
+check($decisionView->get('changePage')===1 && $decisionView->instance()->changeRows()['total']===1,'Filtered file decisions did not return to the first page');
+memoryPoint('22,000-file decisions completed');
 check(memory_get_peak_usage(true)<128*1048576,'128 MiB budget exceeded');
 memoryPoint('22,000-file workflow passed under 128 MiB');
 fwrite(STDOUT,'Bounded database projections, pagination, transactional submission, HTTP replay and queue outage checks passed ('.$columnReads.' bounded queries).'.PHP_EOL);

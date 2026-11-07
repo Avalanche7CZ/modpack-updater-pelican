@@ -35,6 +35,36 @@ class WorkerTests(unittest.TestCase):
         full.write_bytes(text)
         return full
 
+    def test_verified_kubejs_text_review_is_bounded_read_only(self):
+        operation = uuid.uuid4().hex
+        base = self.worker.operation_path(self.server, operation)
+        files = base / 'files'
+        files.mkdir(parents=True)
+        contents = {
+            'kubejs/server_scripts/recipes.js': b"event.remove('old')\n",
+            'kubejs/data/pack/recipes/test.json': b'{"type":"minecraft:crafting_shapeless"}',
+            'kubejs/assets/template.nbt': b'\x00NBT',
+            'kubejs/playerdata/private.properties': b'private',
+            'kubejs/server_scripts/large.js': b'x' * 65537,
+        }
+        for path, content in contents.items():
+            target = files / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        w.atomic_json(base / 'manifest.json', {'files': {path: w.hashlib.sha256(content).hexdigest() for path, content in contents.items()}})
+        w.atomic_json(base / 'operation.json', {'state': 'completed', 'manifest_sha256': w.hashlib.sha256((base / 'manifest.json').read_bytes()).hexdigest()})
+        for path in list(contents)[:2]:
+            result = self.worker.handle(self.server, 'stage_file', {'operation_id': operation, 'path': path})
+            self.assertEqual(result['content'], contents[path].decode())
+        for path in list(contents)[2:]:
+            with self.assertRaises(ValueError):
+                self.worker.handle(self.server, 'stage_file', {'operation_id': operation, 'path': path})
+        path = 'kubejs/server_scripts/recipes.js'
+        (files / path).write_bytes(b'tampered')
+        with self.assertRaises(ValueError):
+            self.worker.handle(self.server, 'stage_file', {'operation_id': operation, 'path': path})
+        self.assertEqual(list(self.live.iterdir()), [])
+
     def test_inventory_hashes_all_managed_files_and_extras(self):
         self.put('mods/example.jar')
         self.put('config/custom.cfg', b'custom')

@@ -87,8 +87,8 @@ foreach ([
             $preset.' would overwrite protected custom data: '.$customPath);
     }
 }
-check($policy->effective('kubejs/server_scripts/test.js', $tfgArcturus)['mode'] === 'review',
-    'TFG + Arcturus preset lost TFG KubeJS review rule');
+check($policy->effective('kubejs/server_scripts/test.js', $tfgArcturus)['mode'] === null,
+    'TFG + Arcturus preset still forces all KubeJS changes into review');
 check($policy->effective('mods/unrelated-upstream.jar', $arcturus)['mode'] === null,
     'Arcturus preset must not freeze unrelated upstream mod files');
 check($policy->effective('config/paradigmvote/config.toml', $policy->template('tfg'))['mode'] === null,

@@ -128,7 +128,8 @@ final class ProtectionPolicy
             $rules[] = ['scope' => 'glob', 'pattern' => '*Crucible*.jar', 'mode' => 'review'];
         }
         if (in_array($name, ['tfg', 'tfg_arcturus'], true)) {
-            $rules[] = ['scope' => 'directory', 'pattern' => 'kubejs', 'mode' => 'review'];
+            // Obsolete upstream-owned KubeJS files follow the same hash checks as updates.
+            $rules[] = ['scope' => 'directory', 'pattern' => 'kubejs', 'classification' => 'removed_upstream', 'mode' => 'follow'];
         }
         if (in_array($name, ['arcturus', 'tfg_arcturus'], true)) {
             // Editable presets only: none of these names are global invariant

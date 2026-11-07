@@ -16,6 +16,7 @@ use Arcturus\ModpackManager\Services\QueuePreparation;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\AdoptionService;
 use Arcturus\ModpackManager\Services\FilePolicyCatalog;
+use Arcturus\ModpackManager\Services\KubeJsDiff;
 use Arcturus\ModpackManager\Services\MergeReview;
 use Arcturus\ModpackManager\Services\PreviewService;
 use Arcturus\ModpackManager\Services\ProtectionPolicy;
@@ -56,6 +57,9 @@ final class ViewManagedServer extends ViewRecord
     #[Locked]
     public ?array $mergeReview = null;
 
+    #[Locked]
+    public ?array $fileDiff = null;
+
     public function managed()
     {
         Access::requireAdmin();
@@ -71,6 +75,8 @@ final class ViewManagedServer extends ViewRecord
     {
         Access::requireAdmin();
         abort_unless(in_array($tab, ['overview', 'updates', 'changes', 'mods', 'protection', 'backups', 'history'], true), 422);
+        $this->fileDiff = null;
+        $this->mergeReview = null;
         $this->tab = $tab;
         $this->changePage = 1;
         $this->classification = '';
@@ -306,6 +312,7 @@ final class ViewManagedServer extends ViewRecord
     private function recompare(): void
     {
         $this->mergeReview = null;
+        $this->fileDiff = null;
         $record = $this->getRecord()->refresh();
         try {
             if ($record->base_manifest_path && $record->target_manifest_path) {
@@ -331,11 +338,29 @@ final class ViewManagedServer extends ViewRecord
             'unreadable_paths' => \Arcturus\ModpackManager\Services\EvidenceView::warnings($id, 'unreadable_paths')];
     }
 
+    public function updatedPathSearch(): void { $this->changePage = 1; }
+
+    public function updatedClassification(): void { $this->changePage = 1; }
+
+    public function reviewFileDiff(string $path): void
+    {
+        Access::requireAdmin();
+        $this->fileDiff = null;
+        try {
+            $record = $this->getRecord()->refresh();
+            abort_if((bool) $record->active_operation_id, 409);
+            $this->fileDiff = app(KubeJsDiff::class)->review($record, $path);
+        } catch (\Throwable) {
+            Notification::make()->title('Text diff unavailable')->body('Use Keep local or Use upstream after reviewing the file. Retained staging, readable UTF-8 text up to 64 KiB, and an unchanged comparison snapshot are required.')->warning()->send();
+        }
+    }
+
     public function reviewMerge(string $path): void
     {
         Access::requireAdmin();
         $record = $this->getRecord()->refresh();
         abort_unless(isset((new FilePolicyCatalog)->selected($record, [$path])[$path]), 422);
+        abort_if(str_starts_with($path, 'kubejs/'), 422);
         $this->mergeReview = app(MergeReview::class)->properties($record, $path);
     }
 

@@ -47,7 +47,10 @@ final class FilePolicyCatalog
     {
         $wanted = array_fill_keys($paths, true); $rows = [];
         foreach ($this->rawRows($server) as $change) {
-            if (isset($wanted[$change['path']])) { $rows[$change['path']] = $this->row($server, $change); }
+            if (isset($wanted[$change['path']])) {
+                $rows[$change['path']] = $this->row($server, $change);
+                if (count($rows) === count($wanted)) { break; }
+            }
         }
         return $rows;
     }

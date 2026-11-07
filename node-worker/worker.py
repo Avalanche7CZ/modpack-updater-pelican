@@ -1283,11 +1283,13 @@ class Worker:
                 raise ValueError('Prepared manifest integrity changed')
             manifest = json.loads(manifest_path.read_text())
             path = relative(payload['path'])
-            if not path.endswith('.properties') or path not in manifest['files']:
-                raise ValueError('Only verified staged properties files can be read for merging')
+            kubejs_text = path.startswith('kubejs/') and Path(path).suffix.lower() in {'.js', '.json', '.snbt', '.mcmeta', '.txt', '.properties', '.toml', '.cfg'}
+            if protected_path(path) or (not path.endswith('.properties') and not kubejs_text) or path not in manifest['files']:
+                raise ValueError('Only safe verified staged text files can be read for review')
             with open_regular(base / 'files', path) as source:
-                content = source.read(1048577)
-            if len(content) > 1048576 or hashlib.sha256(content).hexdigest() != manifest['files'][path]:
+                limit = 65536 if kubejs_text else 1048576
+                content = source.read(limit + 1)
+            if len(content) > limit or hashlib.sha256(content).hexdigest() != manifest['files'][path]:
                 raise ValueError('Staged configuration size or checksum mismatch')
             return {'content': content.decode('utf-8'), 'sha256': manifest['files'][path]}
         if operation == 'manifest':

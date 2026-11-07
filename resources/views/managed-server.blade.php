@@ -107,6 +107,13 @@
                 </x-filament::section>
             @elseif($this->tab === 'changes')
                 @php($changes = $this->changeRows())
+                @if($this->fileDiff)
+                    <x-filament::section heading="Local / upstream text diff">
+                        <p class="break-all">{{ $this->fileDiff['path'] }}</p>
+                        <p class="text-sm">{{ $this->fileDiff['notice'] }}</p>
+                        <pre class="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-all text-sm">{{ $this->fileDiff['content'] }}</pre>
+                    </x-filament::section>
+                @endif
                 @if($this->mergeReview)
                     <x-filament::section heading="Configuration merge review">
                         <p class="break-all">{{ $this->mergeReview['path'] }}</p>
@@ -117,6 +124,10 @@
                     </x-filament::section>
                 @endif
                 <x-filament::section heading="File Changes">
+                    <p class="mb-3 text-sm">KubeJS follows upstream when the local file matches the verified baseline. Local-only scripts and protected files stay local. Conflicts require Keep local or Use upstream; scripts, recipes and datapacks are never merged.</p>
+                    @if(($preview['policy_revision'] ?? $record->policy_revision) !== $record->policy_revision)
+                        <p class="mb-3 text-sm">Decisions saved. Showing previous comparison while a fresh comparison is required. No live files changed.</p>
+                    @endif
                     <div class="flex flex-wrap gap-3">
                         <x-filament::input.wrapper><x-filament::input wire:model.live.debounce.400ms="pathSearch" placeholder="Filter file paths" aria-label="Filter file paths" /></x-filament::input.wrapper>
                         <x-filament::input.wrapper><x-filament::input.select wire:model.live="classification" aria-label="File classification">
@@ -142,13 +153,15 @@
                                         <td class="p-2">{{ str_replace('_', ' ', $change['classification']) }}</td>
                                         <td class="p-2">{{ str_replace('_', ' ', $change['action']) }}</td>
                                         <td class="p-2">
-                                            @if(($change['blocked'] ?? false) && $preview && !$record->active_operation_id)
+                                            @if(($change['blocked'] ?? false) && !$record->active_operation_id)
                                                 <div class="flex flex-wrap gap-2">
-                                                    @if(str_ends_with($change['path'], '.properties'))
+                                                    @if(\Arcturus\ModpackManager\Services\KubeJsDiff::supports($change['path']))
+                                                        <x-filament::button size="xs" color="gray" wire:loading.attr="disabled" wire:click="reviewFileDiff(@js($change['path']))">View text diff</x-filament::button>
+                                                    @elseif(!str_starts_with($change['path'], 'kubejs/') && str_ends_with($change['path'], '.properties'))
                                                         <x-filament::button size="xs" color="gray" wire:click="reviewMerge(@js($change['path']))">Review text merge</x-filament::button>
                                                     @endif
-                                                    <x-filament::button size="xs" color="gray" wire:click="resolve(@js($change['path']), 'protect')">Keep local</x-filament::button>
-                                                    <x-filament::button size="xs" color="warning" wire:confirm="Approve an upstream replacement policy for this file? The next deployment still needs a reviewed plan and backup." wire:click="resolve(@js($change['path']), 'replace')">Accept upstream</x-filament::button>
+                                                    <x-filament::button size="xs" color="gray" wire:loading.attr="disabled" wire:click="resolve(@js($change['path']), 'protect')">Keep local</x-filament::button>
+                                                    <x-filament::button size="xs" color="warning" wire:confirm="Use upstream for this file, including removal if absent upstream? A future deployment still requires a reviewed plan and backup." wire:loading.attr="disabled" wire:click="resolve(@js($change['path']), 'replace')">Use upstream</x-filament::button>
                                                 </div>
                                             @else — @endif
                                         </td>
