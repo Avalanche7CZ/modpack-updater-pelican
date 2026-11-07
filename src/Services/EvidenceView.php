@@ -32,10 +32,10 @@ final class EvidenceView
     public static function changePage(int $id, int $page, string $search = '', string $classification = ''): array
     {
         $count = 0; $rows = []; $page = max(1, $page); $offset = ($page - 1) * 50;
-        foreach (JsonStream::column($id, self::reportColumn($id))->entries(['changes']) as $row) {
+        foreach (JsonStream::column($id, self::reportColumn($id))->entries(['changes']) as $index => $row) {
             if ($row['action'] === 'unchanged' || ($classification !== '' && $row['classification'] !== $classification) ||
                 ($search !== '' && ! str_contains(strtolower($row['path']), strtolower($search)))) { continue; }
-            if ($count >= $offset && count($rows) < 50) { $rows[] = $row; }
+            if ($count >= $offset && count($rows) < 50) { $rows[] = [...$row, '_evidence_index' => $index]; }
             $count++;
         }
         $pages = max(1, (int) ceil($count / 50));

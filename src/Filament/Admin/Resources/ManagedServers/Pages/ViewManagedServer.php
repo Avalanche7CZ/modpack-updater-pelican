@@ -32,6 +32,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
 use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Locked;
+use Livewire\Attributes\Renderless;
 
 final class ViewManagedServer extends ViewRecord
 {
@@ -60,12 +61,29 @@ final class ViewManagedServer extends ViewRecord
     #[Locked]
     public ?array $fileDiff = null;
 
+    #[Locked]
+    public ?string $evidenceState = null;
+
+    private function evidenceStateFor($record): string
+    {
+        return hash('sha256', json_encode([$record->policy_revision, $record->comparison_status, $record->active_operation_id, (string) $record->updated_at], JSON_THROW_ON_ERROR));
+    }
+
+    public function pollEvidence(): void
+    {
+        Access::requireAdmin();
+        $record = ManagedServer::query()->select(['id', 'policy_revision', 'comparison_status', 'active_operation_id', 'updated_at'])->findOrFail($this->getRecord()->id);
+        $working = $record->active_operation_id && ! $record->operations()->whereKey($record->active_operation_id)->whereNotNull('completed_at')->exists();
+        if ($working || $this->evidenceState === $this->evidenceStateFor($record)) { $this->skipRender(); }
+    }
+
     public function managed()
     {
         Access::requireAdmin();
 
         $record = $this->getRecord();
         $record->setRawAttributes(ManagedServer::lightweight()->findOrFail($record->id)->getAttributes(), true);
+        $this->evidenceState = $this->evidenceStateFor($record);
         $record->evidenceProjection = true;
         $record->unsetRelations();
         return $record;
@@ -306,18 +324,26 @@ final class ViewManagedServer extends ViewRecord
         Notification::make()->title($title)->success()->send();
     }
 
-    public function resolve(string $path, string $mode): void
+    #[Renderless]
+    public function resolve(string $path, string $mode, ?int $revision = null, ?string $requestId = null, ?int $position = null): void
     {
         Access::requireAdmin();
-        abort_unless(in_array($mode, ['protect', 'replace', 'review', 'disable'], true), 422);
-        $record = $this->getRecord()->refresh();
-        abort_if((bool) $record->active_operation_id, 409);
-        abort_unless(isset((new FilePolicyCatalog)->selected($record, [$path])[$path]), 422);
-        UpdatePlanner::assertPath($path);
-        // Escape glob metacharacters by rejecting them for exact-path decisions.
-        abort_if(strpbrk($path, '*?') !== false, 422);
-        app(ServerPolicyService::class)->assign($record, [$path], $mode, $record->policy_revision);
-        $this->recompare();
+        try {
+            if (! in_array($mode, ['protect', 'replace', 'review', 'disable'], true)) { throw new \RuntimeException('Choose a supported file decision.'); }
+            UpdatePlanner::assertPath($path);
+            $record = ManagedServer::lightweight()->findOrFail($this->getRecord()->id);
+            $operation = app(ServerPolicyService::class)->decide($record, $path, $mode, $revision ?? $record->policy_revision, $requestId ?? (string) \Illuminate\Support\Str::uuid(), $position);
+            $message = ($mode === 'protect' ? 'Keep local' : ($mode === 'replace' ? 'Use upstream' : 'Policy')).' saved for '.$path.'. Comparison queued; no live files changed.';
+            if ($operation->error) { $message = 'Decision saved for '.$path.'. Comparison is awaiting queue dispatch; use Reconcile preparation or check the scheduler and queue worker.'; }
+            $this->mergeReview = null; $this->fileDiff = null;
+            $this->dispatch('file-decision-result', path: $path, success: true, message: $message, operation: $operation->id);
+            Notification::make()->title('File decision saved')->body($message)->success()->send();
+        } catch (\Throwable $error) {
+            $message = get_class($error) === \RuntimeException::class || $error instanceof \InvalidArgumentException
+                ? $error->getMessage() : 'Decision was not saved. Check database/queue connectivity and refresh File Changes before retrying.';
+            $this->dispatch('file-decision-result', path: $path, success: false, message: $message);
+            Notification::make()->title('File decision was not saved')->body($message)->danger()->send();
+        }
     }
 
     private function recompare(): void

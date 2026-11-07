@@ -5,7 +5,7 @@
     @php($warnings = $this->inventoryWarnings())
     @php($runtimeObservation = array_replace($record->runtime_report ?? [], $preview['qualification']['current'] ?? []))
     @php($target = $record->target_metadata ?? $record->release_metadata ?? [])
-    <div wire:poll.10s>
+    <div wire:poll.10s="pollEvidence">
         <x-filament::tabs label="Modpack management">
             @foreach(['overview' => 'Overview', 'updates' => 'Updates', 'changes' => 'File Changes', 'mods' => 'Mods & Files', 'protection' => 'Protection Rules', 'backups' => 'Backups', 'history' => 'History'] as $key => $label)
                 <x-filament::tabs.item :active="$this->tab === $key" wire:click="selectTab('{{ $key }}')">{{ $label }}</x-filament::tabs.item>
@@ -128,6 +128,10 @@
                     </x-filament::section>
                 @endif
                 <x-filament::section heading="File Changes">
+                    <div wire:key="file-decisions-{{ $record->policy_revision }}-{{ $record->comparison_status }}-{{ $record->active_operation_id ?? 'idle' }}" x-data="{ feedback: '', failed: false, comparisonPending: {{ $record->active_operation_id ? 'true' : 'false' }} }"
+                        x-on:file-decision-result.window="feedback = $event.detail.message; failed = !$event.detail.success; if ($event.detail.success) comparisonPending = true">
+                    <p x-cloak x-show="feedback" x-text="feedback" role="status" aria-live="polite" class="mb-3 break-words text-sm"></p>
+                    <p wire:loading wire:target="resolve" role="status" class="mb-3 text-sm">Saving decision…</p>
                     <p class="mb-3 text-sm">KubeJS follows upstream when the local file matches the verified baseline. Local-only scripts and protected files stay local. Conflicts require Keep local or Use upstream; scripts, recipes and datapacks are never merged.</p>
                     @if(($preview['policy_revision'] ?? $record->policy_revision) !== $record->policy_revision)
                         <p class="mb-3 text-sm">Decisions saved. Showing previous comparison while a fresh comparison is required. No live files changed.</p>
@@ -148,7 +152,9 @@
                             <tbody>
                                 @forelse($changes['rows'] as $change)
                                     <tr wire:key="change-{{ hash('sha256', $change['path']) }}" class="border-t border-gray-200 dark:border-gray-700">
-                                        <td class="p-2"><x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $change['path'] }}" aria-label="Select {{ $change['path'] }}" /> <details><summary class="cursor-pointer break-all">{{ $change['path'] }}</summary><dl class="mt-2 break-all">
+                                        <td class="p-2"><x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $change['path'] }}" aria-label="Select {{ $change['path'] }}" /> <details><summary class="cursor-pointer break-all">{{ $change['path'] }}</summary>
+                                            @if($change['replacement'] ?? null)<p class="mt-2 break-all">Verified mod replacement ({{ $change['replacement']['identity'] }}): {{ $change['replacement']['base_path'] }} → {{ $change['replacement']['target_path'] }}</p>@endif
+                                            <dl class="mt-2 break-all">
                                             @foreach(['base_sha256' => 'Upstream baseline', 'local_sha256' => 'Installed', 'target_sha256' => 'Target'] as $field => $label)<dt class="text-gray-500">{{ $label }}</dt><dd>{{ $change[$field] ?? 'Absent' }}</dd>@endforeach
                                             <dt class="text-gray-500">Effective rule</dt><dd>{{ $change['rule_origin'] ?? 'Three-way comparison' }} · {{ $change['rule'] ?? 'follow' }}</dd>
                                             <dt class="text-gray-500">Matching rule rows</dt><dd>{{ implode(', ', $change['matching_rules'] ?? []) ?: 'None' }}</dd>
@@ -158,15 +164,16 @@
                                         <td class="p-2">{{ str_replace('_', ' ', $change['action']) }}</td>
                                         <td class="p-2">
                                             @if(($change['blocked'] ?? false) && !$record->active_operation_id)
-                                                <div class="flex flex-wrap gap-2">
+                                                <fieldset x-bind:disabled="comparisonPending" class="flex flex-wrap gap-2">
+                                                    @php($decisionId = (string) \Illuminate\Support\Str::uuid())
                                                     @if(\Arcturus\ModpackManager\Services\KubeJsDiff::supports($change['path']))
-                                                        <x-filament::button size="xs" color="gray" wire:loading.attr="disabled" wire:click="reviewFileDiff(@js($change['path']))">View text diff</x-filament::button>
+                                                        <x-filament::button size="xs" color="gray" wire:loading.attr="disabled" :wire:click="'reviewFileDiff('.\Illuminate\Support\Js::from($change['path']).')'">View text diff</x-filament::button>
                                                     @elseif(!str_starts_with($change['path'], 'kubejs/') && str_ends_with($change['path'], '.properties'))
-                                                        <x-filament::button size="xs" color="gray" wire:click="reviewMerge(@js($change['path']))">Review text merge</x-filament::button>
+                                                        <x-filament::button size="xs" color="gray" :wire:click="'reviewMerge('.\Illuminate\Support\Js::from($change['path']).')'">Review text merge</x-filament::button>
                                                     @endif
-                                                    <x-filament::button size="xs" color="gray" wire:loading.attr="disabled" wire:click="resolve(@js($change['path']), 'protect')">Keep local</x-filament::button>
-                                                    <x-filament::button size="xs" color="warning" wire:confirm="Use upstream for this file, including removal if absent upstream? A future deployment still requires a reviewed plan and backup." wire:loading.attr="disabled" wire:click="resolve(@js($change['path']), 'replace')">Use upstream</x-filament::button>
-                                                </div>
+                                                    <x-filament::button size="xs" color="gray" wire:loading.attr="disabled" :wire:click="'resolve('.\Illuminate\Support\Js::from($change['path']).', \'protect\', '.$record->policy_revision.', '.\Illuminate\Support\Js::from($decisionId).', '.$change['_evidence_index'].')'">Keep local</x-filament::button>
+                                                    <x-filament::button size="xs" color="warning" wire:confirm="Use upstream for this file, including removal if absent upstream? A future deployment still requires a reviewed plan and backup." wire:loading.attr="disabled" :wire:click="'resolve('.\Illuminate\Support\Js::from($change['path']).', \'replace\', '.$record->policy_revision.', '.\Illuminate\Support\Js::from($decisionId).', '.$change['_evidence_index'].')'">Use upstream</x-filament::button>
+                                                </fieldset>
                                             @else — @endif
                                         </td>
                                     </tr>
@@ -178,6 +185,7 @@
                     <div class="mt-3 flex gap-2">
                         <x-filament::button color="gray" wire:click="$set('changePage', {{ max(1, $changes['page'] - 1) }})" :disabled="$changes['page'] <= 1">Previous</x-filament::button>
                         <x-filament::button color="gray" wire:click="$set('changePage', {{ min($changes['pages'], $changes['page'] + 1) }})" :disabled="$changes['page'] >= $changes['pages']">Next</x-filament::button>
+                    </div>
                     </div>
                 </x-filament::section>
             @elseif($this->tab === 'mods')

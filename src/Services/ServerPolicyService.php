@@ -124,13 +124,35 @@ final class ServerPolicyService
         });
     }
 
-    public function assign(ManagedServer $server, array $paths, string $action, int $revision): void
+    /** A decision and asynchronous comparison commit together; browser retries consume the same receipt. */
+    public function decide(ManagedServer $server, string $path, string $action, int $revision, string $requestId, ?int $position = null): \Arcturus\ModpackManager\Models\Operation
+    {
+        Access::requireAdmin();
+        UpdatePlanner::assertPath($path);
+        if (! \Illuminate\Support\Str::isUuid($requestId)) { throw new RuntimeException('Invalid file decision receipt. Refresh File Changes.'); }
+        $fingerprint = hash('sha256', json_encode([$server->id, $path, $action, $revision], JSON_THROW_ON_ERROR));
+        return DB::transaction(function () use ($server, $path, $action, $revision, $requestId, $position, $fingerprint) {
+            $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
+            $receipt = $fresh->operations()->find($requestId);
+            if ($receipt) {
+                if (($receipt->context['file_decision'] ?? null) !== $fingerprint) { throw new RuntimeException('File decision receipt belongs to a different choice. Refresh File Changes.'); }
+                return $receipt;
+            }
+            $this->assign($fresh, [$path], $action, $revision, $position === null ? [] : [$path => $position]);
+            $fresh->refresh();
+            $operation = app(QueuePreparation::class)->comparison($fresh, (bool) $fresh->target_manifest_path, $requestId);
+            $operation->update(['context' => [...$operation->context, 'file_decision' => $fingerprint]]);
+            return $operation;
+        });
+    }
+
+    public function assign(ManagedServer $server, array $paths, string $action, int $revision, array $positions = []): void
     {
         Access::requireAdmin();
         if (! $paths || count($paths) > 250 || ! isset(ProtectionPolicy::ACTIONS[$action])) {
             throw new RuntimeException('Select 1–250 files and a valid policy');
         }
-        $catalog = (new FilePolicyCatalog)->selected($server, $paths);
+        $catalog = (new FilePolicyCatalog)->selected($server, $paths, $positions);
         $rules = (new ProtectionPolicy)->normalize($server->file_rules ?? []);
         foreach (array_unique($paths) as $path) {
             UpdatePlanner::assertPath($path);

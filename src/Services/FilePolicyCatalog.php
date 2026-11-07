@@ -43,12 +43,19 @@ final class FilePolicyCatalog
         return ['rows' => $rows, 'total' => $count, 'pages' => $pages, 'page' => $page];
     }
 
-    public function selected(ManagedServer $server, array $paths): array
+    public function selected(ManagedServer $server, array $paths, array $positions = []): array
     {
         $wanted = array_fill_keys($paths, true); $rows = [];
+        foreach ($positions as $path => $index) {
+            if (! isset($wanted[$path]) || ! is_int($index) || $index < 0 || $index > 100000) { throw new \RuntimeException('Invalid comparison row; refresh File Changes.'); }
+            $change = EvidenceView::value($server->id, EvidenceView::reportColumn($server->id), '$.changes['.$index.']');
+            if (($change['path'] ?? null) !== $path) { throw new \RuntimeException('Comparison changed; refresh File Changes before deciding.'); }
+            $rows[$path] = $this->row($server, $change, false);
+        }
+        if (count($rows) === count($wanted)) { return $rows; }
         foreach ($this->rawRows($server) as $change) {
             if (isset($wanted[$change['path']])) {
-                $rows[$change['path']] = $this->row($server, $change);
+                $rows[$change['path']] = $this->row($server, $change, false);
                 if (count($rows) === count($wanted)) { break; }
             }
         }
@@ -60,7 +67,7 @@ final class FilePolicyCatalog
         foreach ($this->rawRows($server) as $change) { yield $this->row($server, $change); }
     }
 
-    private function row(ManagedServer $server, array $change): array
+    private function row(ManagedServer $server, array $change, bool $includeTarget = true): array
     {
         $path = $change['path'];
         $snapshot = ['files' => [$path => $change['local_sha256'] ?? null],
@@ -74,7 +81,7 @@ final class FilePolicyCatalog
         $decision = (new ProtectionPolicy)->effective($path, $rules, $identity, $meta['loader'] ?? null, $classification);
         $invariant = ($change['rule'] ?? '') === 'immutable' ? $change['rule_origin'] : SafetyPaths::reason($path, $directoryRoots);
         $targetPath = isset($change['target_sha256']) ? $path : null;
-        if ($identity !== null) {
+        if ($includeTarget && $identity !== null) {
             if ($this->targets === null || $this->targetServer !== $server->id) {
                 $this->targets = []; $this->targetServer = $server->id;
                 foreach (JsonStream::column($server->id, EvidenceView::reportColumn($server->id))->entries(['changes']) as $target) {
@@ -85,7 +92,7 @@ final class FilePolicyCatalog
         }
         return [...$decision, 'path' => $path, 'identity' => $identity, 'is_mod' => str_starts_with($path, 'mods/') && preg_match('/\.jar(?:\.disabled)?$/i', $path) === 1,
             'target_path' => $targetPath,
-            'target_version' => EvidenceView::value($server->id, 'file_inventory', EvidenceView::path('target_metadata', $targetPath ?? $path).'.version'),
+            'target_version' => $includeTarget ? EvidenceView::value($server->id, 'file_inventory', EvidenceView::path('target_metadata', $targetPath ?? $path).'.version') : null,
             'name' => $meta['name'] ?? null, 'version' => $meta['version'] ?? null,
             'loader' => $meta['loader'] ?? null, 'classification' => $classification, 'invariant' => $invariant,
             'action' => $change['action'] ?? 'not_compared', 'local_sha256' => $snapshot['files'][$path] ?? $change['local_sha256'] ?? null,

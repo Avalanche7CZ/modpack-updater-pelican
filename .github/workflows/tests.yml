@@ -59,6 +59,17 @@ jobs:
           php tests/integration/discord.php
           php tests/integration/discord_deployment.php
           php tests/integration/deployment.php
+      - name: Install Chromium for rendered File Changes regression
+        if: matrix.panel == 'v1.0.0-rc.1'
+        run: |
+          npm install --prefix /tmp/arcturus-browser-tools --no-package-lock playwright@1.58.2
+          /tmp/arcturus-browser-tools/node_modules/.bin/playwright install --with-deps chromium
+      - name: Click actual File Changes buttons with 22000-file fixture
+        if: matrix.panel == 'v1.0.0-rc.1'
+        env:
+          PELICAN_SOURCE: /tmp/arcturus-panel
+          ARCTURUS_PLAYWRIGHT_MODULE: /tmp/arcturus-browser-tools/node_modules/playwright
+        run: bash scripts/test-browser.sh
   package:
     needs: [regression, pelican]
     runs-on: ubuntu-latest

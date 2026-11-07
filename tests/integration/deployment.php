@@ -156,21 +156,27 @@ $requests = []; $snapshots = []; $states = []; $starts = []; $daemonConfiguratio
 \Arcturus\ModpackManager\Models\UpdateEvent::created(function ($event) use (&$scenario): void { if ($scenario === 'metadata_failure' && $event->kind === 'deploy' && $event->status === 'success') { throw new RuntimeException('Fixture completion metadata transaction failed'); } });
 $fixtures = [];
 $write = function ($root, $path, $content): void { if (! is_dir(dirname($root.'/'.$path))) { mkdir(dirname($root.'/'.$path), 0770, true); } file_put_contents($root.'/'.$path, $content); };
-$make = function (string $name) use (&$fixtures, &$states, &$starts, &$daemonConfigurations, $root, $write, $hash, $runtimeLog): ManagedServer {
+$jarBytes = [];
+foreach (['1', '2'] as $version) {
+    $jarPath = $root.'/fixture-'.$version.'.jar'; $jar = new ZipArchive; $jar->open($jarPath, ZipArchive::CREATE);
+    $jar->addFromString('META-INF/mods.toml', 'modLoader="javafml"'."\n".'loaderVersion="[47,)"'."\n".'license="MIT"'."\n".'[[mods]]'."\n".'modId="fixturemod"'."\n".'version="'.$version.'"');
+    $jar->close(); $jarBytes[$version] = file_get_contents($jarPath);
+}
+$make = function (string $name) use (&$fixtures, &$states, &$starts, &$daemonConfigurations, $root, $write, $hash, $runtimeLog, $jarBytes): ManagedServer {
     $uuid = (string) \Illuminate\Support\Str::uuid(); $id = bin2hex(random_bytes(16));
     $live = $root.'/'.$uuid; $stage = $root.'/stages-'.$uuid; mkdir($live, 0700); mkdir($stage, 0700);
     $files = $stage.'/'.$id.'/files'; mkdir($files, 0700, true);
     $common = ['forge-auto-install.txt' => "minecraftVersion=1.20.1\nloaderType=Forge\nloaderVersion=47.4.13\n",
         'start_server.sh' => "java -jar minecraft_server.jar\n", 'minecraft_server.jar' => 'verified server starter fixture', 'server.properties' => "level-name=world\n"];
-    $baseFiles = [...$common, 'kubejs/server_scripts/recipes.js' => 'old upstream recipe', 'kubejs/server_scripts/obsolete.js' => 'old obsolete', 'config/upstream.cfg' => 'old upstream config', 'config/Paradigm/options.toml' => 'upstream default'];
-    $targetFiles = [...$common, 'kubejs/server_scripts/recipes.js' => 'new upstream recipe', 'kubejs/server_scripts/added.js' => 'new script', 'config/upstream.cfg' => 'new upstream config', 'config/Paradigm/options.toml' => 'new upstream default'];
+    $baseFiles = [...$common, 'mods/fixturemod-1.jar' => $jarBytes['1'], 'kubejs/server_scripts/recipes.js' => 'old upstream recipe', 'kubejs/server_scripts/obsolete.js' => 'old obsolete', 'config/upstream.cfg' => 'old upstream config', 'config/Paradigm/options.toml' => 'upstream default'];
+    $targetFiles = [...$common, 'mods/fixturemod-2.jar' => $jarBytes['2'], 'kubejs/server_scripts/recipes.js' => 'new upstream recipe', 'kubejs/server_scripts/added.js' => 'new script', 'config/upstream.cfg' => 'new upstream config', 'config/Paradigm/options.toml' => 'new upstream default'];
     foreach ($baseFiles as $path => $content) { $write($live, $path, $content); }
     foreach ($targetFiles as $path => $content) { $write($files, $path, $content); }
     foreach (['config/Paradigm/options.toml' => 'custom protected configuration', 'kubejs/server_scripts/local.js' => 'local extra', 'mods/Paradigm.jar' => 'custom mod',
         'world/level.dat' => 'world data', 'world/playerdata/uuid.dat' => 'player data', 'backups/previous.zip' => 'large excluded backup', 'logs/latest.log' => $runtimeLog,
         'libraries/fixture/runtime.jar' => 'installed runtime dependency', 'libraries/net/minecraftforge/forge/1.20.1-47.4.13/unix_args.txt' => '-DlegacyClassPath=libraries/fixture/runtime.jar --fml.forgeVersion 47.4.13 --fml.mcVersion 1.20.1'] as $path => $content) { $write($live, $path, $content); }
     $manifest = fn ($version, $contents) => ['schema' => 2, 'provider' => 'custom', 'project' => 'TFG-fixture', 'version' => $version, 'verification' => 'upstream-checksums',
-        'files' => array_map($hash, $contents), 'runtime' => [], 'artifacts' => [['sha256' => $hash($name), 'hashes' => ['sha256' => $hash($name)]]]];
+        'files' => array_map($hash, $contents), 'identities' => [($version === '0.13.15' ? 'mods/fixturemod-1.jar' : 'mods/fixturemod-2.jar') => 'fixturemod'], 'runtime' => [], 'artifacts' => [['sha256' => $hash($name), 'hashes' => ['sha256' => $hash($name)]]]];
     $base = $manifest('0.13.15', $baseFiles); $target = $manifest('0.13.17', $targetFiles);
     file_put_contents($stage.'/'.$id.'/manifest.json', json_encode($target, JSON_THROW_ON_ERROR));
     $digest = hash_file('sha256', $stage.'/'.$id.'/manifest.json');
@@ -282,6 +288,7 @@ check(count($requests) === $count, 'Scheduler duplicate job replayed the deploym
 check($daemonConfigurations[$server->pelican_server_uuid]['suspended'] === false && $daemonConfigurations[$server->pelican_server_uuid]['crash_detection_enabled'] === true, 'Completed update did not release its per-server maintenance guard: '.$operation->phase.' '.($operation->error ?? ''));
 check($operation->phase === 'completed' && $server->installed_version === '0.13.17', 'Queued update did not complete: '.($operation->error ?? $server->last_error));
 $live = $fixtures[$server->pelican_server_uuid]['live'];
+check(! is_file($live.'/mods/fixturemod-1.jar') && file_get_contents($live.'/mods/fixturemod-2.jar') === $jarBytes['2'], 'Verified renamed JAR replacement did not deploy');
 check(file_get_contents($live.'/kubejs/server_scripts/recipes.js') === 'new upstream recipe' && ! file_exists($live.'/kubejs/server_scripts/obsolete.js'), 'Approved update/removal not applied');
 foreach (['kubejs/server_scripts/local.js' => 'local extra', 'world/level.dat' => 'world data', 'world/playerdata/uuid.dat' => 'player data',
     'mods/Paradigm.jar' => 'custom mod', 'config/Paradigm/options.toml' => 'custom protected configuration', 'backups/previous.zip' => 'large excluded backup'] as $path => $content) { check(file_get_contents($live.'/'.$path) === $content, 'Protected content changed: '.$path); }

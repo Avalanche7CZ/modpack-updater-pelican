@@ -57,13 +57,14 @@ final class UpdatePlanner
                 }
                 foreach (explode('+', strtolower($id)) as $componentId) {
                     if (isset($seenIds[$componentId])) {
-                        $ambiguousIds[$id] = true;
-                        $ambiguousIds[$seenIds[$componentId]] = true;
+                        $ambiguousIds[strtolower($id)] = true;
+                        $ambiguousIds[strtolower($seenIds[$componentId])] = true;
                     }
                     $seenIds[$componentId] = $id;
                 }
             }
         }
+        $baseIds = array_map('strtolower', $baseIds); $targetIds = array_map('strtolower', $targetIds); $localIds = array_map('strtolower', $localIds);
         foreach ($base as $file => $hash) {
             if (self::isMod($file) && ! isset($local[$file])) {
                 $id = $baseIds[$file] ?? null;
@@ -83,6 +84,35 @@ final class UpdatePlanner
                 }
             }
         }
+        // Only unique metadata identities may pair version-renamed upstream JARs.
+        // Physical paths and conditional hashes remain separate deployment mutations.
+        $groups = [];
+        foreach (['base' => $baseIds, 'target' => $targetIds] as $scope => $mapping) {
+            foreach ($mapping as $file => $id) {
+                if (self::isMod($file) && isset(($scope === 'base' ? $base : $target)[$file])) { $groups[strtolower($id)][$scope][] = $file; }
+            }
+        }
+        $replacements = [];
+        foreach ($groups as $id => $group) {
+            if (isset($ambiguousIds[$id]) || count($group['base'] ?? []) !== 1 || count($group['target'] ?? []) !== 1) { continue; }
+            $before = $group['base'][0]; $after = $group['target'][0];
+            if ($before === $after || isset($target[$before]) || isset($base[$after]) || ! isset($local[$before])) { continue; }
+            if (($localIds[$before] ?? $id) !== $id || isset($local[$after])) { continue; }
+            $modified = $local[$before] !== $base[$before];
+            if ($modified && ($localIds[$before] ?? null) !== $id) { continue; }
+            $classification = $modified ? 'locally_modified' : 'updated_upstream';
+            $decisions = [];
+            foreach ([$before, $after] as $file) { $decisions[$file] = $policy->effective($file, $rules, $id, $metadata[$file]['loader'] ?? null, $classification); }
+            $protect = null; $review = null;
+            foreach ([$before, $after] as $file) {
+                if (SafetyPaths::reason($file, $safetyRoots) !== null || $decisions[$file]['mode'] === 'protect') { $protect = $file; }
+                if (in_array($decisions[$file]['mode'], ['review', 'merge', 'remove'], true)) { $review = $file; }
+            }
+            foreach ([$before, $after] as $file) {
+                $replacements[$file] = ['identity' => $id, 'base_path' => $before, 'target_path' => $after, 'locally_modified' => $modified,
+                    'classification' => $classification, 'protected_path' => $protect, 'review_path' => $review];
+            }
+        }
         $paths = array_unique(array_merge(array_keys($base), array_keys($local), array_keys($target)));
         sort($paths, SORT_STRING);
         $changes = [];
@@ -95,7 +125,14 @@ final class UpdatePlanner
             $new = $target[$path] ?? null;
             $identity = $targetIds[$path] ?? $baseIds[$path] ?? $localIds[$path] ?? null;
             $rawClass = $this->classification($path, $old, $current, $new, $current !== $old && $old !== null ? 'preserve_local_change' : '');
+            $replacement = $replacements[$path] ?? null;
+            if ($replacement) { $rawClass = $replacement['classification']; }
             $decision = $policy->effective($path, $rules, $identity, $metadata[$path]['loader'] ?? null, $rawClass);
+            if ($replacement && $replacement['protected_path'] !== null) {
+                $decision['mode'] = 'protect'; $decision['origin'] = 'Protected paired mod: '.$replacement['protected_path'];
+            } elseif ($replacement && $replacement['review_path'] !== null && ! in_array($decision['mode'], ['replace', 'disable', 'remove'], true)) {
+                $decision['mode'] = 'review'; $decision['origin'] = 'Review paired mod: '.$replacement['review_path'];
+            }
             $mode = $decision['mode'];
             $invariant = SafetyPaths::reason($path, $safetyRoots);
             if ($invariant !== null || $mode === 'protect') {
@@ -124,7 +161,10 @@ final class UpdatePlanner
                 $action = 'conflict';
             }
 
-            if ($action === 'add' && self::isMod($path) && $missingUnidentified) {
+            if ($replacement && $replacement['locally_modified'] && in_array($action, ['add', 'remove', 'conflict'], true) && $mode !== 'replace') {
+                $action = 'conflict'; // Never add a new copy alongside a locally modified previous version.
+            }
+            if ($action === 'add' && self::isMod($path) && $missingUnidentified && $replacement === null) {
                 $action = 'unsafe_ambiguous_identity';
             }
             if ($invariant === null && $mode === 'remove' && ! in_array($action, ['unsafe_ambiguous_identity', 'skip_disabled'], true)) {
@@ -163,8 +203,9 @@ final class UpdatePlanner
                 'approval_required' => $isBlocked || in_array($action, ['remove_with_override', 'replace_with_override'], true),
                 'metadata' => $metadata[$path] ?? null,
                 'identity' => $identity,
+                'replacement' => $replacement,
                 'file_state' => $invariant !== null ? 'protected' : $rawClass,
-                'classification' => $this->classification($path, $old, $current, $new, $action),
+                'classification' => $replacement && in_array($action, ['add', 'remove'], true) ? 'updated_upstream' : $this->classification($path, $old, $current, $new, $action),
                 'base_sha256' => $old,
                 'local_sha256' => $current,
                 'target_sha256' => $new,

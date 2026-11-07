@@ -106,6 +106,7 @@ check(str_contains($test->html(), 'Keep local') && str_contains($test->html(), '
 $dom = new DOMDocument;
 @$dom->loadHTML('<meta charset="utf-8">'.$test->html());
 $buttons = (new DOMXPath($dom))->query('//button[starts-with(@*[name()="wire:click"], "resolve(")]');
+check(! str_contains($buttons->item(0)->getAttribute('wire:click'), '@js'), 'Blade directive leaked into the browser action');
 check($buttons->length === 2 && str_contains($buttons->item(1)->getAttribute('wire:click'), 'replace'), 'Native decision expressions did not render');
 $test->call('reviewFileDiff', $path);
 check($reads === 2 && str_contains($test->html(), '-// customized') && str_contains($test->html(), '+// updated upstream'), 'Native diff did not read verified snapshots');
