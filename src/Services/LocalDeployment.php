@@ -79,7 +79,9 @@ final class LocalDeployment
             throw new RuntimeException('Another update is running for this directory');
         }
         try {
-            $paths = array_unique(array_merge(array_keys($base), array_keys($target), array_column($expectedDecisions ?? [], 'path')));
+            $decisionPaths = array_column($expectedDecisions ?? [], 'path');
+            foreach ($expectedDecisions ?? [] as $decision) { $decisionPaths = array_merge($decisionPaths, $decision['mod_upgrade']['paths'] ?? []); }
+            $paths = array_unique(array_merge(array_keys($base), array_keys($target), $decisionPaths, array_keys($policyContext['local_mod_files'] ?? [])));
             $safetyRoots = array_values(array_unique(array_merge($this->inventory->safetyRoots($live), $policyContext['safety_roots'] ?? [])));
             $paths = array_values(array_filter($paths, fn ($p) => SafetyPaths::reason($p, $safetyRoots) === null));
             $local = $this->inventory->hashPaths($live, $paths, $heartbeat);
@@ -92,7 +94,7 @@ final class LocalDeployment
                     throw new RuntimeException("Staged hash mismatch: {$path}");
                 }
             }
-            $plan = $this->planner->plan($base, $local, $target, $rules, $policyContext['identities'] ?? [], $policyContext['disabled'] ?? [], $safetyRoots, $policyContext['metadata'] ?? []);
+            $plan = $this->planner->plan($base, $local, $target, $rules, $policyContext['identities'] ?? [], $policyContext['disabled'] ?? [], $safetyRoots, $policyContext['metadata'] ?? [], $policyContext['mod_evidence'] ?? []);
             if ($expectedDecisions !== null && $plan['changes'] !== $expectedDecisions) {
                 throw new RuntimeException('Deployment decisions differ from the approved preview');
             }
@@ -107,7 +109,7 @@ final class LocalDeployment
                     throw new RuntimeException("Cannot disable a non-mod file: {$entry['path']}");
                 }
                 if (in_array($action, [
-                    'add', 'update', 'remove', 'replace_with_override',
+                    'upgrade_mod', 'add', 'update', 'remove', 'replace_with_override',
                     'remove_with_override', 'disable_requires_enforcement'
                 ], true)) {
                     $mutations[] = $entry;
@@ -127,9 +129,9 @@ final class LocalDeployment
             $journalStream = $journal !== null ? @fopen($journal, 'x+b') : null;
             if ($journal !== null && ! $journalStream) { throw new RuntimeException('Deployment recovery journal already exists or is unavailable; do not replay apply.'); }
             $recorded = 0;
-            $receipt = function (string $state) use ($journalStream, $verifiedPelicanBackupUuid, &$modified, &$recorded): void {
+            $receipt = function (string $state, array $details = []) use ($journalStream, $verifiedPelicanBackupUuid, &$modified, &$recorded): void {
                 if (! $journalStream) { return; }
-                $line = json_encode(['state' => $state, 'backup_uuid' => $verifiedPelicanBackupUuid, 'touched' => array_slice($modified, $recorded)], JSON_THROW_ON_ERROR)."\n";
+                $line = json_encode(['details' => $details, 'state' => $state, 'backup_uuid' => $verifiedPelicanBackupUuid, 'touched' => array_slice($modified, $recorded)], JSON_THROW_ON_ERROR)."\n";
                 if (fwrite($journalStream, $line) !== strlen($line) || ! fflush($journalStream) || ! fsync($journalStream)) { throw new RuntimeException('Cannot persist deployment recovery journal'); }
                 $recorded = count($modified);
             };
@@ -143,7 +145,18 @@ final class LocalDeployment
                     }
                 }
 
+                $expectedMods = $policyContext['local_mod_files'] ?? [];
+                usort($mutations, fn ($a, $b) => (($a['action'] === 'upgrade_mod') ? 0 : 1) <=> (($b['action'] === 'upgrade_mod') ? 0 : 1));
                 foreach ($mutations as $entry) {
+                    if ($entry['action'] === 'upgrade_mod') {
+                        $transaction = new ModUpgradeTransaction;
+                        $transaction->requireSnapshot($live, $expectedMods, $heartbeat);
+                        foreach ($entry['mod_upgrade']['paths'] as $path) { if (! in_array($path, $modified, true)) { $modified[] = $path; } }
+                        $transaction->apply($live, $stage, $entry, $receipt, $heartbeat);
+                        unset($expectedMods[$entry['mod_upgrade']['installed']['path']]);
+                        $expectedMods[$entry['mod_upgrade']['target']['path']] = $entry['mod_upgrade']['target']['sha256'];
+                        continue;
+                    }
                     $heartbeat?->__invoke();
                     $path = $entry['path'];
                     $dest = $live . '/' . $path;
@@ -159,14 +172,17 @@ final class LocalDeployment
                         if (file_exists($dest) && !@unlink($dest)) {
                             throw new RuntimeException("Could not remove: {$path}");
                         }
+                        unset($expectedMods[$path]);
                         continue;
                     }
                     $this->atomicCopy($stage . '/' . $path, $dest, $live, $transactionRoot !== null);
+                    if (UpdatePlanner::isMod($path)) { $expectedMods[$path] = $entry['target_sha256']; }
                     $after = $this->inventory->hashPaths($live, [$path], $heartbeat)[$path] ?? null;
                     if ($after !== $entry['target_sha256']) {
                         throw new RuntimeException("Post-install hash mismatch: {$path}");
                     }
                 }
+                if (array_filter($mutations, fn ($m) => $m['action'] === 'upgrade_mod')) { (new ModUpgradeTransaction)->requireSnapshot($live, $expectedMods, $heartbeat); }
                 if ($backup !== null) {
                     $metadata = [
                         'schema' => 1,

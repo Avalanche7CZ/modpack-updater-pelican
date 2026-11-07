@@ -17,6 +17,7 @@ final class FilePolicyCatalog
         $seen = [];
         foreach (JsonStream::column($server->id, EvidenceView::reportColumn($server->id))->entries(['changes']) as $change) {
             $seen[$change['path']] = true;
+            foreach ($change['mod_upgrade']['paths'] ?? [] as $member) { $seen[$member] = true; }
             yield $change;
         }
         foreach (JsonStream::column($server->id, 'file_inventory')->entries(['files']) as $path => $hash) {
@@ -32,7 +33,7 @@ final class FilePolicyCatalog
             if (($modsOnly && ! (str_starts_with($path, 'mods/') && preg_match('/\.jar(?:\.disabled)?$/i', $path))) ||
                 ($classification !== '' && ($change['file_state'] ?? $change['classification'] ?? 'not_compared') !== $classification)) { continue; }
             if ($search !== '') {
-                $name = $change['metadata']['name'] ?? ''; $identity = $change['identity'] ?? '';
+                $name = ($change['metadata']['name'] ?? '').' '.implode(' ', $change['mod_upgrade']['paths'] ?? []); $identity = $change['identity'] ?? '';
                 if (! str_contains(strtolower($path.' '.$identity.' '.$name), strtolower($search))) { continue; }
             }
             if ($count >= $offset && count($rows) < 50) { $rows[] = $this->row($server, $change); }
@@ -74,14 +75,17 @@ final class FilePolicyCatalog
             'identities' => [$path => array_key_exists('identity', $change) ? $change['identity'] : EvidenceView::value($server->id, 'file_inventory', EvidenceView::path('identities', $path))],
             'metadata' => [$path => array_key_exists('metadata', $change) ? $change['metadata'] : EvidenceView::value($server->id, 'file_inventory', EvidenceView::path('metadata', $path))]];
         $rules = (new ProtectionPolicy)->normalize($server->file_rules ?? []);
-        $directoryRoots = (new DirectoryPolicy)->protectedRoots($server, ['files' => [$path => '']]);
+        $upgrade = $change['mod_upgrade'] ?? null;
+        $memberPaths = $upgrade['paths'] ?? [$path];
+        $directoryRoots = (new DirectoryPolicy)->protectedRoots($server, ['files' => array_fill_keys($memberPaths, '')]);
         $identity = $change['identity'] ?? $snapshot['identities'][$path] ?? null;
         $meta = $change['metadata'] ?? $snapshot['metadata'][$path] ?? [];
         $classification = $change['file_state'] ?? $change['classification'] ?? 'not_compared';
         $decision = (new ProtectionPolicy)->effective($path, $rules, $identity, $meta['loader'] ?? null, $classification);
         $invariant = ($change['rule'] ?? '') === 'immutable' ? $change['rule_origin'] : SafetyPaths::reason($path, $directoryRoots);
-        $targetPath = isset($change['target_sha256']) ? $path : null;
-        if ($includeTarget && $identity !== null) {
+        foreach ($memberPaths as $member) { $invariant ??= SafetyPaths::reason($member, $directoryRoots); }
+        $targetPath = $upgrade['target']['path'] ?? (isset($change['target_sha256']) ? $path : null);
+        if (! $upgrade && $includeTarget && $identity !== null) {
             if ($this->targets === null || $this->targetServer !== $server->id) {
                 $this->targets = []; $this->targetServer = $server->id;
                 foreach (JsonStream::column($server->id, EvidenceView::reportColumn($server->id))->entries(['changes']) as $target) {
@@ -90,15 +94,15 @@ final class FilePolicyCatalog
             }
             if (count($this->targets[$identity] ?? []) === 1) { $targetPath = $this->targets[$identity][0]; }
         }
-        return [...$decision, 'path' => $path, 'identity' => $identity, 'is_mod' => str_starts_with($path, 'mods/') && preg_match('/\.jar(?:\.disabled)?$/i', $path) === 1,
+        return [...$decision, 'mod_upgrade' => $upgrade, 'kind' => $change['kind'] ?? 'file', 'path' => $path, 'identity' => $identity, 'is_mod' => str_starts_with($path, 'mods/') && preg_match('/\.jar(?:\.disabled)?$/i', $path) === 1,
             'target_path' => $targetPath,
-            'target_version' => $includeTarget ? EvidenceView::value($server->id, 'file_inventory', EvidenceView::path('target_metadata', $targetPath ?? $path).'.version') : null,
+            'target_version' => $upgrade ? ($upgrade['target']['version'] ?? null) : ($includeTarget ? EvidenceView::value($server->id, 'file_inventory', EvidenceView::path('target_metadata', $targetPath ?? $path).'.version') : null),
             'name' => $meta['name'] ?? null, 'version' => $meta['version'] ?? null,
             'loader' => $meta['loader'] ?? null, 'classification' => $classification, 'invariant' => $invariant,
             'action' => $change['action'] ?? 'not_compared', 'local_sha256' => $snapshot['files'][$path] ?? $change['local_sha256'] ?? null,
             'target_sha256' => $change['target_sha256'] ?? null, 'base_sha256' => $change['base_sha256'] ?? null,
-            'disabled' => str_ends_with(strtolower($path), '.disabled') || ($identity !== null && array_intersect(explode('+', strtolower($identity)), array_map('strtolower', $server->disabled_mods ?? [])) !== []) || $decision['mode'] === 'disable',
-            'identity_status' => ($change['action'] ?? '') === 'unsafe_ambiguous_identity' ? 'Ambiguous identity; review mappings' : ($identity === null ? 'Ambiguous / unavailable' : (str_contains($identity, '+') ? 'Multiple metadata IDs; use exact rule or mapping' : 'Metadata / administrator mapping')),
+            'disabled' => ($change['action'] ?? '') === 'keep_mod_disabled' || str_ends_with(strtolower($path), '.disabled') || ($identity !== null && array_intersect(explode('+', strtolower($identity)), array_map('strtolower', $server->disabled_mods ?? [])) !== []) || $decision['mode'] === 'disable',
+            'identity_status' => $upgrade ? (($upgrade['identity_verified'] ?? false) ? 'Checksum-bound embedded mod-ID set' : 'Identity review required; replacement disabled') : (($change['action'] ?? '') === 'unsafe_ambiguous_identity' ? 'Ambiguous identity; review mappings' : ($identity === null ? 'Ambiguous / unavailable' : (str_contains($identity, '+') ? 'Multiple metadata IDs; use exact rule or mapping' : 'Metadata / administrator mapping'))),
         ];
     }
 }

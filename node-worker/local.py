@@ -102,7 +102,7 @@ def run(request, observer=None):
         request = {**request, 'operation': 'capabilities'}
     settings = settings_for(request)
     server, operation, payload = request['server'], request['operation'], request.get('payload', {})
-    if operation not in {'capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'requirements', 'resolve'}:
+    if operation not in {'capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'stage_mod_metadata', 'requirements', 'resolve'}:
         raise LocalError('operation')
     # Reuse identical scope, descriptor-relative hashing, pinned downloads, archive and manifest code.
     # A read/test must not mark another running subprocess interrupted.

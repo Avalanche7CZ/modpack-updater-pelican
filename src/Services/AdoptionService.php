@@ -131,7 +131,7 @@ final class AdoptionService
             ['base' => $base['identities'] ?? [], 'local' => $inventory['identities'] ?? [], 'target' => $base['identities'] ?? []],
             $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $inventory['files'], 'target' => $base['files']]);
         $plan = $this->planner->plan($base['files'], $inventory['files'], $base['files'], $rules, $identities,
-            $server->disabled_mods ?? [], $safetyRoots, $inventory['metadata'] ?? []);
+            $server->disabled_mods ?? [], $safetyRoots, $inventory['metadata'] ?? [], ['base' => $base['metadata'] ?? [], 'target' => $base['metadata'] ?? [], 'local' => $inventory['metadata'] ?? []]);
         if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning', count($plan['changes']), count($plan['changes'])); }
         $report = ['policy_revision' => $server->policy_revision, 'verified_baseline' => true, 'version' => $base['version'], 'counts' => $plan['counts'],
             'changes' => $plan['changes'],

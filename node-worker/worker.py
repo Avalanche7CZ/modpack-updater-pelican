@@ -550,40 +550,82 @@ def extract_zip(archive, destination, maximum, cancelled=lambda: False, report=l
             written += count; files_done += 1
             report(state='extracting', bytes_done=written, bytes_total=total, files_done=files_done)
 
-def mod_metadata(root, path):
+def mod_metadata(root, path, expected_sha256=None):
     """Bounded JAR metadata, including legacy Forge mcmod.info. Never infer IDs from names."""
     if not path.startswith('mods/') or not (path.lower().endswith('.jar') or path.lower().endswith('.jar.disabled')):
         return None
     try:
-        with open_regular(root, path) as stream, zipfile.ZipFile(stream) as jar:
-            for name, loader in [('fabric.mod.json', 'fabric'), ('quilt.mod.json', 'quilt'), ('mcmod.info', 'forge'),
-                                 ('META-INF/neoforge.mods.toml', 'neoforge'), ('META-INF/mods.toml', 'forge')]:
-                if name not in jar.namelist() or jar.getinfo(name).file_size > 1048576:
-                    continue
-                raw = jar.read(name)
-                if name.endswith('.toml'):
-                    import tomllib
-                    data = tomllib.loads(raw.decode())
-                    items, key = data.get('mods', []), 'modId'
-                else:
-                    data = json.loads(raw)
-                    if loader == 'quilt':
-                        items, key = [data['quilt_loader']], 'id'
-                    elif loader == 'fabric':
-                        items, key = [data], 'id'
-                    else:
-                        items, key = data if isinstance(data, list) else data.get('modList', []), 'modid'
-                if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
-                    continue
-                ids = sorted(set(x[key].lower() for x in items if isinstance(x.get(key), str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', x[key])))
-                if ids:
-                    def text(key):
-                        value = items[0].get(key)
-                        return value[:200] if isinstance(value, str) and '${' not in value and not any(ord(c) < 32 for c in value) else None
-                    return {'identity': '+'.join(ids), 'ids': ids, 'loader': loader,
-                            'name': text('name') or text('displayName'), 'version': text('version')}
+        with open_regular(root, path) as stream:
+            before = os.fstat(stream.fileno()); digest = hashlib.sha256(); size = 0
+            if before.st_size > 8589934592: raise PreparationFailure('INVENTORY_LIMIT', file=path)
+            while chunk := stream.read(1048576):
+                size += len(chunk)
+                if size > before.st_size: raise PreparationFailure('FILES_CHANGED', file=path)
+                digest.update(chunk)
+            sha256 = digest.hexdigest(); stream.seek(0)
+            if expected_sha256 is not None and sha256 != expected_sha256:
+                raise PreparationFailure('FILES_CHANGED', file=path)
+            with zipfile.ZipFile(stream) as jar:
+                return embedded_mod_metadata(jar, stream, before, sha256, path)
+    except PreparationFailure:
+        raise
     except (ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
         pass
+    return None
+
+
+def embedded_mod_metadata(jar, stream, before, sha256, path):
+    attributes = {}
+    if 'META-INF/MANIFEST.MF' in jar.namelist() and jar.getinfo('META-INF/MANIFEST.MF').file_size <= 65536:
+        text = jar.read('META-INF/MANIFEST.MF').decode('utf-8', errors='replace').replace('\r\n ', '').replace('\n ', '')
+        for line in text.splitlines():
+            if ': ' in line:
+                key, value = line.split(': ', 1); attributes[key.lower()] = value
+    for name, loader in [('META-INF/neoforge.mods.toml', 'neoforge'), ('META-INF/mods.toml', 'forge'),
+                         ('fabric.mod.json', 'fabric'), ('quilt.mod.json', 'quilt'), ('mcmod.info', 'forge')]:
+        if name not in jar.namelist() or jar.getinfo(name).file_size > 1048576:
+            continue
+        raw = jar.read(name)
+        if name.endswith('.toml'):
+            import tomllib
+            data = tomllib.loads(raw.decode())
+            items, key = data.get('mods', []), 'modId'
+        else:
+            data = json.loads(raw)
+            if loader == 'quilt':
+                items, key = [data['quilt_loader']], 'id'
+            elif loader == 'fabric':
+                items, key = [data], 'id'
+            else:
+                items, key = data if isinstance(data, list) else data.get('modList', []), 'modid'
+        if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
+            continue
+        if not items or any(not isinstance(x.get(key), str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', x[key]) for x in items): return None
+        ids = sorted(set(x[key].lower() for x in items))
+        if len(ids) != len(items) or len('+'.join(ids)) > 1024: return None
+        if ids:
+            def text(key):
+                value = items[0].get(key)
+                return value[:200] if isinstance(value, str) and '${' not in value and not any(ord(c) < 32 for c in value) else None
+            versions = {}
+            jar_version = attributes.get('implementation-version')
+            for item in items:
+                version = item.get('version')
+                if version == '${file.jarVersion}': version = jar_version
+                if isinstance(version, str) and '${' not in version and len(version) <= 200 and not any(ord(c) < 32 for c in version):
+                    versions[item[key].lower()] = version
+            after = os.fstat(stream.fileno())
+            if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise PreparationFailure('FILES_CHANGED', file=path)
+            return {'identity': '+'.join(ids), 'ids': ids, 'loader': loader, 'source': name, 'sha256': sha256,
+                    'name': text('name') or text('displayName'), 'versions': versions,
+                    'version': next(iter(versions.values())) if len(ids) == 1 and versions else (', '.join(i+'='+versions[i] for i in ids if i in versions) or None)}
+    if attributes.get('fmlmodtype', '').upper() in {'LIBRARY', 'LANGPROVIDER'}:
+        after = os.fstat(stream.fileno())
+        if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise PreparationFailure('FILES_CHANGED', file=path)
+        return {'identity': None, 'ids': [], 'kind': 'library', 'fml_mod_type': attributes['fmlmodtype'].upper(),
+                'loader': 'forge', 'source': 'META-INF/MANIFEST.MF', 'sha256': sha256, 'version': attributes.get('implementation-version')}
     return None
 
 
@@ -813,9 +855,10 @@ class Worker:
                 continue
             item = None
             with inventory_entry(path, protect_unreadable, kind='file', phase='metadata'):
-                item = mod_metadata(root, path)
+                item = mod_metadata(root, path, files[path])
             if item:
-                identities[path], metadata[path] = item['identity'], item
+                if item.get('identity'): identities[path] = item['identity']
+                metadata[path] = item
             if not is_excluded(path):
                 metadata_done += 1
             report(state='comparing', files_done=metadata_done)
@@ -1034,9 +1077,10 @@ class Worker:
                 progress=lambda n: update(bytes_done=bytes_hashed + n), cancelled=cancelled)
             bytes_hashed += size
             manifest[rel] = digest
-            item = mod_metadata(files, rel)
+            item = mod_metadata(files, rel, digest)
             if item:
-                identities[rel], metadata[rel] = item['identity'], item
+                if item.get('identity'): identities[rel] = item['identity']
+                metadata[rel] = item
             update(bytes_done=bytes_hashed, files_done=index + 1)
         if not manifest:
             raise ValueError('Prepared server pack is empty')
@@ -1247,7 +1291,7 @@ class Worker:
             scoped.settings = {**self.settings, 'servers': {**self.settings['servers'], server: entry}}
             return scoped.handle(server, operation, {k: v for k, v in payload.items() if k != 'directory_scope'})
         if operation == 'capabilities':
-            return {'protocol': 1, 'directory_policy': 1, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
+            return {'protocol': 1, 'directory_policy': 1, 'mod_identity': 2, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
                     'deploy': False, 'preserve_exclusions': False,
                     'reason': 'Remote destructive transactions and restore verification require a disposable Pelican/Wings integration qualification'}
         if operation == 'hashes':
@@ -1273,6 +1317,22 @@ class Worker:
                     data.update(state='cancelled', error='Preparation cancelled before required-file resolution')
                     atomic_json(base / 'operation.json', data)
             return data
+        if operation == 'stage_mod_metadata':
+            data = self.status(server, payload['operation_id'])
+            base = self.operation_path(server, payload['operation_id'])
+            manifest_path = base / 'manifest.json'
+            if data['state'] != 'completed' or hashlib.sha256(manifest_path.read_bytes()).hexdigest() != data['manifest_sha256']:
+                raise ValueError('Retained stage is not complete and authenticated')
+            manifest = json.loads(manifest_path.read_text()); paths = payload['paths']
+            if not isinstance(paths, list) or len(paths) > 256:
+                raise ValueError('Select at most 256 staged JARs')
+            metadata = {}
+            for path in paths:
+                path = relative(path)
+                if not path.startswith('mods/') or not path.lower().endswith('.jar') or protected_path(path) or path not in manifest['files']:
+                    raise ValueError('Only verified staged mod JAR metadata can be read')
+                metadata[path] = mod_metadata(base / 'files', path, manifest['files'][path])
+            return {'complete': True, 'metadata': metadata}
         if operation == 'stage_file':
             data = self.status(server, payload['operation_id'])
             if data['state'] != 'completed':

@@ -90,7 +90,7 @@
                     <p class="font-medium break-all">{{ $preview['from'] ?? $record->installed_version }} → {{ $preview['to'] ?? $record->targetVersion() ?? 'Select a release' }}</p>
                     @if($preview)
                         <dl class="mt-4 grid gap-3 sm:grid-cols-3">
-                            @foreach(['add' => 'Added', 'update' => 'Updated', 'remove' => 'Removed', 'preserve_local_change' => 'Local changes kept', 'skip_disabled' => 'Disabled mods kept', 'conflict' => 'Conflicts'] as $action => $label)
+                            @foreach(['add' => 'Added', 'update' => 'Updated', 'upgrade_mod' => 'Mod upgrades', 'remove' => 'Removed', 'preserve_local_change' => 'Local changes kept', 'skip_disabled' => 'Disabled mods kept', 'conflict' => 'Conflicts'] as $action => $label)
                                 <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd>{{ $preview['counts'][$action] ?? 0 }}</dd></div>
                             @endforeach
                         </dl>
@@ -132,6 +132,7 @@
                         x-on:file-decision-result.window="feedback = $event.detail.message; failed = !$event.detail.success; if ($event.detail.success) comparisonPending = true">
                     <p x-cloak x-show="feedback" x-text="feedback" role="status" aria-live="polite" class="mb-3 break-words text-sm"></p>
                     <p wire:loading wire:target="resolve" role="status" class="mb-3 text-sm">Saving decision…</p>
+                    @if($preview && ($preview['mod_plan_schema'] ?? null) !== \Arcturus\ModpackManager\Services\ModUpgradePlanner::SCHEMA)<p class="mb-3 text-sm">This retained comparison predates logical mod upgrades. Use Compare files to rebuild it with verified embedded identities; old physical JAR conflicts are not current evidence.</p>@endif
                     <p class="mb-3 text-sm">KubeJS follows upstream when the local file matches the verified baseline. Local-only scripts and protected files stay local. Conflicts require Keep local or Use upstream; scripts, recipes and datapacks are never merged.</p>
                     @if(($preview['policy_revision'] ?? $record->policy_revision) !== $record->policy_revision)
                         <p class="mb-3 text-sm">Decisions saved. Showing previous comparison while a fresh comparison is required. No live files changed.</p>
@@ -145,23 +146,36 @@
                             @endforeach
                         </x-filament::input.select></x-filament::input.wrapper>
                     </div>
-                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $changes['total'] }} changed files · page {{ $changes['page'] }} / {{ $changes['pages'] }}. Worlds are excluded from hashing.</p>
+                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $changes['total'] }} logical changes · page {{ $changes['page'] }} / {{ $changes['pages'] }}. Worlds are excluded from hashing.</p>
                     <div class="overflow-x-auto">
                         <table class="w-full text-left text-sm" style="min-width:48rem;table-layout:fixed"><colgroup><col style="width:40%"><col style="width:20%"><col style="width:15%"><col style="width:25%"></colgroup>
-                            <thead><tr><th class="p-2">Path</th><th class="p-2">Classification</th><th class="p-2">Planned action</th><th class="p-2">Resolution</th></tr></thead>
+                            <thead><tr><th class="p-2">File / mod upgrade</th><th class="p-2">Classification</th><th class="p-2">Planned action</th><th class="p-2">Resolution</th></tr></thead>
                             <tbody>
                                 @forelse($changes['rows'] as $change)
                                     <tr wire:key="change-{{ hash('sha256', $change['path']) }}" class="border-t border-gray-200 dark:border-gray-700">
-                                        <td class="p-2"><x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $change['path'] }}" aria-label="Select {{ $change['path'] }}" /> <details><summary class="cursor-pointer break-all">{{ $change['path'] }}</summary>
-                                            @if($change['replacement'] ?? null)<p class="mt-2 break-all">Verified mod replacement ({{ $change['replacement']['identity'] }}): {{ $change['replacement']['base_path'] }} → {{ $change['replacement']['target_path'] }}</p>@endif
+                                        <td class="p-2">
+                                            @if($change['mod_upgrade'] ?? null)
+                                                <strong class="break-all">{{ $change['identity'] }}</strong>
+                                                <p class="break-all">Installed: {{ $change['mod_upgrade']['installed']['path'] ?? 'Absent or ambiguous' }} · {{ $change['mod_upgrade']['installed']['version'] ?? 'Version unavailable' }}</p>
+                                                <p class="break-all">Target: {{ $change['mod_upgrade']['target']['path'] ?? 'Ambiguous' }} · {{ $change['mod_upgrade']['target']['version'] ?? 'Version unavailable' }}</p>
+                                            @endif
+                                            <x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $change['path'] }}" aria-label="Select {{ $change['path'] }}" /> <details><summary class="cursor-pointer break-all">{{ $change['path'] }}</summary>
+                                            @if($change['mod_upgrade'] ?? null)
+                                                <p class="mt-2 break-all">Baseline: {{ $change['mod_upgrade']['baseline']['path'] ?? 'Ambiguous' }} · {{ $change['mod_upgrade']['baseline']['version'] ?? 'Version unavailable' }}</p>
+                                                @foreach($change['mod_upgrade']['candidates'] as $scope => $candidates)
+                                                    @if(count($candidates) > 1)<p class="break-all">{{ ucfirst($scope) }} candidates: {{ implode(', ', array_keys($candidates)) }}</p>@endif
+                                                @endforeach
+                                            @endif
                                             <dl class="mt-2 break-all">
                                             @foreach(['base_sha256' => 'Upstream baseline', 'local_sha256' => 'Installed', 'target_sha256' => 'Target'] as $field => $label)<dt class="text-gray-500">{{ $label }}</dt><dd>{{ $change[$field] ?? 'Absent' }}</dd>@endforeach
                                             <dt class="text-gray-500">Effective rule</dt><dd>{{ $change['rule_origin'] ?? 'Three-way comparison' }} · {{ $change['rule'] ?? 'follow' }}</dd>
                                             <dt class="text-gray-500">Matching rule rows</dt><dd>{{ implode(', ', $change['matching_rules'] ?? []) ?: 'None' }}</dd>
                                             <dt class="text-gray-500">Approval / destructive</dt><dd>{{ ($change['approval_required'] ?? false) ? 'Approval required' : 'Plan review' }} · {{ ($change['destructive'] ?? false) ? 'Destructive' : 'Preserves live data' }}</dd>
                                         </dl></details></td>
-                                        <td class="p-2">{{ str_replace('_', ' ', $change['classification']) }}</td>
-                                        <td class="p-2">{{ str_replace('_', ' ', $change['action']) }}</td>
+                                        <td class="p-2">{{ str_replace('_', ' ', $change['classification']) }}
+                                            @if($change['mod_upgrade'] ?? null)<p class="mt-2 text-sm">{{ $change['mod_upgrade']['reason'] }}</p>@elseif(str_starts_with($change['action'], 'unsafe_'))<p class="mt-2 text-sm">Refresh verified embedded metadata or review duplicate identities. A filename cannot establish mod identity.</p>@endif
+                                        </td>
+                                        <td class="p-2">{{ ['upgrade_mod' => 'Upgrade mod', 'keep_mod' => 'Keep installed mod', 'keep_mod_disabled' => 'Keep disabled / absent', 'mod_upgrade_conflict' => 'Locally modified mod — choice required', 'mod_identity_review' => 'Identity review required', 'mod_upgrade_review' => 'Mod policy review required'][$change['action']] ?? str_replace('_', ' ', $change['action']) }}</td>
                                         <td class="p-2">
                                             @if(($change['blocked'] ?? false) && !$record->active_operation_id)
                                                 <fieldset x-bind:disabled="comparisonPending" class="flex flex-wrap gap-2">
@@ -172,7 +186,9 @@
                                                         <x-filament::button size="xs" color="gray" :wire:click="'reviewMerge('.\Illuminate\Support\Js::from($change['path']).')'">Review text merge</x-filament::button>
                                                     @endif
                                                     <x-filament::button size="xs" color="gray" wire:loading.attr="disabled" :wire:click="'resolve('.\Illuminate\Support\Js::from($change['path']).', \'protect\', '.$record->policy_revision.', '.\Illuminate\Support\Js::from($decisionId).', '.$change['_evidence_index'].')'">Keep local</x-filament::button>
-                                                    <x-filament::button size="xs" color="warning" wire:confirm="Use upstream for this file, including removal if absent upstream? A future deployment still requires a reviewed plan and backup." wire:loading.attr="disabled" :wire:click="'resolve('.\Illuminate\Support\Js::from($change['path']).', \'replace\', '.$record->policy_revision.', '.\Illuminate\Support\Js::from($decisionId).', '.$change['_evidence_index'].')'">Use upstream</x-filament::button>
+                                                    @if(!str_starts_with($change['action'], 'unsafe_') && (!isset($change['mod_upgrade']) || $change['mod_upgrade']['upstream_choice_allowed']))
+                                                    <x-filament::button size="xs" color="warning" wire:confirm="Upgrade this entire mod operation or file to the verified upstream target, including removal of its previous JAR? No second active mod version will be added. A future deployment still requires a reviewed plan and backup." wire:loading.attr="disabled" :wire:click="'resolve('.\Illuminate\Support\Js::from($change['path']).', \'replace\', '.$record->policy_revision.', '.\Illuminate\Support\Js::from($decisionId).', '.$change['_evidence_index'].')'">Use upstream</x-filament::button>
+                                                    @endif
                                                 </fieldset>
                                             @else — @endif
                                         </td>
@@ -200,14 +216,14 @@
                         <label class="flex items-center gap-2 text-sm"><x-filament::input.checkbox wire:model.live="modsOnly" /> Mods only</label>
                         <span class="text-sm">{{ count($this->selectedPaths) }} selected</span>
                     </div>
-                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $files['total'] }} files · inventory observed {{ $inventory['observed_at'] ?? 'not yet' }}. Prepare the baseline or compare files to refresh. Unavailable metadata is never guessed.</p>
+                    <p class="my-3 text-sm text-gray-500 dark:text-gray-400">{{ $files['total'] }} files / logical mod operations · inventory observed {{ $inventory['observed_at'] ?? 'not yet' }}. Prepare the baseline or compare files to refresh. Unavailable metadata is never guessed.</p>
                     <div class="overflow-x-auto">
                         <table class="w-full text-left text-sm" style="min-width:52rem;table-layout:fixed">
                             <thead><tr><th class="p-2">Select / installed file</th><th class="p-2">Mod metadata</th><th class="p-2">State / target</th><th class="p-2">Effective policy</th></tr></thead>
                             <tbody>
                             @forelse($files['rows'] as $file)
                                 <tr wire:key="file-{{ hash('sha256', $file['path']) }}" class="border-t border-gray-200 dark:border-gray-700">
-                                    <td class="p-2 break-all"><label><x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $file['path'] }}" /> {{ $file['path'] }}</label></td>
+                                    <td class="p-2 break-all"><label><x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $file['path'] }}" /> {{ $file['mod_upgrade']['installed']['path'] ?? $file['path'] }}</label></td>
                                     <td class="p-2 break-all">{{ $file['name'] ?? 'Name unavailable' }}<br>{{ $file['identity'] ?? 'ID ambiguous / unavailable' }}<br>{{ $file['version'] ?? 'Version unavailable' }} · {{ $file['loader'] ?? 'Loader unknown' }}<p class="text-xs text-gray-500">{{ $file['identity_status'] }}</p></td>
                                     <td class="p-2 break-all">{{ str_replace('_', ' ', $file['classification']) }}{{ $file['disabled'] ? ' · disabled' : '' }}<br>{{ str_replace('_', ' ', $file['action']) }}
                                         @if($file['target_path'])<p>Target: {{ $file['target_path'] }} · {{ $file['target_version'] ?? 'Version unavailable' }}</p>@endif

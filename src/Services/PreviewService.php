@@ -61,9 +61,15 @@ final class PreviewService
             $metadata = array_replace($base['metadata'] ?? [], $target['metadata'] ?? [], $remote['metadata'] ?? []);
             $server->file_inventory = [...$remote, 'observed_at' => now()->toIso8601String()];
         }
+        $modEvidence = app(ModUpgradeEvidence::class)->collect($server, $base, $target, $server->file_inventory ?? [], $operation ? fn () => $operation->update(['heartbeat_at' => now()]) : null);
+        foreach (['base' => $base['files'], 'local' => $local, 'target' => $target['files']] as $scope => $hashes) {
+            foreach ($modEvidence[$scope] as $path => $meta) {
+                if (isset($hashes[$path]) && ($id = ModUpgradePlanner::verifiedIdentity($hashes[$path], null, $meta)) !== null) { $identities[$scope][$path] = $id; }
+            }
+        }
         if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning'); }
         $identities = (new ModIdentityMappings)->apply($identities, $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $local, 'target' => $target['files']]);
-        $plan = $this->planner->plan($base['files'], $local, $target['files'], $rules, $identities, $server->disabled_mods ?? [], $safetyRoots, $metadata);
+        $plan = $this->planner->plan($base['files'], $local, $target['files'], $rules, $identities, $server->disabled_mods ?? [], $safetyRoots, $metadata, $modEvidence);
         if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning', count($plan['changes']), count($plan['changes'])); }
         if ($server->file_inventory) {
             $server->file_inventory = [...$server->file_inventory, 'target_metadata' => $target['metadata'] ?? []];
@@ -83,7 +89,8 @@ final class PreviewService
         $compatibility = $qualificationError !== null
             ? ['compatible' => false, 'blockers' => [$qualificationError], 'warnings' => [], 'changes_applied' => false, 'current' => $server->runtime_report ?? [], 'target' => $target['runtime'] ?? []]
             : $this->runtime->preflight($qualification['current'] ?? $server->runtime_report ?? [], $qualification['target'] ?? $target['runtime'] ?? []);
-        $gateReasons = [];
+        $gateReasons = $modEvidence['diagnostics'];
+        if ($blocker = ModUpgradePlanner::deploymentBlocker($plan['changes'])) { $gateReasons[] = $blocker; }
         if ((new DirectoryPolicy)->pending($server)) {
             $gateReasons[] = 'Review newly discovered upstream directories';
         }
@@ -108,13 +115,13 @@ final class PreviewService
         $binding = ['uuid' => $server->pelican_server_uuid, 'from' => $base['version'], 'to' => $target['version'],
             'base' => $base['files'], 'local' => $local, 'target' => $target['files'], 'rules' => $rules,
             'directory_decisions' => $server->directory_decisions ?? [], 'decisions' => $plan['changes'], 'identities' => $identities, 'safety_roots' => $safetyRoots, 'disabled' => $server->disabled_mods, 'runtime' => $compatibility, 'backup_mode' => $server->backup_mode,
-            'exclusions' => $server->backup_excluded_directories, 'qualification' => $qualification];
+            'exclusions' => $server->backup_excluded_directories, 'mod_evidence' => $modEvidence, 'qualification' => $qualification];
         $digest = hash('sha256', json_encode($binding, JSON_THROW_ON_ERROR));
-        $preview = ['qualification' => $qualification, 'policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],
+        $preview = ['mod_plan_schema' => ModUpgradePlanner::SCHEMA, 'logical_mod_upgrades' => $plan['counts']['upgrade_mod'] ?? 0, 'qualification' => $qualification, 'policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],
             'counts' => $plan['counts'], 'total' => count($plan['changes']), 'applicable' => $gateReasons === [],
             'plan_sha256' => $digest, 'capability_blockers' => array_values(array_unique($gateReasons)),
             'compatibility' => $compatibility, 'changes' => $plan['changes'],
-            'policy_context' => ['identities' => $identities, 'disabled' => $server->disabled_mods ?? [], 'safety_roots' => $safetyRoots, 'metadata' => $metadata],
+            'policy_context' => ['mod_evidence' => $modEvidence, 'local_mod_files' => array_filter($local, fn ($p) => UpdatePlanner::isMod($p), ARRAY_FILTER_USE_KEY), 'identities' => $identities, 'disabled' => $server->disabled_mods ?? [], 'safety_roots' => $safetyRoots, 'metadata' => $metadata],
             'sample' => array_slice(array_values(array_filter($plan['changes'], fn ($c) => $c['action'] !== 'unchanged')), 0, 250),
             'download_bytes' => $server->target_metadata['download_bytes'] ?? $server->release_metadata['download_bytes'] ?? null,
             'backup' => ['backend' => $server->backup_mode, 'locked_required' => true,

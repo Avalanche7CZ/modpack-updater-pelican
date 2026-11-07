@@ -116,7 +116,7 @@ final class SameHostDeployment
         if (! str_contains($launchText, $args) && ! (str_contains($launchText, 'minecraft_server.jar') && isset($launchHashes['forge-auto-install.txt']))) {
             throw new RuntimeException('Active Forge launcher cannot be resolved from the unchanged Pelican startup settings. Review custom launchers explicitly.');
         }
-        foreach ($plan['changes'] as $change) {
+        foreach (ModUpgradePlanner::mutations($plan['changes']) as $change) {
             if (! in_array($change['action'], ['add', 'update', 'remove', 'replace_with_override', 'remove_with_override', 'disable_requires_enforcement'], true)) { continue; }
             $path = $change['path'];
             if (isset($launchHashes[$path])) { throw new RuntimeException('Working runtime/launcher file would change: '.$path.'. Choose Keep local or prepare and qualify a runtime migration separately.'); }
@@ -174,7 +174,7 @@ final class SameHostDeployment
     public function requireSpace(string $live, string $stage, array $changes): void
     {
         $growth = 0; $largest = 0;
-        foreach ($changes as $change) {
+        foreach (ModUpgradePlanner::mutations($changes) as $change) {
             if (! in_array($change['action'], ['add', 'update', 'replace_with_override'], true)) { continue; }
             $size = filesize($this->regular($stage, $change['path']));
             $old = is_file($live.'/'.$change['path']) ? filesize($live.'/'.$change['path']) : 0;

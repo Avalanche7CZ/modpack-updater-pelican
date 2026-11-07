@@ -34,7 +34,7 @@ final class EvidenceView
         $count = 0; $rows = []; $page = max(1, $page); $offset = ($page - 1) * 50;
         foreach (JsonStream::column($id, self::reportColumn($id))->entries(['changes']) as $index => $row) {
             if ($row['action'] === 'unchanged' || ($classification !== '' && $row['classification'] !== $classification) ||
-                ($search !== '' && ! str_contains(strtolower($row['path']), strtolower($search)))) { continue; }
+                ($search !== '' && ! str_contains(strtolower($row['path'].' '.($row['identity'] ?? '').' '.implode(' ', $row['mod_upgrade']['paths'] ?? [])), strtolower($search)))) { continue; }
             if ($count >= $offset && count($rows) < 50) { $rows[] = [...$row, '_evidence_index' => $index]; }
             $count++;
         }

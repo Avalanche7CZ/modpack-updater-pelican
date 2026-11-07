@@ -1,0 +1,31 @@
+{
+  "repository": "TerraFirmaGreg-Team/Modpack-Modern",
+  "from": "0.13.15",
+  "to": "0.13.17",
+  "server_upgrade_count": 9,
+  "excluded_client_projects": [
+    "kU85KsD1hhmyvbMs"
+  ],
+  "sources": {
+    "0.13.15": {
+      "url": "https://raw.githubusercontent.com/TerraFirmaGreg-Team/Modpack-Modern/0.13.15/pakku-lock.json",
+      "sha256": "e46866c66be52b814531c5fab732d20b51861c8869b7c9f1b25fb5ba1cafef48",
+      "minecraft": [
+        "1.20.1"
+      ],
+      "loaders": {
+        "forge": "47.4.13"
+      }
+    },
+    "0.13.17": {
+      "url": "https://raw.githubusercontent.com/TerraFirmaGreg-Team/Modpack-Modern/0.13.17/pakku-lock.json",
+      "sha256": "a0c184e17113b281ab3f02217f30ecd1ef3108bc3145243a5df32529cfaebab1",
+      "minecraft": [
+        "1.20.1"
+      ],
+      "loaders": {
+        "forge": "47.4.13"
+      }
+    }
+  }
+}

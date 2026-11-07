@@ -16,7 +16,7 @@ final class UpdatePlanner
      * @param  list<array{pattern:string,mode:string}>  $rules  Server-scoped policy rules
      * @return array{changes:list<array<string,mixed>>,counts:array<string,int>,blocked:int,applicable:bool}
      */
-    public function plan(array $base, array $local, array $target, array $rules = [], array $identities = [], array $disabled = [], array $safetyRoots = [], array $metadata = []): array
+    public function plan(array $base, array $local, array $target, array $rules = [], array $identities = [], array $disabled = [], array $safetyRoots = [], array $metadata = [], array $modEvidence = []): array
     {
         foreach (['base' => $base, 'local' => $local, 'target' => $target] as $label => $manifest) {
             foreach ($manifest as $path => $hash) {
@@ -84,55 +84,22 @@ final class UpdatePlanner
                 }
             }
         }
-        // Only unique metadata identities may pair version-renamed upstream JARs.
-        // Physical paths and conditional hashes remain separate deployment mutations.
-        $groups = [];
-        foreach (['base' => $baseIds, 'target' => $targetIds] as $scope => $mapping) {
-            foreach ($mapping as $file => $id) {
-                if (self::isMod($file) && isset(($scope === 'base' ? $base : $target)[$file])) { $groups[strtolower($id)][$scope][] = $file; }
-            }
-        }
-        $replacements = [];
-        foreach ($groups as $id => $group) {
-            if (isset($ambiguousIds[$id]) || count($group['base'] ?? []) !== 1 || count($group['target'] ?? []) !== 1) { continue; }
-            $before = $group['base'][0]; $after = $group['target'][0];
-            if ($before === $after || isset($target[$before]) || isset($base[$after]) || ! isset($local[$before])) { continue; }
-            if (($localIds[$before] ?? $id) !== $id || isset($local[$after])) { continue; }
-            $modified = $local[$before] !== $base[$before];
-            if ($modified && ($localIds[$before] ?? null) !== $id) { continue; }
-            $classification = $modified ? 'locally_modified' : 'updated_upstream';
-            $decisions = [];
-            foreach ([$before, $after] as $file) { $decisions[$file] = $policy->effective($file, $rules, $id, $metadata[$file]['loader'] ?? null, $classification); }
-            $protect = null; $review = null;
-            foreach ([$before, $after] as $file) {
-                if (SafetyPaths::reason($file, $safetyRoots) !== null || $decisions[$file]['mode'] === 'protect') { $protect = $file; }
-                if (in_array($decisions[$file]['mode'], ['review', 'merge', 'remove'], true)) { $review = $file; }
-            }
-            foreach ([$before, $after] as $file) {
-                $replacements[$file] = ['identity' => $id, 'base_path' => $before, 'target_path' => $after, 'locally_modified' => $modified,
-                    'classification' => $classification, 'protected_path' => $protect, 'review_path' => $review];
-            }
-        }
+        $modPlan = (new ModUpgradePlanner)->plan($base, $local, $target, $identities, $modEvidence, $rules, $disabled, $safetyRoots);
         $paths = array_unique(array_merge(array_keys($base), array_keys($local), array_keys($target)));
         sort($paths, SORT_STRING);
-        $changes = [];
+        $changes = $modPlan['changes'];
         $counts = [];
         $blocked = 0;
+        foreach ($changes as $change) { $counts[$change['action']] = ($counts[$change['action']] ?? 0) + 1; $blocked += (int) $change['blocked']; }
 
         foreach ($paths as $path) {
+            if (isset($modPlan['consumed'][$path])) { continue; }
             $old = $base[$path] ?? null;
             $current = $local[$path] ?? null;
             $new = $target[$path] ?? null;
             $identity = $targetIds[$path] ?? $baseIds[$path] ?? $localIds[$path] ?? null;
             $rawClass = $this->classification($path, $old, $current, $new, $current !== $old && $old !== null ? 'preserve_local_change' : '');
-            $replacement = $replacements[$path] ?? null;
-            if ($replacement) { $rawClass = $replacement['classification']; }
             $decision = $policy->effective($path, $rules, $identity, $metadata[$path]['loader'] ?? null, $rawClass);
-            if ($replacement && $replacement['protected_path'] !== null) {
-                $decision['mode'] = 'protect'; $decision['origin'] = 'Protected paired mod: '.$replacement['protected_path'];
-            } elseif ($replacement && $replacement['review_path'] !== null && ! in_array($decision['mode'], ['replace', 'disable', 'remove'], true)) {
-                $decision['mode'] = 'review'; $decision['origin'] = 'Review paired mod: '.$replacement['review_path'];
-            }
             $mode = $decision['mode'];
             $invariant = SafetyPaths::reason($path, $safetyRoots);
             if ($invariant !== null || $mode === 'protect') {
@@ -161,19 +128,18 @@ final class UpdatePlanner
                 $action = 'conflict';
             }
 
-            if ($replacement && $replacement['locally_modified'] && in_array($action, ['add', 'remove', 'conflict'], true) && $mode !== 'replace') {
-                $action = 'conflict'; // Never add a new copy alongside a locally modified previous version.
-            }
-            if ($action === 'add' && self::isMod($path) && $missingUnidentified && $replacement === null) {
-                $action = 'unsafe_ambiguous_identity';
-            }
-            if ($invariant === null && $mode === 'remove' && ! in_array($action, ['unsafe_ambiguous_identity', 'skip_disabled'], true)) {
+            // No physical filename fallback may bypass the logical identity transaction.
+            $identityMissing = self::isMod($path) && (($old !== $new) || ($current !== $old && $old !== null)) &&
+                (($old !== null && ! isset($modPlan['verified']['base'][$path])) || ($new !== null && ! isset($modPlan['verified']['target'][$path])));
+            if ($invariant === null && $mode !== 'protect' && ($identityMissing || ($identity && (isset($ambiguousIds[$identity]) || isset($modPlan['ambiguous'][$identity]))))) { $action = 'unsafe_unverified_mod_identity'; }
+            if ($action === 'add' && self::isMod($path) && ($missingUnidentified || $modPlan['incomplete_live'] || ($identity && in_array(strtolower($identity), $modPlan['verified']['local'] ?? [], true)))) { $action = 'unsafe_unverified_mod_identity'; }
+            if ($invariant === null && $mode === 'remove' && ! in_array($action, ['unsafe_ambiguous_identity', 'unsafe_unverified_mod_identity', 'skip_disabled'], true)) {
                 $action = $current === null ? 'already_absent' : 'remove_with_override';
             }
-            if ($invariant === null && $mode === 'replace' && ! in_array($action, ['unsafe_ambiguous_identity', 'skip_disabled', 'disable_requires_enforcement', 'preserve_disabled'], true)) {
+            if ($invariant === null && $mode === 'replace' && ! in_array($action, ['unsafe_ambiguous_identity', 'unsafe_unverified_mod_identity', 'skip_disabled', 'disable_requires_enforcement', 'preserve_disabled'], true)) {
                 $action = $new === null ? ($current === null ? 'already_absent' : 'remove_with_override') : ($current === $new ? 'unchanged' : 'replace_with_override');
             }
-            if ($mode === 'review' && ! in_array($action, ['unchanged', 'preserve', 'preserve_local_extra', 'preserve_disabled'], true)) {
+            if ($mode === 'review' && ! str_starts_with($action, 'unsafe_') && ! in_array($action, ['unchanged', 'preserve', 'preserve_local_extra', 'preserve_disabled'], true)) {
                 $action = 'manual_review';
             }
             if ($mode === 'ignore' && $old === null && $new === null) {
@@ -189,7 +155,7 @@ final class UpdatePlanner
             // for JARs under mods/. It cannot enforce arbitrary file exclusions.
             $safeDisabledMod = $action === 'disable_requires_enforcement' &&
                 preg_match('~^mods/(?:[^/]+/)*[^/]+\\.jar$~iD', $path) === 1;
-            $isBlocked = in_array($action, ['conflict', 'merge_required', 'unsafe_ambiguous_identity', 'manual_review'], true) ||
+            $isBlocked = in_array($action, ['conflict', 'merge_required', 'unsafe_ambiguous_identity', 'unsafe_unverified_mod_identity', 'manual_review'], true) ||
                 ($action === 'disable_requires_enforcement' && ! $safeDisabledMod);
             $blocked += (int) $isBlocked;
             $changes[] = [
@@ -203,9 +169,8 @@ final class UpdatePlanner
                 'approval_required' => $isBlocked || in_array($action, ['remove_with_override', 'replace_with_override'], true),
                 'metadata' => $metadata[$path] ?? null,
                 'identity' => $identity,
-                'replacement' => $replacement,
                 'file_state' => $invariant !== null ? 'protected' : $rawClass,
-                'classification' => $replacement && in_array($action, ['add', 'remove'], true) ? 'updated_upstream' : $this->classification($path, $old, $current, $new, $action),
+                'classification' => $this->classification($path, $old, $current, $new, $action),
                 'base_sha256' => $old,
                 'local_sha256' => $current,
                 'target_sha256' => $new,
@@ -213,6 +178,7 @@ final class UpdatePlanner
             ];
             $counts[$action] = ($counts[$action] ?? 0) + 1;
         }
+        usort($changes, fn ($a, $b) => strcmp($a['path'], $b['path']));
         ksort($counts);
 
         return ['changes' => $changes, 'counts' => $counts,

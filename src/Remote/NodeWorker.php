@@ -15,7 +15,7 @@ final class NodeWorker implements IntegrityWorker
 
     public function request(string $operation, array $payload = []): array
     {
-        if (! in_array($operation, ['capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'requirements', 'resolve'], true)) {
+        if (! in_array($operation, ['capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'stage_mod_metadata', 'requirements', 'resolve'], true)) {
             throw new CapabilityUnavailable('Unsupported node capability');
         }
         if ((! empty($this->scope['manage']) || ! empty($this->scope['exclude'])) && in_array($operation, ['inventory', 'hashes', 'prepare'], true) && ($this->request('capabilities')['directory_policy'] ?? null) !== 1) {

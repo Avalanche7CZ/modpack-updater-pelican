@@ -163,10 +163,24 @@ final class ServerPolicyService
             if ($row['invariant'] !== null) {
                 throw new RuntimeException($row['invariant']);
             }
+            if (($row['mod_upgrade'] ?? null) && $action === 'replace' && ! ($row['mod_upgrade']['upstream_choice_allowed'] ?? false)) {
+                throw new RuntimeException('Upstream replacement is blocked: resolve missing, duplicated or mismatched embedded identities first. No policies or files changed.');
+            }
+            if (str_starts_with($row['action'], 'unsafe_') && $action === 'replace') {
+                throw new RuntimeException('This JAR has no safe identity operation. Refresh embedded metadata or resolve ambiguous JARs before choosing Use upstream.');
+            }
             $scope = $row['identity'] !== null && $row['is_mod'] && ! str_contains($row['identity'], '+') ? 'mod_id' : 'exact';
             $pattern = $scope === 'mod_id' ? $row['identity'] : $path;
             $hasExact = collect($rules)->contains(fn ($r) => $r['scope'] === 'exact' && $r['pattern'] === $path);
             $selectors = [['scope' => $scope, 'pattern' => $pattern]];
+            if ($row['mod_upgrade'] ?? null) {
+                // A deliberate logical-mod choice applies to its entire known path set, including bundled IDs.
+                foreach ($row['mod_upgrade']['paths'] as $member) {
+                    if ($scope === 'exact' || collect($rules)->contains(fn ($r) => $r['scope'] === 'exact' && $r['pattern'] === $member)) {
+                        $selectors[] = ['scope' => 'exact', 'pattern' => $member];
+                    }
+                }
+            }
             if ($scope === 'mod_id' && $hasExact) {
                 $selectors[] = ['scope' => 'exact', 'pattern' => $path];
             }

@@ -78,7 +78,7 @@ Use **Mods & Files** for searchable inventory and bulk file/mod policies, or **P
 
 Mod identity comes from Fabric/Quilt metadata, Forge/NeoForge TOML or legacy `mcmod.info`. Use explicit path-to-identity mappings when metadata is absent. Missing upstream mods are kept absent across upstream renames where identity is known; unknown/ambiguous identities block new JARs. Additional local mods are preserved. Strict single-line `.properties` merges can be reviewed as text; unsupported syntax or conflicting keys requires manual work through Pelican's file editor. No merge writes live data automatically.
 
-The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Apply Update requires an administrator-approved current plan and qualified same-host Forge 1.20.1 / Java 17 runtime reuse with native Wings backups.** See [manual deployment and recovery](docs/manual-deployment.md). Remote and automatic deployment remain disabled; no environment toggle bypasses missing safety evidence.
+The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Apply Update requires an administrator-approved current plan and qualified same-host Forge 1.20.1 / Java 17 runtime reuse with native Wings backups.** See [manual deployment and recovery](docs/manual-deployment.md). [Logical mod JAR upgrades](docs/mod-upgrades.md) are currently review-only pending transaction and browser qualification. Remote and automatic deployment remain disabled; no environment toggle bypasses missing safety evidence.
 
 ## Backups and recovery
 

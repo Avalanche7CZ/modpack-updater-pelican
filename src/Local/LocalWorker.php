@@ -57,7 +57,7 @@ final class LocalWorker implements IntegrityWorker
 
     public function request(string $operation, array $payload = []): array
     {
-        if (! in_array($operation, ['provision', 'capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'requirements', 'resolve'], true)) {
+        if (! in_array($operation, ['provision', 'capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'stage_mod_metadata', 'requirements', 'resolve'], true)) {
             throw new CapabilityUnavailable('Unsupported local capability');
         }
         $entries = $this->configuration();

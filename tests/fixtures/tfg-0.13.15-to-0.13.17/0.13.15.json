@@ -1,0 +1,258 @@
+{
+  "schema": 2,
+  "provider": "github",
+  "project": "TerraFirmaGreg-Team/Modpack-Modern",
+  "version": "0.13.15",
+  "verification": "upstream-checksums",
+  "fixture_scope": "Nine changed server mod JARs only; not a deployable full serverpack",
+  "files": {
+    "mods/reliable_remover-3.8.1+1.20.1-forge.jar": "3cf79c8e343949506013f564942feff711d020d8c65491e8b2a487db53569fd1",
+    "mods/TerraFirmaGreg-Core-Modern-0.9.29.jar": "e2bfa2366de0337b0b71658831172b5ada8205b05484d4afd13af4bcf5a630df",
+    "mods/sophisticatedcore-1.20.1-1.5.14.2419.jar": "c3e3aef025143a57583b01a41c36f85d0aba1989096cb1d3a7140b1e4f5ea0ab",
+    "mods/voicechat-forge-1.20.1-2.6.24.jar": "72fd45aa54616000be2808054258455d0c965897a27608299762f7957ff9ffdd",
+    "mods/everycomp-1.20-2.9.27-forge.jar": "888eec4224cd9f990de5c7802d01e090e5a7c137e6abc59a7c7ea02a0e2f9218",
+    "mods/ExtendedAE-1.20-1.4.21-forge.jar": "30fc8abe66d4b96919f0fd7b33badd0bb2013b31e2ee57f6aeaa63ffae37df4b",
+    "mods/sophisticatedbackpacks-1.20.1-3.26.14.2226.jar": "07479d3f03904bbfcd21e8d7c96277336c790e994cafc2c5bb13cccb5dfb8524",
+    "mods/appliedenergistics2-forge-15.5.5-uelm.jar": "1228c6fbf6b9ca8d586ab626b07cf762631b898d40886ef1ff6700fc095b788f",
+    "mods/reliable_recipes-3.7.1+1.20.1-forge.jar": "e230ecb5ac95c46cf989e0386338e3bdbcaa2021a28320371e9f364b122af39f"
+  },
+  "identities": {
+    "mods/reliable_remover-3.8.1+1.20.1-forge.jar": "reliable_remover",
+    "mods/TerraFirmaGreg-Core-Modern-0.9.29.jar": "tfc+tfc_textile+tfcambiental+tfg",
+    "mods/sophisticatedcore-1.20.1-1.5.14.2419.jar": "sophisticatedcore",
+    "mods/voicechat-forge-1.20.1-2.6.24.jar": "voicechat+voicechat_api",
+    "mods/everycomp-1.20-2.9.27-forge.jar": "everycomp",
+    "mods/ExtendedAE-1.20-1.4.21-forge.jar": "expatternprovider",
+    "mods/sophisticatedbackpacks-1.20.1-3.26.14.2226.jar": "sophisticatedbackpacks",
+    "mods/appliedenergistics2-forge-15.5.5-uelm.jar": "ae2",
+    "mods/reliable_recipes-3.7.1+1.20.1-forge.jar": "reliable_recipes"
+  },
+  "metadata": {
+    "mods/reliable_remover-3.8.1+1.20.1-forge.jar": {
+      "identity": "reliable_remover",
+      "ids": [
+        "reliable_remover"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "3cf79c8e343949506013f564942feff711d020d8c65491e8b2a487db53569fd1",
+      "version": "3.8.1+1.20.1",
+      "versions": {
+        "reliable_remover": "3.8.1+1.20.1"
+      },
+      "name": "reliable_remover"
+    },
+    "mods/TerraFirmaGreg-Core-Modern-0.9.29.jar": {
+      "identity": "tfc+tfc_textile+tfcambiental+tfg",
+      "ids": [
+        "tfc",
+        "tfc_textile",
+        "tfcambiental",
+        "tfg"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "e2bfa2366de0337b0b71658831172b5ada8205b05484d4afd13af4bcf5a630df",
+      "version": "tfc=3.2.25, tfcambiental=0.9.29, tfc_textile=0.9.29, tfg=0.9.29",
+      "versions": {
+        "tfc": "3.2.25",
+        "tfcambiental": "0.9.29",
+        "tfc_textile": "0.9.29",
+        "tfg": "0.9.29"
+      },
+      "name": "tfc+tfc_textile+tfcambiental+tfg"
+    },
+    "mods/sophisticatedcore-1.20.1-1.5.14.2419.jar": {
+      "identity": "sophisticatedcore",
+      "ids": [
+        "sophisticatedcore"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "c3e3aef025143a57583b01a41c36f85d0aba1989096cb1d3a7140b1e4f5ea0ab",
+      "version": "1.5.14.2419",
+      "versions": {
+        "sophisticatedcore": "1.5.14.2419"
+      },
+      "name": "sophisticatedcore"
+    },
+    "mods/voicechat-forge-1.20.1-2.6.24.jar": {
+      "identity": "voicechat+voicechat_api",
+      "ids": [
+        "voicechat",
+        "voicechat_api"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "72fd45aa54616000be2808054258455d0c965897a27608299762f7957ff9ffdd",
+      "version": "voicechat=1.20.1-2.6.24, voicechat_api=2.6.24",
+      "versions": {
+        "voicechat": "1.20.1-2.6.24",
+        "voicechat_api": "2.6.24"
+      },
+      "name": "voicechat+voicechat_api"
+    },
+    "mods/everycomp-1.20-2.9.27-forge.jar": {
+      "identity": "everycomp",
+      "ids": [
+        "everycomp"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "888eec4224cd9f990de5c7802d01e090e5a7c137e6abc59a7c7ea02a0e2f9218",
+      "version": "1.20-2.9.27",
+      "versions": {
+        "everycomp": "1.20-2.9.27"
+      },
+      "name": "everycomp"
+    },
+    "mods/ExtendedAE-1.20-1.4.21-forge.jar": {
+      "identity": "expatternprovider",
+      "ids": [
+        "expatternprovider"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "30fc8abe66d4b96919f0fd7b33badd0bb2013b31e2ee57f6aeaa63ffae37df4b",
+      "version": "1.20-1.4.21-forge",
+      "versions": {
+        "expatternprovider": "1.20-1.4.21-forge"
+      },
+      "name": "expatternprovider"
+    },
+    "mods/sophisticatedbackpacks-1.20.1-3.26.14.2226.jar": {
+      "identity": "sophisticatedbackpacks",
+      "ids": [
+        "sophisticatedbackpacks"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "07479d3f03904bbfcd21e8d7c96277336c790e994cafc2c5bb13cccb5dfb8524",
+      "version": "3.26.14.2226",
+      "versions": {
+        "sophisticatedbackpacks": "3.26.14.2226"
+      },
+      "name": "sophisticatedbackpacks"
+    },
+    "mods/appliedenergistics2-forge-15.5.5-uelm.jar": {
+      "identity": "ae2",
+      "ids": [
+        "ae2"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "1228c6fbf6b9ca8d586ab626b07cf762631b898d40886ef1ff6700fc095b788f",
+      "version": "15.5.5-uelm",
+      "versions": {
+        "ae2": "15.5.5-uelm"
+      },
+      "name": "ae2"
+    },
+    "mods/reliable_recipes-3.7.1+1.20.1-forge.jar": {
+      "identity": "reliable_recipes",
+      "ids": [
+        "reliable_recipes"
+      ],
+      "loader": "forge",
+      "source": "META-INF/mods.toml",
+      "sha256": "e230ecb5ac95c46cf989e0386338e3bdbcaa2021a28320371e9f364b122af39f",
+      "version": "3.7.1+1.20.1",
+      "versions": {
+        "reliable_recipes": "3.7.1+1.20.1"
+      },
+      "name": "reliable_recipes"
+    }
+  },
+  "artifacts": [
+    {
+      "url": "https://cdn.modrinth.com/data/pLxsKvNt/versions/CeUgdqn5/reliable_remover-3.8.1+1.20.1-forge.jar",
+      "sha256": "3cf79c8e343949506013f564942feff711d020d8c65491e8b2a487db53569fd1",
+      "hashes": {
+        "sha512": "785d425846c7b607f4e78fbfef56d52b2977b67c826ceca713d8fe18f51286a81794909229c8a005a3e0e5dfd1b271791a0bbb504726a5b7a2860135ccd9c1a5",
+        "sha1": "0585213dec5e4f546204b0fb418ea86b4ef0050a"
+      },
+      "project": "5Zbqzu2oUephfrw4",
+      "embedded_metadata_sha256": "fb6d6eb5ec2d086637993597d3d2976eb24517330fadd2c8473b00c7239a117a"
+    },
+    {
+      "url": "https://cdn.modrinth.com/data/lNttW2Xl/versions/QTyP1mj7/TerraFirmaGreg-Core-Modern-0.9.29.jar",
+      "sha256": "e2bfa2366de0337b0b71658831172b5ada8205b05484d4afd13af4bcf5a630df",
+      "hashes": {
+        "sha512": "252b9a8384ab7ffb3efd2c91b51de2a28ee2be55b10356ee6dc8bb88f727c49fe343b3d0e9f0b9d681754dc74ec4ec44a2c734723c5dd3b9897bcd66bd68d296",
+        "sha1": "495e4df219492ac1bc6e132f8135386d68f4d58d"
+      },
+      "project": "DEmuaO3pYfY1Plbn",
+      "embedded_metadata_sha256": "2ae44a5de2da641d0eba760597a44a4114a741830c87bbbee68f7e4b48cf0ad8"
+    },
+    {
+      "url": "https://cdn.modrinth.com/data/nmoqTijg/versions/FtB6vAQc/sophisticatedcore-1.20.1-1.5.14.2419.jar",
+      "sha256": "c3e3aef025143a57583b01a41c36f85d0aba1989096cb1d3a7140b1e4f5ea0ab",
+      "hashes": {
+        "sha512": "657022af91d5a15ea60472a4ebab7204bbc12a4f93bc50a6e5cb33bb352648c1ebaf864325b2bca2cab7498d1fcfc088215d762ea60196d628e6fb05377a3dc9",
+        "sha1": "5350c4e584f2653be2998c064f4ac3470bcac772"
+      },
+      "project": "Foe7A2QXIKlyEHbt",
+      "embedded_metadata_sha256": "90c3498cb90599d75a35b36d3516c614145b75402ae38f4cfce73e9049015b75"
+    },
+    {
+      "url": "https://cdn.modrinth.com/data/9eGKb6K1/versions/lWvbAZ3P/voicechat-forge-1.20.1-2.6.24.jar",
+      "sha256": "72fd45aa54616000be2808054258455d0c965897a27608299762f7957ff9ffdd",
+      "hashes": {
+        "sha512": "a38c87c5030a6f7a3d4672f3a4d48c29fd7470999493d3204077313ce46f00f32cb4f8657a50763f66fb1cf817a643ccc3b2496b5c67e118fb827569c2acdd69",
+        "sha1": "439106dd91d6c9bd31431c31497332cfde57ab98"
+      },
+      "project": "QWtEe2QoyrerKfrk",
+      "embedded_metadata_sha256": "7a810bf31039870e0bec82e897cd7aec8d9c8a017832dd5110b863c8e1150b05"
+    },
+    {
+      "url": "https://cdn.modrinth.com/data/eiktJyw1/versions/1W3wIglQ/everycomp-1.20-2.9.27-forge.jar",
+      "sha256": "888eec4224cd9f990de5c7802d01e090e5a7c137e6abc59a7c7ea02a0e2f9218",
+      "hashes": {
+        "sha512": "c9483f5c2e8ea5077978c0de01e0b02e178f2f3cbede2579c797df04c795592a0a04d7a170d944c8c0ceb00e56758d404da73904ce10862e4ec24987eb6be5f0",
+        "sha1": "cb4c1ec060dc867af8854ae74815bc525c82dd33"
+      },
+      "project": "RkPlX1Bfhnne4042",
+      "embedded_metadata_sha256": "a084e202a36f96588bdbbb2c736802c95553e22dcd8b87f9d7f25f5f613ba08a"
+    },
+    {
+      "url": "https://edge.forgecdn.net/files/8918/777/ExtendedAE-1.20-1.4.21-forge.jar",
+      "sha256": "30fc8abe66d4b96919f0fd7b33badd0bb2013b31e2ee57f6aeaa63ffae37df4b",
+      "hashes": {
+        "sha1": "15680d4f01a31a0f8bc6323bca6fcd507ae0c6b3",
+        "md5": "6b2bb5675abc9178b96755990f2f3fab"
+      },
+      "project": "cPoiNkLiMK7uUQT3",
+      "embedded_metadata_sha256": "85c8741738ed9470e8329444437e4817c6e94fd729d1cc509f86372cb23ff3cf"
+    },
+    {
+      "url": "https://cdn.modrinth.com/data/TyCTlI4b/versions/HEEmP5R4/sophisticatedbackpacks-1.20.1-3.26.14.2226.jar",
+      "sha256": "07479d3f03904bbfcd21e8d7c96277336c790e994cafc2c5bb13cccb5dfb8524",
+      "hashes": {
+        "sha512": "d6c01154540ec77ebb45f14e982ec0c2706b5796784c4c2585e7eb09f5d0d6888e3b0beb5305cee9c13eaa937f1cfdb53b0081ade9fb60073733e3b9fdea1b7b",
+        "sha1": "26b302df2e67be44bb0b12180a6c22df807417e6"
+      },
+      "project": "mUY7a1f4DIhjgXtQ",
+      "embedded_metadata_sha256": "b1159eb69dc63cf7a0aef96896a6ec87beba991cd313231da0c842af75c093d6"
+    },
+    {
+      "url": "https://edge.forgecdn.net/files/9092/15/appliedenergistics2-forge-15.5.5-uelm.jar",
+      "sha256": "1228c6fbf6b9ca8d586ab626b07cf762631b898d40886ef1ff6700fc095b788f",
+      "hashes": {
+        "sha1": "f27213e1901cf829e6c04e4be30afe5859fb0542",
+        "md5": "03b21d12ea96b8a78925f0d6a5fd33a0"
+      },
+      "project": "pIZDOkEUyxqgQofO",
+      "embedded_metadata_sha256": "8794fda4be77d48eb3f7bb88fbae81f569a1040872e2993b4eee0e1a1ba956c4"
+    },
+    {
+      "url": "https://cdn.modrinth.com/data/Hl4ARA1z/versions/HRtbZiZi/reliable_recipes-3.7.1+1.20.1-forge.jar",
+      "sha256": "e230ecb5ac95c46cf989e0386338e3bdbcaa2021a28320371e9f364b122af39f",
+      "hashes": {
+        "sha512": "89e07774a66568375ee709ec6e5d47f4abf3b99a16093c21971351aa32e14805cbfebb2a76999d84c84b0b572739aeb0c30165560fb9497b8cb3622e53f97763",
+        "sha1": "1b7fafd1314b5fd8582d3cf67e04920e150ea99c"
+      },
+      "project": "wTFGhNzs9nXiuoE1",
+      "embedded_metadata_sha256": "e8934588e4496a76e3bd3efc5bfdebc3bb133178c39cb1feb083b1746c217dbf"
+    }
+  ]
+}
