@@ -138,7 +138,6 @@ final class SameHostDeployment
                 throw new RuntimeException('Existing excluded backup folders must be regular directories on the transaction staging filesystem so recovery can preserve them with rename.');
             }
         }
-        app(RestoreInventory::class)->requireReadable($paths['live'], $exclusions, $heartbeat);
         if (($server->runtime_report['world_path_verified'] ?? null) !== true) { throw new RuntimeException('Verify server.properties and the custom world location before deployment.'); }
         ksort($launchHashes);
         $observed['java_confidence'] = 'verified';

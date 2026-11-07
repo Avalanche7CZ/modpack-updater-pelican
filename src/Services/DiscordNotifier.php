@@ -80,6 +80,10 @@ final class DiscordNotifier
             'update_available' => ['Nová verze · New release', "Pro **{$name}** je dostupná verze `{$new}` (nainstalováno `{$old}`).\n\nVersion `{$new}` is available for **{$name}** (installed: `{$old}`).", 3447003],
             default => ['Test oznámení · Test notification', "Discord oznámení pro **{$name}** jsou připojena. Toto je pouze test, server nebyl aktualizován.\n\nDiscord notifications for **{$name}** are connected. This is only a test; the server was not updated.", 9807270],
         };
+        if ($kind === 'failed' && ($event->details['critical'] ?? false) === true) {
+            $title = 'Critical · Recovery requires administrator intervention';
+            $description = "**{$name}**: recovery is failed or uncertain. Keep Minecraft stopped. Check the locked Pelican backup, native restore callback and retained deployment journal. Restore the original launcher settings, then use Verify restored original snapshot in the panel.";
+        }
         $embed = ['title' => $title, 'description' => $description, 'color' => $color,
             'fields' => [['name' => 'Server / modpack', 'value' => $name, 'inline' => true],
                 ['name' => 'Verze / Version', 'value' => $kind === 'test' ? '`'.$this->text($server->installed_version, 120).'`' : "`{$old}` → `{$new}`", 'inline' => true]],
@@ -182,6 +186,19 @@ final class DiscordNotifier
             $error instanceof RuntimeException && $error->getMessage() === 'Enter an official HTTPS Discord webhook URL' => 'Enter an official HTTPS Discord webhook URL, or configure the global fallback.',
             default => 'Notification infrastructure failed: check database, cache/lock and queue connectivity (internal_error).',
         };
+    }
+
+    public function criticalRecovery(ManagedServer $server, string $message, string $operationId): void
+    {
+        try {
+            $event = $server->events()->where('kind', 'deploy')->where('status', 'failed')
+                ->where('details->operation_id', $operationId)->where('details->critical', true)->first();
+            $event ??= $server->events()->create(['kind' => 'deploy', 'status' => 'failed', 'message' => $message,
+                'details' => ['critical' => true, 'operation_id' => $operationId, 'discord_notification_pending' => true]]);
+            $this->forEvent($event);
+        } catch (Throwable $error) {
+            Log::warning('Critical recovery notification could not be recorded', ['operation_id' => $operationId, 'diagnostic' => self::diagnostic($error)]);
+        }
     }
 
     public function testStatus(?DiscordDelivery $delivery): string

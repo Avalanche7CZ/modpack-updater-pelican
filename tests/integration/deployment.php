@@ -220,7 +220,7 @@ Http::fake(function ($request) use (&$requests, &$snapshots, &$states, &$starts,
         else {
             check(($daemonConfigurations[$uuid]['suspended'] ?? true) === false && ($daemonConfigurations[$uuid]['crash_detection_enabled'] ?? true) === false, 'Controlled startup did not disable automatic crash recovery');
             $starts[$uuid]++;
-            $failBoot = (in_array($scenario, ['failed_start', 'failed_restore', 'corrupt_restore', 'pending_restore'], true) && $starts[$uuid] === 1) || $scenario === 'failed_recovery_start';
+            $failBoot = (in_array($scenario, ['failed_start', 'failed_restore', 'corrupt_restore', 'corrupt_launcher', 'added_file_leftover', 'pending_restore'], true) && $starts[$uuid] === 1) || $scenario === 'failed_recovery_start';
             $states[$uuid] = $failBoot ? 'offline' : 'running';
             if ($states[$uuid] === 'running') { file_put_contents($fixture['live'].'/logs/latest.log', $runtimeLog."[Server thread/INFO]: Done (0.1s)!\n"); }
         }
@@ -247,6 +247,7 @@ Http::fake(function ($request) use (&$requests, &$snapshots, &$states, &$starts,
             $managed = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
             (new DeployManagedServer($managed->id, false, $managed->approved_plan_sha256, $managed->active_operation_id))->failed(null);
         }
+        if ($scenario === 'live_drift') { file_put_contents($fixture['live'].'/kubejs/server_scripts/recipes.js', 'external change after backup'); }
         if ($scenario === 'stage_drift') { file_put_contents($fixture['files'].'/kubejs/server_scripts/recipes.js', 'unexpected staged bytes'); }
         return Http::response([], 202, $headers);
     }
@@ -255,7 +256,9 @@ Http::fake(function ($request) use (&$requests, &$snapshots, &$states, &$starts,
         check(! file_exists($fixture['live'].'/backups'), 'Excluded backups were not preserved before truncate');
         preg_match('~/backup/([a-f0-9-]+)/restore$~', $url, $backupMatch); $backupUuid = $backupMatch[1];
         $removeTree($fixture['live']); (new PharData($snapshots[$backupUuid]))->extractTo($fixture['live'], null, true);
-        if ($scenario === 'corrupt_restore') { file_put_contents($fixture['live'].'/world/level.dat', 'corrupt restored world'); }
+        if ($scenario === 'corrupt_restore') { file_put_contents($fixture['live'].'/kubejs/server_scripts/recipes.js', 'corrupt restored managed file'); }
+        if ($scenario === 'corrupt_launcher') { file_put_contents($fixture['live'].'/libraries/fixture/runtime.jar', 'corrupt runtime dependency'); }
+        if ($scenario === 'added_file_leftover') { file_put_contents($fixture['live'].'/kubejs/server_scripts/added.js', 'unexpected post-restore addition'); }
         if ($scenario === 'pending_restore') { return Http::response([], 202, $headers); }
         $callback = Request::create('/fixture/restore', 'POST', ['successful' => $scenario !== 'failed_restore']);
         $callback->attributes->set('node', Node::findOrFail(1)); app(BackupStatusController::class)->restore($callback, $backupUuid);
@@ -300,7 +303,7 @@ foreach (['kubejs/server_scripts/local.js' => 'local extra', 'world/level.dat' =
     'mods/Paradigm.jar' => $jarBytes['custom'], 'config/Paradigm/options.toml' => 'custom protected configuration', 'backups/previous.zip' => 'large excluded backup'] as $path => $content) { check(file_get_contents($live.'/'.$path) === $content, 'Protected content changed: '.$path); }
 $count = count($requests); app()->call([new DeployManagedServer($server->id, false, $plan['plan_sha256'], $operation->id), 'handle']);
 check(count($requests) === $count, 'Duplicate terminal job replayed a successful deployment');
-foreach (['failed_start', 'failed_restore', 'corrupt_restore', 'pending_backup', 'bad_backup', 'pending_restore', 'metadata_failure', 'copy_failure', 'stage_drift', 'settings_drift', 'backup_failure', 'unlocked_backup', 'failed_recovery_start', 'guard_ignored', 'worker_interrupted'] as $case) {
+foreach (['failed_start', 'failed_restore', 'corrupt_restore', 'corrupt_launcher', 'added_file_leftover', 'live_drift', 'pending_backup', 'bad_backup', 'pending_restore', 'metadata_failure', 'copy_failure', 'stage_drift', 'settings_drift', 'backup_failure', 'unlocked_backup', 'failed_recovery_start', 'guard_ignored', 'worker_interrupted'] as $case) {
     Auth::guard()->setUser($adminUser); $scenario = $case; $server = $make($case);
     $plan = app(PreviewService::class)->generate($server); check($plan['applicable'], 'Failure fixture did not qualify');
     $operation = app(DeploymentApproval::class)->queue($server, $plan['plan_sha256'], (string) \Illuminate\Support\Str::uuid());
@@ -317,10 +320,16 @@ foreach (['failed_start', 'failed_restore', 'corrupt_restore', 'pending_backup',
         check($operation->phase === 'manual_intervention' && $states[$uuid] === 'offline' && $server->active_operation_id === $operation->id, 'Failed/corrupt restore was restarted or unlocked');
         $count = count($requests); app()->call([new DeployManagedServer($server->id, false, $plan['plan_sha256'], $operation->id), 'handle']);
         check(count($requests) === $count, 'Uncertain deployment was replayed');
+        check($server->events()->where('kind', 'deploy')->where('status', 'failed')->where('details->critical', true)->exists(), 'Recovery checkpoint did not record a critical notification: '.$case);
         if ($case === 'failed_restore') {
+            Auth::guard()->setUser($adminUser);
+            Livewire\Livewire::test(ViewManagedServer::class, ['record' => $server->id])->call('mountAction', 'verifyRecovery')->call('callMountedAction');
+            Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+            check($operation->refresh()->phase === 'manual_intervention' && $states[$uuid] === 'offline' && $operation->context['preserved_stash'], 'Failed native callback released recovery or returned excluded folders too early');
             $scenario = 'success';
             $backup = Backup::where('uuid', $operation->context['backup_uuid'])->firstOrFail();
             app(\Arcturus\ModpackManager\Services\PelicanBackupManager::class)->restoreAndWait($server->pelicanServer, $backup, ['backups'], timeoutSeconds: 1, preservedStash: $operation->context['preserved_stash']);
+            rejects(fn () => app(\Arcturus\ModpackManager\Services\PelicanBackupManager::class)->requireRestored($server->pelicanServer, $backup, ['backups'], app(\Arcturus\ModpackManager\Services\PelicanBackupManager::class)->restoreWatermark()), 'An old native callback was accepted after the checkpoint');
             Auth::guard()->setUser($adminUser);
             $verify = Livewire\Livewire::test(ViewManagedServer::class, ['record' => $server->id])->call('mountAction', 'verifyRecovery')->call('callMountedAction');
             Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
@@ -331,7 +340,7 @@ foreach (['failed_start', 'failed_restore', 'corrupt_restore', 'pending_backup',
 }
 // Preflight rejects missing/stale runtime evidence, target drift, conflicts and unavailable backup capacity.
 $scenario = 'success'; Auth::guard()->setUser($adminUser);
-foreach (['unknown_java', 'wrong_java', 'missing_runtime', 'stage_tampered', 'quota', 'conflict', 'world_read_access', 'launch_settings'] as $case) {
+foreach (['unknown_java', 'wrong_java', 'missing_runtime', 'stage_tampered', 'quota', 'conflict', 'launch_settings'] as $case) {
     $server = $make('blocked '.$case); $uuid = $server->pelican_server_uuid; $fixture = $fixtures[$uuid];
     if ($case === 'unknown_java') { file_put_contents($fixture['live'].'/logs/latest.log', 'No Java startup evidence'); }
     if ($case === 'wrong_java') { file_put_contents($fixture['live'].'/logs/latest.log', str_replace('java version 17', 'java version 21', $runtimeLog)); }
@@ -339,14 +348,23 @@ foreach (['unknown_java', 'wrong_java', 'missing_runtime', 'stage_tampered', 'qu
     if ($case === 'stage_tampered') { file_put_contents($fixture['files'].'/kubejs/server_scripts/recipes.js', 'tampered'); }
     if ($case === 'quota') { DB::table('servers')->where('uuid', $uuid)->update(['backup_limit' => 0]); }
     if ($case === 'conflict') { file_put_contents($fixture['live'].'/kubejs/server_scripts/recipes.js', 'custom recipe'); }
-    if ($case === 'world_read_access') { chmod($fixture['live'].'/world/level.dat', 0000); }
     if ($case === 'launch_settings') { DB::table('servers')->where('uuid', $uuid)->update(['image' => 'fixture:java_21', 'updated_at' => now()]); }
     $plan = app(PreviewService::class)->generate($server);
     check(! $plan['applicable'], 'Unsafe preflight passed: '.$case);
     rejects(fn () => app(DeploymentApproval::class)->queue($server, $plan['plan_sha256'], (string) \Illuminate\Support\Str::uuid()), 'Blocked plan was approved: '.$case);
     check($states[$uuid] === 'running' && $server->refresh()->active_operation_id === null, 'Blocked preflight stopped/modified the server: '.$case);
-    if ($case === 'world_read_access') { chmod($fixture['live'].'/world/level.dat', 0600); }
 }
+
+// The queue account never needs to read/traverse worlds; native Wings owns complete backups.
+$server = $make('world inaccessible to queue account'); $uuid = $server->pelican_server_uuid; $fixture = $fixtures[$uuid];
+chmod($fixture['live'].'/world/level.dat', 0000); chmod($fixture['live'].'/world', 0000);
+try {
+    $plan = app(PreviewService::class)->generate($server);
+    check($plan['applicable'], 'World read/traverse ACL is still required by deployment qualification');
+    $receipt = app(\Arcturus\ModpackManager\Services\RestoreInventory::class)->capture($fixture['live'], $plan['changes'], $plan['qualification']['launch_hashes']);
+    app(\Arcturus\ModpackManager\Services\RestoreInventory::class)->verify($fixture['live'], $receipt);
+    check(! array_filter(array_keys($receipt['hashes']), fn ($path) => str_starts_with($path, 'world/')), 'World entered scoped receipt');
+} finally { chmod($fixture['live'].'/world', 0700); chmod($fixture['live'].'/world/level.dat', 0600); }
 
 // Live drift after approval cancels before power changes; the old plan cannot be approved again.
 $server = $make('drift after approval'); $uuid = $server->pelican_server_uuid;

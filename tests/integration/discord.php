@@ -313,5 +313,13 @@ Auth::guard()->forgetUser();
 rejects(fn () => app(\Arcturus\ModpackManager\Services\PluginSettings::class)->formData(), 'Guest could inspect global webhook');
 rejects(fn () => $notifier->test($server), 'Unauthorized test notification allowed');
 check(! $server->events()->where('kind', 'notification')->where('message', 'like', '%fixturetoken%')->exists(), 'History exposed webhook credentials');
+$critical = $event('failed'); $critical->details = [...$critical->details, 'critical' => true];
+$payload = $notifier->payload($server, $critical, 'failed');
+check(str_contains($payload['embeds'][0]['title'], 'Critical') && str_contains($payload['embeds'][0]['description'], 'Keep Minecraft stopped') && $payload['allowed_mentions']['parse'] === [], 'Critical recovery notification lacks actionable stopped-state instructions or mention restrictions');
+
+$criticalOperation = (string) \Illuminate\Support\Str::uuid();
+$notifier->criticalRecovery($server, 'Keep server stopped', $criticalOperation);
+$notifier->criticalRecovery($server, 'Worker failure hook repeated', $criticalOperation);
+check($server->events()->where('details->operation_id', $criticalOperation)->where('details->critical', true)->count() === 1, 'Repeated failure hooks duplicated a critical recovery notification');
 echo "Native unsaved webhook tests, delivery polling, real queue worker/recovery, release subscriptions, encryption, mention isolation and HTTP diagnostics passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

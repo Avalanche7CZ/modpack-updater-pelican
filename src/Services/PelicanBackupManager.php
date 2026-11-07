@@ -137,7 +137,7 @@ final class PelicanBackupManager
         $url = $this->downloadLinks->handle($backup, $owner);
         // Capture the log watermark BEFORE requesting restore: late callbacks
         // from previous attempts must never count as success.
-        $eventWatermark = (int) (ActivityLog::query()->max('id') ?? 0);
+        $eventWatermark = $this->restoreWatermark();
         $server->update(['status' => ServerState::RestoringBackup]);
         // Throws on Wings error. If the status is uncertain, leave Pelican locked
         // for operator intervention instead of starting Minecraft over the restore.
@@ -161,6 +161,7 @@ final class PelicanBackupManager
                 $event?->event,
                 $event !== null && $server->refresh()->status === null
             )) {
+                $this->requireCompleted($backup->refresh(), BackupExclusions::patterns($excludedFolders));
                 return;
             }
             $heartbeat?->__invoke();
@@ -170,6 +171,26 @@ final class PelicanBackupManager
         throw new RuntimeException(
             "Pelican did not confirm successful restore of {$backup->uuid}; leave server stopped"
         );
+    }
+
+    public function restoreWatermark(): int
+    {
+        return (int) (ActivityLog::query()->max('id') ?? 0);
+    }
+
+    /** Also used after an administrator completes a previously failed native restore. */
+    public function requireRestored(Server $server, Backup $backup, array $excludedFolders, int $watermark): void
+    {
+        $this->requireStopped($server);
+        if ($backup->server_id !== $server->id) { throw new RuntimeException('Recovery backup belongs to another server.'); }
+        $this->requireCompleted($backup->refresh(), BackupExclusions::patterns($excludedFolders));
+        $event = ActivityLog::query()->where('id', '>', $watermark)
+            ->whereIn('event', ['server:backup.restore-complete', 'server.backup.restore-failed'])
+            ->whereHas('subjects', fn ($query) => $query->where('subject_type', $backup->getMorphClass())->where('subject_id', $backup->id))
+            ->orderByDesc('id')->first();
+        if (! BackupSafetyGate::restoreFinished($event?->event, $event !== null && $server->refresh()->status === null)) {
+            throw new RuntimeException('Pelican has not confirmed successful restore of the exact locked backup. Keep Minecraft stopped.');
+        }
     }
 
     private function requireCompleted(Backup $backup, array $expectedIgnored): void

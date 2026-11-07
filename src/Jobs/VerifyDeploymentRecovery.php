@@ -44,16 +44,19 @@ final class VerifyDeploymentRecovery implements ShouldQueue
                 throw new RuntimeException('Confirm Minecraft stopped and all Pelican backup/restore callbacks completed before verification.');
             }
             $entries = (new LocalWorker($server))->configuration(); $root = $entries[$server->pelican_server_uuid]['root'];
-            $expected = $operation->context['recovery_fingerprint'] ?? null;
-            if (! $expected) { throw new RuntimeException('No offline recovery inventory was recorded. Retain evidence and request host-operator recovery.'); }
+            $expected = $operation->context['restore_receipt'] ?? null;
+            if (! $expected) { throw new RuntimeException('No scoped pre-update receipt was recorded. Retain evidence and request host-operator recovery; legacy full-volume fingerprints are not scanned.'); }
+            $backupUuid = $operation->context['backup_uuid'] ?? null;
+            $watermark = $operation->context['restore_event_watermark'] ?? null;
+            if (! $backupUuid || ! is_int($watermark)) { throw new RuntimeException('No exact native restore callback checkpoint. Request host-operator recovery; keep Minecraft stopped.'); }
+            $backup = $pelican->backups()->where('uuid', $backupUuid)->firstOrFail();
+            app(\Arcturus\ModpackManager\Services\PelicanBackupManager::class)->requireRestored($pelican, $backup, $operation->context['excluded_directories'] ?? [], $watermark);
             $stash = $operation->context['preserved_stash'] ?? null;
             if ($stash) { app(ExcludedFolderPreserver::class)->moveBack($root, $stash); $operation->update(['context' => [...$operation->context, 'preserved_stash' => null]]); }
-            if (app(RestoreInventory::class)->fingerprint($root, $operation->context['excluded_directories'] ?? [], $heartbeat) !== $expected) {
-                throw new RuntimeException('Restored world/custom/runtime files do not match the complete original offline inventory. Do not start or reapply; restore the correct locked backup.');
-            }
+            app(RestoreInventory::class)->verify($root, $expected, $heartbeat);
             if (app(\Arcturus\ModpackManager\Services\SameHostDeployment::class)->panelFingerprint($pelican->refresh()) !== ($operation->context['panel_sha256'] ?? null)) { throw new RuntimeException('Restore the original Pelican startup/image/egg variables before verifying recovery.'); }
             $requireOpen();
-            $operation->update(['phase' => 'recovery_starting', 'progress' => ['message' => 'Original offline inventory verified; checking its Minecraft startup']]);
+            $operation->update(['phase' => 'recovery_starting', 'progress' => ['message' => 'Native restore callback, managed files and launcher verified; checking Minecraft startup']]);
             $power->deploymentGuard($pelican, true);
             $power->startAndVerify($pelican, $root, timeoutSeconds: (int) config('arcturus-modpack-manager.deployment_start_timeout', 900), heartbeat: $heartbeat);
             $requireOpen();
@@ -68,6 +71,7 @@ final class VerifyDeploymentRecovery implements ShouldQueue
             $message = get_class($error) === RuntimeException::class ? $error->getMessage() : 'Recovery verification infrastructure unavailable. Confirm Wings offline state and inspect the retained backup/journal.';
             $operation->update(['error' => $message]);
             app(OperationTracker::class)->transition($operation, 'manual_intervention');
+            app(\Arcturus\ModpackManager\Services\DiscordNotifier::class)->criticalRecovery($server, $message, $operation->id);
         }
     }
 
@@ -80,5 +84,6 @@ final class VerifyDeploymentRecovery implements ShouldQueue
         try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); } catch (Throwable) { }
         $row->update(['error' => 'Recovery verification interrupted. Confirm Wings offline state and retain the locked backup; do not reapply the update.']);
         app(OperationTracker::class)->transition($row, 'manual_intervention');
+        app(\Arcturus\ModpackManager\Services\DiscordNotifier::class)->criticalRecovery($server, $row->error, $row->id);
     }
 }

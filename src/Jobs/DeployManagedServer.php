@@ -148,20 +148,12 @@ final class DeployManagedServer implements ShouldQueue
                 'message' => 'Starting update using '.$backupMode.' backup backend',
             ]);
 
-            // Manifest-managed hashes are a supplementary post-restore check.
-            // Pelican's backup callback verifies the full archive/restore outcome.
-            $trackedPaths = array_unique(array_merge(array_keys($base['files']), array_keys($target['files'])));
-            foreach ($trackedPaths as $path) {
+            foreach (array_unique([...array_keys($base['files']), ...array_keys($target['files'])]) as $path) {
                 foreach ($excludedFolders as $excluded) {
-                    if (str_starts_with($path, $excluded.'/')) {
-                        throw new RuntimeException(
-                            'Cannot omit backup folder owned by modpack manifest: '.$excluded
-                        );
-                    }
+                    if (str_starts_with($path, $excluded.'/')) { throw new RuntimeException('Cannot omit backup folder owned by modpack manifest: '.$excluded); }
                 }
             }
-            $beforeHashes = [];
-            $recoveryFingerprint = null;
+            $restoreReceipt = null;
 
             $pelicanBackup = null;
             $filesystemBackup = null;
@@ -175,13 +167,10 @@ final class DeployManagedServer implements ShouldQueue
                 $stopAttempted = true;
                 if ($operation) { $power->deploymentGuard($pelican, false); }
                 $power->stop($pelican, heartbeat: $heartbeat);
-                $beforeHashes = $backupMode === 'pelican'
-                    ? $inventory->hashPaths($managed->local_root, $trackedPaths, $heartbeat) : [];
-
-                if ($operation) {
-                    $progress('snapshotting', 'Hashing the offline recovery inventory, including worlds and protected/custom content');
-                    $recoveryFingerprint = app(RestoreInventory::class)->fingerprint($managed->local_root, $excludedFolders, $heartbeat);
-                    $progress('backing_up', 'Creating a locked Pelican backup; waiting for its exact completion callback', ['recovery_fingerprint' => $recoveryFingerprint, 'excluded_directories' => $excludedFolders]);
+                if ($backupMode === 'pelican') {
+                    $progress('snapshotting', 'Verifying approved file changes and original launcher hashes; complete data backup is handled by Wings');
+                    $restoreReceipt = app(RestoreInventory::class)->capture($managed->local_root, $preview['changes'], $preview['qualification']['launch_hashes'] ?? [], $preview['policy_context']['safety_roots'] ?? [], $heartbeat);
+                    $progress('backing_up', 'Creating a locked Pelican backup; waiting for its exact completion callback', ['restore_receipt' => $restoreReceipt, 'excluded_directories' => $excludedFolders]);
                 }
                 if ($backupMode === 'pelican') {
                     // Pelican uses configured Wings/S3 hosts, quota and retention.
@@ -214,12 +203,8 @@ final class DeployManagedServer implements ShouldQueue
                     ]);
                 }
 
+                if ($restoreReceipt !== null) { app(RestoreInventory::class)->verify($managed->local_root, $restoreReceipt, $heartbeat); }
                 if ($operation) {
-                    if (app(RestoreInventory::class)->fingerprint($managed->local_root, $excludedFolders, $heartbeat) !== $recoveryFingerprint) { throw new RuntimeException('Offline files changed while creating the backup. No update applied; review concurrent SFTP/node changes.'); }
-                    foreach ($preview['qualification']['launch_hashes'] as $path => $hash) {
-                        $full = app(SameHostDeployment::class)->regular($managed->local_root, $path);
-                        if (! hash_equals($hash, ($inventory->hashPaths($managed->local_root, [$path], $heartbeat)[$path] ?? ''))) { throw new RuntimeException('Runtime/launcher changed after approval; no changes applied.'); }
-                    }
                     app(SameHostDeployment::class)->requireSpace($managed->local_root, $stage, $preview['changes']);
                     $progress('applying', 'Applying only approved staged changes; protected and local-only content is preserved', ['backup_complete' => true, 'journal' => $sameHost['transactions'].'/deploy-'.$pelicanBackup->uuid.'.jsonl']);
                 }
@@ -304,18 +289,14 @@ final class DeployManagedServer implements ShouldQueue
                             $preservedStash = $preserver->moveOut(
                                 $managed->local_root, $managed->staging_parent, $excludedFolders
                             );
-                            $progress('restoring', 'Restoring the exact locked backup; waiting for its restore-complete callback', ['preserved_stash' => $preservedStash]);
+                            $progress('restoring', 'Restoring the exact locked backup; waiting for its restore-complete callback', ['preserved_stash' => $preservedStash, 'restore_event_watermark' => $backups->restoreWatermark()]);
                             $backups->restoreAndWait($pelican, $pelicanBackup, $excludedFolders, timeoutSeconds: (int) config('arcturus-modpack-manager.deployment_restore_timeout', 3600), preservedStash: $preservedStash, heartbeat: $heartbeat);
                             if ($preservedStash !== null) {
                                 $preserver->moveBack($managed->local_root, $preservedStash);
                                 $preservedStash = null;
                                 $progress('restoring', 'Excluded folders returned after confirmed restore', ['preserved_stash' => null]);
                             }
-                            $actual = $inventory->hashPaths($managed->local_root, $trackedPaths, $heartbeat);
-                            if ($actual !== $beforeHashes) {
-                                throw new RuntimeException('Wings reported restore success, but managed files differ');
-                            }
-                            if ($recoveryFingerprint !== null && app(RestoreInventory::class)->fingerprint($managed->local_root, $excludedFolders, $heartbeat) !== $recoveryFingerprint) { throw new RuntimeException('Restore callback succeeded but full recovery inventory differs, including world/custom content. Keep server stopped.'); }
+                            if ($restoreReceipt !== null) { app(RestoreInventory::class)->verify($managed->local_root, $restoreReceipt, $heartbeat); }
                             $restored = true;
                             $recovery = 'Pelican full restore confirmed ('.$pelicanBackup->uuid.')';
                         } elseif ($backupMode === 'filesystem' && $filesystemBackup !== null) {
@@ -363,12 +344,12 @@ final class DeployManagedServer implements ShouldQueue
                         'backup_backend' => $backupMode,
                         'backup_uuid' => $pelicanBackup?->uuid,
                         'filesystem_backup' => $filesystemBackup,
-                        'recovery' => $recovery,
+                        'operation_id' => $operation?->id, 'recovery' => $recovery, 'critical' => $operation !== null && ! ($restored && $recoveryRuntimeVerified),
                         'excluded_directories' => $excludedFolders, 'discord_notification_pending' => true,
                     ],
                 ]);
                 $discord->forEvent($failureEvent);
-                if ($restored) {
+                if ($restored && $recoveryRuntimeVerified) {
                     $rollbackEvent = $managed->events()->create(['kind' => 'rollback', 'status' => 'success',
                         'from_version' => $base['version'], 'to_version' => $target['version'],
                         'message' => 'Pre-update installation restored; see deployment history for runtime status',
@@ -422,6 +403,7 @@ final class DeployManagedServer implements ShouldQueue
         $operation->update(['error' => $message]);
         $server->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
         app(OperationTracker::class)->transition($operation, 'manual_intervention');
+        app(DiscordNotifier::class)->criticalRecovery($server, $message, $operation->id);
     }
 
 }

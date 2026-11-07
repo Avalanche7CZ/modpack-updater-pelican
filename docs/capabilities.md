@@ -6,7 +6,7 @@ This release provides remote inspection, adoption, upstream staging and review. 
 | --- | --- | --- |
 | File operations | Native Pelican `DaemonFileRepository`: list/stat, bounded text reads, text writes, mkdir, rename/move, delete, copy-with-daemon-selected-name | Actual rc.1 classes with HTTP fixtures; no live Wings write test |
 | SHA-256 inventory | Server-scoped worker streams every managed file; accounts for missing requested files; rejects partial/oversized responses | Real disposable filesystem and worker HTTP tests |
-| Worlds | Comparison never hashes worlds; offline manual-deployment recovery fingerprints the whole recoverable volume read-only | Custom `level-name` is excluded from mutations; unsupported property keys fail closed |
+| Worlds | Plugin verification never hashes/scans worlds; native locked Wings backups and restore callbacks cover complete server data | Custom `level-name` is excluded from mutations; unsupported property keys fail closed |
 | Provider metadata | Independent FTB, GitHub, Modrinth, CurseForge, ATLauncher and custom adapters | Fixtures; live FTB/Modrinth/GitHub metadata smoke checks |
 | Preparation | Node-side downloads with upstream checksums, bounded ZIP extraction, normalized manifest, durable progress | Full small local-artifact staging test; no full modpack installation |
 | Adoption | Native read-only inspection, exact upstream baseline, customized-file report, explicit finish or unverified monitoring | Planner/provenance/framework tests; live Wings inspection not exercised |

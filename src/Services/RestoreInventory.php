@@ -5,56 +5,56 @@ namespace Arcturus\ModpackManager\Services;
 
 use RuntimeException;
 
-/** Offline full-volume recovery fingerprint, including worlds/custom files and link identities; never follows links. */
+/** Bounded recovery receipt. Complete server data belongs to Pelican/Wings backups. */
 final class RestoreInventory
 {
-    public function requireReadable(string $root, array $excluded, ?\Closure $heartbeat = null): void
+    public function capture(string $root, array $changes, array $launchHashes, array $safetyRoots = [], ?\Closure $heartbeat = null): array
     {
-        $count = 0;
-        $walk = function (string $directory) use (&$walk, &$count, $root, $excluded, $heartbeat): void {
-            if (! is_readable($directory) || ! is_executable($directory)) { throw new RuntimeException('Offline recovery verification needs read/traverse access to the full UUID volume, including world/player data. Ask the host operator for read-only verification ACLs.'); }
-            $names = scandir($directory);
-            if ($names === false) { throw new RuntimeException('Cannot enumerate recovery verification scope.'); }
-            foreach ($names as $name) {
-                if ($name === '.' || $name === '..' || ($directory === $root && in_array($name, $excluded, true))) { continue; }
-                if (++$count > 2000000) { throw new RuntimeException('Recovery verification file limit exceeded.'); }
-                $heartbeat?->__invoke(); $path = $directory.'/'.$name;
-                if (is_link($path)) { continue; }
-                if (is_dir($path)) { $walk($path); }
-                elseif (! is_file($path) || ! is_readable($path)) { throw new RuntimeException('Recovery verification found unreadable or special files. Provision read-only verification access before approval.'); }
-            }
-        };
-        $walk($root);
+        $safetyRoots = array_values(array_unique([...$safetyRoots, ...(new DirectoryInventory)->safetyRoots($root)]));
+        $hashes = $launchHashes;
+        foreach (ModUpgradePlanner::mutations($changes) as $change) {
+            if (! in_array($change['action'], ['add', 'update', 'remove', 'replace_with_override', 'remove_with_override', 'disable_requires_enforcement'], true)) { continue; }
+            if (! array_key_exists('local_sha256', $change)) { throw new RuntimeException('Approved change has no pre-update hash. Compare and approve again.'); }
+            $path = $change['path'];
+            if (array_key_exists($path, $hashes) && $hashes[$path] !== $change['local_sha256']) { throw new RuntimeException('Conflicting launcher recovery evidence.'); }
+            $hashes[$path] = $change['local_sha256'];
+        }
+        ksort($hashes);
+        $receipt = ['schema' => 1, 'hashes' => $hashes, 'safety_roots' => $safetyRoots];
+        $this->verify($root, $receipt, $heartbeat);
+        return $receipt;
     }
 
-    public function fingerprint(string $root, array $excluded, ?\Closure $heartbeat = null): array
+    public function verify(string $root, array $receipt, ?\Closure $heartbeat = null): void
     {
-        if (realpath($root) !== $root || ! is_dir($root) || is_link($root)) { throw new RuntimeException('Recovery inventory root is unsafe.'); }
-        $hash = hash_init('sha256'); $count = 0;
-        $walk = function (string $directory) use (&$walk, &$count, $root, $excluded, $hash, $heartbeat): void {
-            $names = scandir($root.($directory === '' ? '' : '/'.$directory));
-            if ($names === false) { throw new RuntimeException('Cannot enumerate recovery inventory.'); }
-            foreach ($names as $name) {
-                if ($name === '.' || $name === '..' || ($directory === '' && in_array($name, $excluded, true))) { continue; }
-                $path = ltrim($directory.'/'.$name, '/');
-                $full = $root.'/'.$path; $before = lstat($full);
-                if ($before === false || ++$count > 2000000) { throw new RuntimeException('Recovery inventory is unavailable or exceeds the file limit.'); }
-                $heartbeat?->__invoke();
-                if (is_link($full)) { $kind = 'link'; $value = readlink($full); }
-                elseif (is_dir($full)) { hash_update($hash, json_encode(['dir', $path], JSON_THROW_ON_ERROR)."\n"); $walk($path); continue; }
-                elseif (is_file($full)) {
-                    $kind = 'file'; $content = hash_init('sha256'); $stream = fopen($full, 'rb');
-                    if (! $stream) { throw new RuntimeException('Cannot read recovery inventory file.'); }
-                    try { while (! feof($stream)) { $chunk = fread($stream, 1048576); if ($chunk === false) { throw new RuntimeException('Cannot hash recovery file.'); } hash_update($content, $chunk); $heartbeat?->__invoke(); } }
-                    finally { fclose($stream); }
-                    $value = hash_final($content);
-                    clearstatcache(true, $full); $after = lstat($full);
-                    if (! $after || array_intersect_key($before, array_flip(['ino', 'size', 'mtime'])) !== array_intersect_key($after, array_flip(['ino', 'size', 'mtime']))) { throw new RuntimeException('Recovery inventory changed while offline.'); }
-                } else { throw new RuntimeException('Recovery inventory contains unsupported special files.'); }
-                hash_update($hash, json_encode([$kind, $path, $value], JSON_THROW_ON_ERROR)."\n");
+        if (($receipt['schema'] ?? null) !== 1 || ! is_array($receipt['hashes'] ?? null) || ! $receipt['hashes'] || ! is_array($receipt['safety_roots'] ?? null)) {
+            throw new RuntimeException('No scoped pre-update verification receipt. Keep the recovery checkpoint and request host-operator recovery.');
+        }
+        // Validate the complete scope before opening any file. Never enumerate directories.
+        foreach ($receipt['hashes'] as $path => $hash) {
+            UpdatePlanner::assertPath($path);
+            if (SafetyPaths::reason($path, $receipt['safety_roots']) !== null || ($hash !== null && (! is_string($hash) || ! preg_match('/^[a-f0-9]{64}$/D', $hash)))) {
+                throw new RuntimeException('Unsafe recovery verification scope; keep Minecraft stopped.');
             }
-        };
-        $walk('');
-        return ['sha256' => hash_final($hash), 'entries' => $count];
+        }
+        $inventory = new DirectoryInventory;
+        $inventory->hashPaths($root, []); // Validate the root without enumerating it.
+        if (! is_executable($root)) { throw new RuntimeException('Managed recovery root requires traversal access.'); }
+        foreach (array_keys($receipt['hashes']) as $path) {
+            $parent = rtrim($root, '/');
+            $segments = explode('/', $path); array_pop($segments);
+            foreach ($segments as $segment) {
+                if (! is_executable($parent)) { throw new RuntimeException('Cannot verify managed-file absence: parent traversal unavailable for '.$path); }
+                $parent .= '/'.$segment;
+                if (is_link($parent)) { throw new RuntimeException('Symlink in managed recovery scope: '.$path); }
+                if (! file_exists($parent)) { break; } // Confirmed absent ancestor, not EACCES.
+                if (! is_dir($parent) || ! is_executable($parent)) { throw new RuntimeException('Cannot verify managed recovery path: '.$path); }
+            }
+        }
+        $actual = $inventory->hashPaths($root, array_keys($receipt['hashes']), $heartbeat);
+        foreach ($receipt['hashes'] as $path => $hash) {
+            // Absence is evidence too: newly installed files must disappear after restore.
+            if (($actual[$path] ?? null) !== $hash) { throw new RuntimeException('Managed file or launcher differs from its pre-update hash: '.$path.'. Restore the exact locked backup; keep Minecraft stopped.'); }
+        }
     }
 }
