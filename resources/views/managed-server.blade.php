@@ -104,6 +104,9 @@
                     @elseif($preview['blocked'] ?? 0)
                         <p class="mt-3 text-sm">Review the conflicts in File Changes before updating.</p>
                         <x-filament::button class="mt-3" color="warning" wire:click="selectTab('changes')">Review file changes</x-filament::button>
+                    @elseif(!empty($preview['capability_blockers']))
+                        <p class="mt-3 text-sm">File comparison is complete. Complete the deployment requirements listed below before updating.</p>
+                        <x-filament::button class="mt-3" color="gray" wire:click="selectTab('overview')">Review server setup and directories</x-filament::button>
                     @else
                         <p class="mt-3 text-sm">Review the changes below, then update with a Pelican backup. Runtime checks and exact-plan approval still apply.</p>
                         <x-filament::button class="mt-3" color="gray" wire:click="selectTab('changes')">View file changes</x-filament::button>

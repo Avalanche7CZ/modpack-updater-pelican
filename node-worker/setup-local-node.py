@@ -130,10 +130,26 @@ def world_roots(fd):
     return excluded
 
 
-def provision_volume(fd, uid, additional=None):
+def grant_write_directory(fd, uid, volume_owner):
+    name = '/proc/self/fd/' + str(fd)
+    current = subprocess.run(['/usr/bin/getfacl', '-c', '-n', '-p', '--', name], pass_fds=(fd,),
+        check=True, capture_output=True, text=True).stdout
+    update = acl_updates(current, uid, True, rights='rwx')
+    # Queue-created entries must remain writable by the Minecraft volume owner too.
+    update += ',user:%s:rwx,default:user:%s:rwx,default:mask::rwx' % (volume_owner, volume_owner)
+    subprocess.run(['/usr/bin/setfacl', '-m', update, '--', name], pass_fds=(fd,), check=True, capture_output=True)
+
+
+def provision_volume(fd, uid, additional=None, *, deployment=False):
     additions = set(approved_additions(additional or []))
     excluded = world_roots(fd)
-    grant(fd, uid, True)
+    owner = os.fstat(fd).st_uid
+    if deployment:
+        if owner == uid:
+            raise ValueError('Panel account must not own the UUID volume')
+        grant_write_directory(fd, uid, owner)
+    else:
+        grant(fd, uid, True)
     count = 0
     def visit(directory, top=False, depth=0, custom=False):
         nonlocal count
@@ -163,7 +179,10 @@ def provision_volume(fd, uid, additional=None):
                         raise ValueError('Volume entry changed during setup; retry when files are stable')
                     if not is_dir and pinned.st_nlink != 1:
                         raise ValueError('File link count changed during setup; no ACL granted')
-                    grant(child, uid, is_dir)
+                    if deployment and is_dir:
+                        grant_write_directory(child, uid, owner)
+                    elif not deployment or pinned.st_uid != uid:
+                        grant(child, uid, is_dir)
                     if is_dir:
                         visit(child, depth=depth + 1, custom=custom or (top and name in additions))
                 finally:
@@ -236,6 +255,7 @@ def main():
     parser.add_argument('--additional-managed-directory', action='append', default=[],
         help='Explicitly approve a reviewed top-level pack directory (repeatable; never inferred from archives)')
     parser.add_argument('--archive-root', action='append', default=[], help='Explicitly review a removable single-directory ZIP wrapper (repeatable)')
+    parser.add_argument('--deployment-server', help='Explicit UUID to grant managed-directory deployment ACLs; worlds/data remain excluded')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--replace', action='store_true', help='Explicitly replace a previous node/root approval (retains old stages/ACLs)')
     args = parser.parse_args()
@@ -257,6 +277,10 @@ def main():
         phase = 'read_panel_node_metadata'
         snapshot = json.loads(run_panel(panel, php, account, ['arcturus-modpack:describe-local-node', str(args.node)]))
         servers = approve(snapshot, args.node, root, stage)
+        if args.deployment_server:
+            if not UUID.fullmatch(args.deployment_server) or args.deployment_server not in servers:
+                raise ValueError('Deployment UUID is not a server on the approved node')
+            servers = [args.deployment_server]
         if root.stat().st_uid != 0 or root.stat().st_mode & 0o022:
             raise ValueError('Approved volume parent must be root-owned and not group/world writable')
         for parent in root.parents:
@@ -284,6 +308,8 @@ def main():
         print('Approve node %s (%s); volume root %s; staging %s; account %s; %s database servers' % (
             args.node, snapshot['node_uuid'], root, stage, account.pw_name, len(servers)))
         print('Explicit additional managed directories: ' + (', '.join(additions) or '(none)'))
+        if args.deployment_server:
+            print('Deployment write/traverse ACLs for this UUID only; no world/data traversal or ownership changes')
         if args.dry_run:
             print('Dry run: no ACLs, files, configuration or queue state changed')
             return 0
@@ -318,7 +344,7 @@ def main():
                 except FileNotFoundError:
                     continue  # Not provisioned by Wings yet; inherited ACL covers future directories.
                 try:
-                    provision_volume(volume, account.pw_uid, additions)
+                    provision_volume(volume, account.pw_uid, additions, deployment=bool(args.deployment_server))
                 finally:
                     os.close(volume)
         finally:

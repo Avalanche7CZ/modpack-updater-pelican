@@ -14,6 +14,8 @@ Both installed baseline and target need authenticated manifests prepared through
 
 ## Host and queue requirements
 
+In Updates, choose **Set up update access** to obtain the one-time host command scoped to this server UUID. Run it on the Wings host, then refresh comparison. It provisions read access and current/default write ACLs on managed directories for the queue account and Minecraft volume owner, without hashing files or changing owners. Worlds, data, unsafe links and unrelated directories remain excluded.
+
 Preparation's existing read-only ACL setup does not grant deployment permission. A host operator must review the UUID volume and provision scoped write/traverse access for the unprivileged Panel/queue account to the UUID root and affected managed directories. Newly created files/directories must inherit usable default ACLs for the Minecraft volume owner as well as the queue account. Qualification checks those ACLs with `/usr/bin/getfacl` when the queue account does not own the volume. PHP needs POSIX support. Do not run PHP as root or use blanket `chmod 777`.
 
 The plugin does not need read/traverse ACLs on worlds, player data, dimensions or unrelated runtime data. Native Wings must have access to all server data for its complete backup and restore. The queue account needs read access only to reviewed managed content and critical launcher/runtime dependencies. Keep custom world paths declared in readable `server.properties`. Excluded root backup folders must be safe, non-world regular directories on the same filesystem as private staging, so they can be preserved with rename during a full restore.

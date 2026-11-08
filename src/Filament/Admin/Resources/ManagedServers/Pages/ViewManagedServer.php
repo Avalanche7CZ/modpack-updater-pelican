@@ -132,6 +132,30 @@ final class ViewManagedServer extends ViewRecord
                         Notification::make()->title('Filesystem backend unavailable')->body($error->getMessage())->danger()->send();
                     }
                 }),
+            Action::make('deploymentAccess')->label('Set up update access')->button()->color('gray')
+                ->visible(fn () => $this->tab === 'updates' && $this->getRecord()->transport === 'local')
+                ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
+                ->modalHeading('One-time host permission setup')
+                ->modalDescription('Run this on the Wings host as an administrator. Only this UUID and reviewed managed directories receive update access; worlds and player data are excluded. No file hashes or ownership changes. PHP runs as www-data.')
+                ->fillForm(function (): array {
+                    $server = $this->getRecord()->pelicanServer;
+                    $node = $server->node;
+                    $approval = app(\Arcturus\ModpackManager\Local\LocalNode::class)->configuration();
+                    $account = posix_getpwuid($approval['uid']);
+                    if (! $account) { throw new \RuntimeException('Approved queue account does not exist on this host.'); }
+                    $command = 'sudo install -o root -g root -m 0755 '.escapeshellarg(plugin_path('arcturus-modpack-manager', 'node-worker/setup-local-node.py')).' /usr/local/sbin/arcturus-local-node-setup'."\n".
+                        'sudo /usr/bin/python3 /usr/local/sbin/arcturus-local-node-setup --panel '.escapeshellarg(base_path()).
+                        ' --user '.escapeshellarg($account['name']).' --node '.(int) $node->id.' --volume-root '.escapeshellarg($node->daemon_base).
+                        ' --staging-parent '.escapeshellarg($approval['staging_parent']).
+                        ' --deployment-server '.escapeshellarg($server->uuid);
+                    $additions = array_filter((new \Arcturus\ModpackManager\Services\DirectoryPolicy)->normalize($this->getRecord()->directory_decisions ?? []),
+                        fn ($row) => $row['mode'] === 'manage' && ! in_array($row['path'], \Arcturus\ModpackManager\Security\ManagedPaths::ROOTS, true));
+                    foreach ($additions as $row) { $command .= ' --additional-managed-directory '.escapeshellarg($row['path']); }
+                    if ($additions) { $command .= ' --replace'; }
+                    return ['commands' => $command];
+                })
+                ->schema([\Filament\Forms\Components\Textarea::make('commands')->label('Host command')->readOnly()->rows(7)])
+                ->modalSubmitAction(false)->modalCancelActionLabel('Close'),
             Action::make('testFilesystem')->label('Test filesystem access')->button()->color('gray')->visible(fn () => $this->tab === 'overview')
                 ->action(function (): void {
                     Access::requireAdmin();

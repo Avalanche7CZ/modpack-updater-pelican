@@ -81,6 +81,27 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn('user:%s:' % self.uid, self.acl(path))
             self.assertIn(path.read_bytes(), [b'preserve', b'secret'])
 
+    def test_deployment_grants_directory_writes_and_inherits_both_owners_without_world_access(self):
+        volume = self.root / 'volume'; volume.mkdir(mode=0o700)
+        for name in ['mods', 'config', 'world', 'private']:
+            (volume / name).mkdir(mode=0o700)
+            (volume / name / 'file').write_text('unchanged')
+        (volume / 'mods/link').symlink_to(volume / 'world', target_is_directory=True)
+        fd = os.open(volume, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            setup.provision_volume(fd, self.uid, deployment=True)
+        finally:
+            os.close(fd)
+        acl = self.acl(volume / 'mods')
+        self.assertIn('user:%s:rwx' % self.uid, acl)
+        self.assertIn('default:user:%s:rwx' % os.getuid(), acl)
+        for name in ['world', 'private']:
+            self.assertNotIn('user:%s:' % self.uid, self.acl(volume / name))
+        self.assertEqual((volume / 'world/file').read_text(), 'unchanged')
+        future = volume / 'mods/future'; future.mkdir()
+        self.assertIn('user:%s:rwx' % self.uid, self.acl(future))
+        self.assertIn('default:user:%s:rwx' % os.getuid(), self.acl(future))
+
     def test_unprivileged_setup_refused(self):
         result = subprocess.run(['/usr/bin/python3', str(Path(setup.__file__)), '--node', '1',
             '--volume-root', str(self.root)], capture_output=True, text=True)
