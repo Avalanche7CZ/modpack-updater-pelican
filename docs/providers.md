@@ -6,7 +6,7 @@ Use the provider's immutable release ID, not an inferred display version. Read-o
 
 Use the official numeric pack ID and exact version ID. The current manifest API is `https://api.feed-the-beast.com/v1/modpacks/modpack/{pack}/{version}`, matching FTB's official installer. Older `/public` version endpoints are not assumed valid. Version lists are sorted newest-first before stable selection. Targets expose Minecraft, loader and Java requirements. Client-only files are excluded; required unavailable downloads, optional selection and unsupported hashes block preparation. CurseForge references require a configured CurseForge API key and permitted file URL.
 
-Files can be staged without running FTB's installer. Generated loader libraries/launchers and Java installation are not supplied by the read-only worker; `runtime_prepared=false` blocks deployment. A staged published-file baseline must not be described as a tested full Minecraft installation.
+Files are staged without running FTB's installer. The native backend can then prepare supported modern Forge/NeoForge libraries using the exact official loader installer in a private sandbox, before plan approval; see [native runtime requirements](native-deployment.md). Missing sandbox capabilities or unsupported profiles produce a runtime blocker. Java Docker images must still be approved by the server's egg. Staging alone does not prove Minecraft startup.
 
 ## GitHub / GTNH
 
@@ -16,7 +16,7 @@ The GitHub asset's `sha256:` digest is required. If the release supplies a separ
 
 ## Modrinth
 
-Use an immutable version ID from the project version list. Project ownership is checked before accepting a version. `.mrpack` is a ZIP container containing `modrinth.index.json`, checksummed download paths and Minecraft/loader dependencies. The worker resolves required server files, excludes `env.server=unsupported`, applies `overrides` followed by `server-overrides`, and excludes `client-overrides`. Optional server files require explicit custom normalization. A missing permitted download or failed hash cancels preparation. Loader dependencies are recorded but their executable installers are not run.
+Use an immutable version ID from the project version list. Project ownership is checked before accepting a version. `.mrpack` is a ZIP container containing `modrinth.index.json`, checksummed download paths and Minecraft/loader dependencies. The worker resolves required server files, excludes `env.server=unsupported`, applies `overrides` followed by `server-overrides`, and excludes `client-overrides`. Optional server files require explicit custom normalization. A missing permitted download or failed hash cancels preparation. Loader dependencies are recorded; the native runtime stage can prepare supported modern Forge/NeoForge dependencies separately in its private sandbox. Fabric/Quilt migrations remain unsupported; reuse requires verified installed-runtime evidence.
 
 The index archive size is not presented as the full pack download estimate. Only fully known recipe download totals are displayed.
 

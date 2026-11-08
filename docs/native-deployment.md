@@ -15,6 +15,7 @@ Target: **Pelican Panel 1.0.0-rc.2**, PHP 8.4/8.5, existing Panel scheduler and 
 ## What is supported
 
 * File-only updates which reuse a runtime independently proven by the current boot log. This is not tied to Forge 1.20.1 or Java 17.
+* Modern Forge/NeoForge installer runtimes can now be prepared before approval using the exact checksummed official Maven installer in an unprivileged bubblewrap filesystem/PID sandbox. Only the private workspace is writable on the host; Panel code, secrets and live volumes are not mounted. The generated arguments and server JAR must match the installer profile. Required libraries receive a precise SHA-256 manifest and enter the existing three-way comparison and native backup/deploy/rollback transaction. Cached complete builds are verified and reused; interrupted downloads retain their private workspace for checksum-checked retry. Obsolete generated libraries become untouched local extras, following the additive behavior of official installers.
 * Published, complete Forge/NeoForge runtime migrations **within the same loader family**, using an existing direct `java ... @libraries/.../unix_args.txt` startup. The target argument file must explicitly prove the target game/loader version, all referenced library JARs must be present in the verified upstream manifest and private stage, and their installed hashes are verified before startup.
 * Java image changes only when exactly one matching Java image is supported by the server's egg. Existing JVM flags and variables are retained. Startup/image/egg/variable snapshots detect outside changes; recovery never blindly overwrites an administrator's new settings.
 * Existing customized scripts and disabled mods are preserved through the ordinary three-way policies. Existing Fabric/Quilt and legacy Forge/Crucible launchers can be reused only when exact runtime and Java boot evidence is available. Unsupported log formats remain blocked rather than trusting image names.
@@ -22,7 +23,8 @@ Target: **Pelican Panel 1.0.0-rc.2**, PHP 8.4/8.5, existing Panel scheduler and 
 
 ## Explicit remaining blockers
 
-* **Installer-generated runtime dependencies are not yet qualified.** A pack which publishes only an installer or mod manifest, without the complete target runtime, cannot migrate merely by switching its startup string. This commonly affects FTB NeoForge upgrades. `RuntimePlan` preserves exact official installer profiles, but those profiles are not activated as a production installer workflow.
+* Installer preparation is conditional on a root-owned system `bubblewrap`, working unprivileged user/PID namespaces and a root-owned compatible JDK under `/usr/lib/jvm` on the **Panel host**. These are optional runtime-build capabilities; ordinary native file updates require neither. No unsandboxed fallback or host permission changes are performed. Java Docker images do not supply the Panel JDK. Missing capabilities produce a visible **Runtime blocked** result while retaining verified pack files.
+* Preparation requires 2 GiB free private storage and 3 GiB memory headroom, with bounded process time, address space, file size and process count. Unsafe, unresolved or unsupported installer profiles fail closed. Only modern spec-1 Forge/NeoForge profiles with explicit server outputs and argument identity are accepted.
 * Fabric/Quilt version migrations, changing loader families, custom script-driven loader migrations and unverified legacy runtime changes are blocked. Current runtime reuse is conditional on independent boot evidence.
 * Native automatic enforcement of a new `.disabled` rename is not qualified. Existing disabled mods stay preserved; a plan requiring enforcement shows an actionable blocker.
 * Extra container mounts, egg filesystem denylists, other root symlinks, unsafe excluded folders, unavailable backup capacity/adapters and ambiguous startup evidence block deployment.
@@ -45,9 +47,11 @@ Locked recovery backups and unrelated backups are never pruned by this workflow.
 
 ## Validation boundary
 
-Small deterministic fixtures execute real rc.2 approval, database queue, daemon repositories, startup service and native backup callback controllers, with a disposable HTTP Wings model. They cover a complete file-only update, published NeoForge/Java/startup migration, partial write, failed boot, image/startup rollback, failed restore callback, retained launcher symlink, excluded backups, custom/disabled mods, duplicate delivery and interrupted-worker recovery. Separate HTTP tests cover binary streams, truncated transfers, symlink rejection and no-op rename responses.
+A real checksummed NeoForge 21.1.172 installer was executed successfully under Java 21 in a disposable filesystem/PID sandbox, generating its patched server JAR and runtime libraries. The executor maps system-package ownership to UID 65534, so the scratch smoke harness adapts that identity only; production still requires root-owned tools. This exercised actual installer output, not a Minecraft boot.
 
-**No live Wings daemon, Docker container, loader installer or real Minecraft server was exercised in this environment. Production qualification remains the operator's disposable-instance test.**
+Small deterministic fixtures execute real rc.2 approval, database queue, daemon repositories, startup service and native backup callback controllers, with a disposable HTTP Wings model. They cover a complete file-only update, published and installer-produced NeoForge/Java/startup migrations, partial write, failed boot, image/startup rollback, failed restore callback, retained launcher symlink, excluded backups, custom/disabled mods, duplicate delivery and interrupted-worker recovery. Separate HTTP tests cover binary streams, truncated transfers, symlink rejection and no-op rename responses.
+
+**No live Wings daemon, Docker container or real Minecraft server was exercised in this environment. Production qualification remains the operator's disposable-instance test.**
 
 ## Source audit
 

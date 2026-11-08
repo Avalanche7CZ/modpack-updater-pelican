@@ -30,14 +30,14 @@ $egg->docker_images = ['Java 21' => 'fixture:java_21', 'Java 25' => 'fixture:jav
 $systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = [];
 $hash = fn ($value) => hash('sha256', $value);
 $bootLog = fn ($mc, $version, $java) => "ModLauncher running: args [--fml.neoForgeVersion, $version, --fml.mcVersion, $mc]\nModLauncher 10.0.9 starting: java version $java.0.1\n[Server thread/INFO]: Done (0.1s)!\n";
-$make = function (bool $migration) use (&$systems, &$stages, $bootLog, $hash): ManagedServer {
+$make = function (bool $migration, bool $installer = false) use (&$systems, &$stages, $bootLog, $hash): ManagedServer {
     $uuid = (string) Str::uuid(); $id = bin2hex(random_bytes(16));
     $args = fn ($mc, $v) => "-p libraries/fixture/runtime.jar --fml.neoForgeVersion $v --fml.mcVersion $mc";
     $oldArgs = 'libraries/net/neoforged/neoforge/21.1.1/unix_args.txt';
     $newArgs = 'libraries/net/neoforged/neoforge/26.1.2.121/unix_args.txt';
     $base = ['config/options.cfg' => 'old', 'kubejs/server_scripts/upstream.js' => 'old script', $oldArgs => $args('1.21.1', '21.1.1'), 'libraries/fixture/runtime.jar' => 'verified runtime dependency'];
     $target = [...$base, 'config/options.cfg' => 'new', 'kubejs/server_scripts/upstream.js' => 'new script', 'config/added.cfg' => 'new added file'];
-    if ($migration) { unset($target[$oldArgs]); $target[$newArgs] = $args('26.1.2', '26.1.2.121'); }
+    if ($migration) { unset($target[$oldArgs]); if (! $installer) { $target[$newArgs] = $args('26.1.2', '26.1.2.121'); } }
     $runtime = ['minecraft' => $migration ? '26.1.2' : '1.21.1', 'loader' => 'neoforge', 'loader_version' => $migration ? '26.1.2.121' : '21.1.1'];
     $manifest = fn ($version, $files, $runtime) => ['schema' => 2, 'provider' => 'custom', 'project' => 'native-fixture', 'version' => $version, 'verification' => 'upstream-checksums',
         'files' => array_map($hash, $files), 'runtime' => $runtime, 'artifacts' => [['sha256' => $hash($version), 'hashes' => ['sha256' => $hash($version)]]]];
@@ -114,7 +114,7 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
     if (str_ends_with($path, '/power')) {
         if ($request['action'] === 'stop') { $sys['state'] = 'offline'; }
         else {
-            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore'], true) && $sys['starts'] === 1;
+            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot'], true) && $sys['starts'] === 1;
             $sys['state'] = $fail ? 'offline' : 'running';
             if ($fail) { $sys['data']['world/region/new-failed-boot.mca'] = 'must disappear on full recovery'; }
             else {
@@ -149,10 +149,49 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
     return Http::response(['state' => $sys['state'], 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => 60000]], 200, $headers);
 });
 try {
-    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted']] as [$label, $migration, $scenario]) {
-        $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
+    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'], ['installer runtime rollback', true, 'installer_failed_boot']] as [$label, $migration, $scenario]) {
+        $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_')); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
         $originalData = $systems[$uuid]['data'];
         check((new Preparation($managed))->request('capabilities')['backend'] === 'native', 'Native preparation still requires host provisioning');
+
+        if (str_starts_with($scenario, 'installer_')) {
+            $input = tempnam(sys_get_temp_dir(), 'arcturus-installer-input-');
+            $argsText = '-p libraries/fixture/runtime.jar --fml.neoForgeVersion 26.1.2.121 --fml.mcVersion 26.1.2';
+            $jar = new ZipArchive; $jar->open($input, ZipArchive::OVERWRITE);
+            $jar->addFromString('install_profile.json', json_encode(['spec' => 1, 'minecraft' => '26.1.2', 'data' => ['PATCHED' => ['server' => '[net.neoforged:neoforge:26.1.2.121:server]']]]));
+            $jar->addFromString('version.json', json_encode(['inheritsFrom' => '26.1.2', 'arguments' => ['game' => ['--fml.neoForgeVersion', '26.1.2.121']]]));
+            $jar->addFromString('data/unix_args.txt', $argsText); $jar->close();
+            $receipt = ['path' => $input, 'sha256' => hash_file('sha256', $input), 'hashes' => ['sha256' => hash_file('sha256', $input)]];
+            rejects(fn () => (new \Arcturus\ModpackManager\Runtime\InstallerProfile)->inspect([...$receipt, 'sha256' => str_repeat('0', 64)], ['minecraft' => '26.1.2', 'loader' => 'neoforge', 'loader_version' => '26.1.2.121']), 'Changed installer was trusted');
+            $app->instance(\Arcturus\ModpackManager\Runtime\InstallerArtifact::class, new class($receipt) extends \Arcturus\ModpackManager\Runtime\InstallerArtifact {
+                public function __construct(private array $receipt) {}
+                public function obtain(array $target, string $cache): array {
+                    if (! is_dir($cache)) { mkdir($cache, 0700); }
+                    return [...$this->receipt, 'url' => $this->url($target)];
+                }
+            });
+            $runner = new class extends \Arcturus\ModpackManager\Runtime\InstallerSandbox {
+                public int $runs = 0;
+                public function run(array $artifact, string $work, int $minimum, ?\Closure $heartbeat = null): int {
+                    $this->runs++; $zip = new ZipArchive; $zip->open($artifact['path']); $args = $zip->getFromName('data/unix_args.txt'); $zip->close();
+                    $root = $work.'/libraries/net/neoforged/neoforge/26.1.2.121'; mkdir($root, 0700, true);
+                    file_put_contents($root.'/unix_args.txt', $args);
+                    mkdir($work.'/libraries/fixture', 0700); file_put_contents($work.'/libraries/fixture/runtime.jar', 'verified runtime dependency');
+                    $jar = new ZipArchive; $jar->open($root.'/neoforge-26.1.2.121-server.jar', ZipArchive::CREATE); $jar->addFromString('fixture.class', 'generated server fixture'); $jar->close();
+                    $heartbeat?->__invoke(); return 25;
+                }
+            };
+            $app->instance(\Arcturus\ModpackManager\Runtime\InstallerSandbox::class, $runner);
+            $builder = app(\Arcturus\ModpackManager\Runtime\RuntimeBuild::class);
+            $sourceManifest = app(ReleaseStore::class)->load($managed->target_manifest_path); $prepared = $managed->target_metadata['prepared'];
+            $built = $builder->prepare($managed, $sourceManifest, $prepared['node_operation_id'], $prepared['manifest_sha256']);
+            $again = $builder->prepare($managed, $sourceManifest, $prepared['node_operation_id'], $prepared['manifest_sha256']);
+            check($runner->runs === 1 && $again['node_id'] === $built['node_id'], 'Verified runtime cache was rebuilt');
+            check(isset($built['manifest']['files']['libraries/net/neoforged/neoforge/26.1.2.121/neoforge-26.1.2.121-server.jar']), 'Generated core is absent from the exact target manifest');
+            $managed->update(['target_manifest_path' => app(ReleaseStore::class)->put($built['manifest']), 'prepared_root' => 'native:'.$built['node_id'],
+                'target_metadata' => ['prepared' => [...$prepared, 'node_operation_id' => $built['node_id'], 'manifest_sha256' => $built['manifest_sha256']]]]);
+            unlink($input);
+        }
         $preview = app(PreviewService::class)->generate($managed);
         check($preview['applicable'], $label.' blocked: '.implode('; ', $preview['capability_blockers']).' '.json_encode(array_values(array_filter($preview['changes'], fn ($c) => $c['blocked']))));
         check($managed->local_root === null && $managed->staging_parent === null, 'Native deployment inherited host volume access');
@@ -167,7 +206,7 @@ try {
             Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
             $operation->refresh(); $managed->refresh();
         }
-        if ($scenario === 'success') {
+        if (in_array($scenario, ['success', 'installer_success'], true)) {
             check($operation->phase === 'completed' && $managed->installed_version === '2', $label.' did not complete: '.$operation->error);
             if ($migration) { check(str_contains($managed->pelicanServer->startup, '/26.1.2.121/') && $managed->pelicanServer->image === 'fixture:java_25', 'Runtime startup/image migration was not committed'); }
         } else {
@@ -182,6 +221,7 @@ try {
         echo $label." native transaction passed\n";
     }
 
+    $mode = 'success';
     // Native Schedules bridge: real task handler, no-update restart, and prepared update.
     \App\Models\User::retrieved(function ($user): void {
         $user->setRelation('roles', new \Illuminate\Database\Eloquent\Collection([(new \App\Models\Role)->forceFill(['name' => \App\Models\Role::ROOT_ADMIN])]));

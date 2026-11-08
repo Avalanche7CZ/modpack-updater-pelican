@@ -125,10 +125,30 @@ final class PrepareRelease
         }
         $manifest = $worker->request('manifest', ['operation_id' => $operation->node_operation_id]);
         (new BaselineGuard)->require($manifest, $server->provider, $server->source, $context['version']);
+        $preparedNodeId = $operation->node_operation_id;
+        $preparedDigest = $status['manifest_sha256'];
+        if ($server->transport === 'native' && $operation->kind !== 'baseline') {
+            $pulse = function () use ($operation): void {
+                if ($operation->fresh()->cancel_requested_at) { throw new PreparationException(['code' => 'CANCELLED', 'phase' => 'hashing']); }
+                $operation->update(['heartbeat_at' => now()]);
+            };
+            $operation->update(['progress' => [...($operation->progress ?? []), 'runtime_preparation' => ['state' => 'running', 'message' => 'Checking and preparing the exact loader runtime in private Panel storage']]]);
+            try {
+                $built = app(\Arcturus\ModpackManager\Runtime\RuntimeBuild::class)->prepare($server, $manifest, $preparedNodeId, $preparedDigest, $pulse);
+                $manifest = $built['manifest']; $preparedNodeId = $built['node_id']; $preparedDigest = $built['manifest_sha256'];
+                $operation->update(['progress' => [...$operation->progress, 'runtime_preparation' => ['state' => 'completed', 'message' => isset($manifest['runtime_build']) ? 'Official installer runtime prepared and verified in an isolated workspace' : 'No installer preparation required; deployment qualification still applies']]]);
+            } catch (PreparationException $error) { throw $error; }
+            catch (\Throwable $error) {
+                report($error);
+                $message = get_class($error) === RuntimeException::class ? $error->getMessage() : 'Installer runtime preparation could not be verified; inspect the private Panel log.';
+                $manifest['runtime']['preparation_blocker'] = $message;
+                $operation->update(['progress' => [...$operation->progress, 'runtime_preparation' => ['state' => 'blocked', 'message' => $message]]]);
+            }
+        }
         $path = $this->store->put($manifest);
-        $provenance = ['operation_id' => $operation->id, 'node_operation_id' => $operation->node_operation_id, 'transport' => $server->transport ?? 'wings',
+        $provenance = ['operation_id' => $operation->id, 'node_operation_id' => $preparedNodeId, 'transport' => $server->transport ?? 'wings',
             'provider' => $server->provider, 'project' => $server->source, 'version' => $context['version'],
-            'manifest_sha256' => $status['manifest_sha256'], 'verification' => 'upstream-checksums'];
+            'manifest_sha256' => $preparedDigest, 'verification' => 'upstream-checksums'];
         $this->tracker->transition($operation, 'comparing');
         PreparationProgress::phase($operation, 'comparing', 'inventory_enumeration');
         if ($operation->kind === 'baseline') {
@@ -136,7 +156,7 @@ final class PrepareRelease
                 'baseline_provenance' => $provenance, 'adoption_report' => null, 'comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'approved_plan_sha256' => null]);
             app(AdoptionService::class)->compare($server, $operation);
         } else {
-            $server->update(['target_manifest_path' => $path, 'prepared_root' => (match ($server->transport) { 'native' => 'native:', 'local' => 'local:', default => 'node:' }).$operation->node_operation_id,
+            $server->update(['target_manifest_path' => $path, 'prepared_root' => (match ($server->transport) { 'native' => 'native:', 'local' => 'local:', default => 'node:' }).$preparedNodeId,
                 'target_metadata' => array_replace($server->target_metadata ?? $server->release_metadata ?? [], ['prepared' => $provenance, 'runtime' => $manifest['runtime']]),
                 'preview_summary' => null, 'approved_plan_sha256' => null]);
             app(PreviewService::class)->generate($server, $operation);

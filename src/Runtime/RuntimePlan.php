@@ -5,7 +5,7 @@ namespace Arcturus\ModpackManager\Runtime;
 
 use RuntimeException;
 
-/** Exact runtime commands; installers execute only in the stopped/backed-up server's container. */
+/** Pure command profiles. Native preparation runs installers through InstallerSandbox. */
 final class RuntimePlan
 {
     public const INSTALLER = 'arcturus-runtime-installer.jar';

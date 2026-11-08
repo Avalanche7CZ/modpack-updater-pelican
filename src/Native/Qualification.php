@@ -79,7 +79,7 @@ final class Qualification
         }
         $requested = (new RuntimeInspector)->inspect($runtimePaths, $texts, '', '');
         $requested = array_replace($requested, array_filter($target['runtime'] ?? [], fn ($v) => $v !== null));
-        $runtime = (new Runtime)->plan($pelican, $current, $requested, $target['files'], $stage);
+        $runtime = (new Runtime)->plan($pelican, $current, $requested, $target['files'], $stage, $target['runtime_build'] ?? null);
         $willInstall = array_flip($paths);
         foreach ($runtime['dependency_hashes'] as $path => $hash) {
             if (! isset($willInstall[$path]) && $files->hash($path) !== $hash) { throw new RuntimeException('A required target runtime dependency is protected, absent or locally different: '.$path.'. Resolve its policy before migrating.'); }

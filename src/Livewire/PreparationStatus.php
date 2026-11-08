@@ -70,6 +70,7 @@ final class PreparationStatus extends Component
         $presentation = \Arcturus\ModpackManager\Services\PreparationProgressView::make($report,
             $operation?->phase ?? 'queued', $operation?->completed_at !== null,
             $operation?->cancel_requested_at !== null, time());
+        if (($report['runtime_preparation']['state'] ?? '') === 'blocked') { $presentation['status'] = 'Runtime blocked'; $presentation['color'] = 'warning'; }
         if ($operation?->kind === 'comparison') {
             $presentation['rows'] = array_values(array_filter($presentation['rows'], fn ($row) => $row['key'] === 'comparing'));
         }

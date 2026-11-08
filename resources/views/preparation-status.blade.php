@@ -3,13 +3,16 @@
         @php($terminal = $operation->completed_at !== null)
         <x-filament::section :heading="$operation->kind === 'comparison' ? 'Installation comparison' : ($terminal ? 'Last preparation' : 'Background operation')">
             <div class="flex flex-wrap items-center justify-between gap-3">
-                <x-filament::badge :color="$presentation['color']" :icon="$terminal ? ($operation->phase === 'completed' ? 'heroicon-m-check-circle' : 'heroicon-m-exclamation-circle') : null">
+                <x-filament::badge :color="$presentation['color']" :icon="$terminal ? ($presentation['color'] === 'success' ? 'heroicon-m-check-circle' : 'heroicon-m-exclamation-circle') : null">
                     {{ $presentation['status'] }}
                 </x-filament::badge>
                 <span class="text-sm text-gray-500 dark:text-gray-400">Last report {{ $operation->heartbeat_at?->diffForHumans() ?? 'unavailable' }}</span>
             </div>
             @if(!$terminal && $operation->cancel_requested_at)
                 <p class="mt-3 text-sm">Waiting for the worker to confirm cancellation. Partial staging will be retained.</p>
+            @endif
+            @if($report['runtime_preparation'] ?? null)
+                <p class="mt-3 text-sm">Loader runtime: {{ $report['runtime_preparation']['message'] ?? 'Checking' }}</p>
             @endif
             @if($report['current'] ?? [])
                 <ol class="mt-4" aria-label="Preparation phases">

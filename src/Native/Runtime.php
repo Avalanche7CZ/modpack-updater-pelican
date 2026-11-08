@@ -15,7 +15,7 @@ use RuntimeException;
 /** Published runtime files only. Missing/generated dependencies are an explicit blocker. */
 final class Runtime
 {
-    public function plan(Server $server, array $current, array $target, array $manifest, string $stage): array
+    public function plan(Server $server, array $current, array $target, array $manifest, string $stage, ?array $buildEvidence = null): array
     {
         foreach (['minecraft', 'loader'] as $key) { if (empty($current[$key]) || empty($target[$key])) { throw new RuntimeException('Installed or target '.$key.' is unknown; inspect the active runtime and verified server pack.'); } }
         if (($current['java_confidence'] ?? '') !== 'verified' || ! is_int($current['java'] ?? null)) { throw new RuntimeException('Actual Java is not verified in the current boot log; an image name is only a hint.'); }
@@ -39,7 +39,7 @@ final class Runtime
             if (! preg_match('/^[0-9][A-Za-z0-9_.+-]{0,100}$/D', $version)) { throw new RuntimeException('Target loader coordinate is invalid.'); }
             $coordinate = $target['loader'] === 'forge' ? 'minecraftforge/forge/'.$target['minecraft'].'-'.$version : 'neoforged/neoforge/'.$version;
             $args = 'libraries/net/'.$coordinate.'/unix_args.txt';
-            if (! isset($manifest[$args])) { throw new RuntimeException('The verified server pack does not contain '.$args.'. Loader installer/dependency preparation is not qualified yet; the migration is blocked.'); }
+            if (! isset($manifest[$args])) { throw new RuntimeException($target['preparation_blocker'] ?? 'The target runtime has no verified '.$args.'. Prepare the target again to build its official installer runtime.'); }
             if ((new DirectoryInventory)->hashPaths($stage, [$args]) !== [$args => $manifest[$args]]) { throw new RuntimeException('Target argument file failed integrity verification.'); }
             $text = file_get_contents($stage.'/'.$args);
             if (strlen($text) > 1048576 || str_contains($text, '${') || str_contains($text, '{{') || preg_match('/@[A-Za-z0-9_.\/+-]+/', $text)) { throw new RuntimeException('Target argument file contains unresolved or nested dependencies; runtime migration is blocked.'); }
@@ -49,7 +49,7 @@ final class Runtime
             $dependencies = array_values(array_unique($matches[0]));
             if ($dependencies === []) { throw new RuntimeException('Target runtime argument file declares no verifiable libraries.'); }
             foreach ([$args, ...$dependencies] as $path) {
-                if (! isset($manifest[$path])) { throw new RuntimeException('Target runtime dependency is absent from the verified server pack: '.$path.'. Installer-based migrations remain blocked.'); }
+                if (! isset($manifest[$path])) { throw new RuntimeException($target['preparation_blocker'] ?? 'Target runtime dependency is absent from the verified stage: '.$path.'. Prepare the target again.'); }
                 $proof[$path] = $manifest[$path];
             }
             $actual = (new DirectoryInventory)->hashPaths($stage, array_keys($proof)); $expected = $proof; ksort($expected);
@@ -60,7 +60,14 @@ final class Runtime
             $startup = preg_replace('~@libraries/net/(?:minecraftforge/forge|neoforged/neoforge)/[A-Za-z0-9_.+-]+/unix_args\.txt~', '@'.$args, $startup, -1, $count);
             if ($count !== 1) { throw new RuntimeException('The active launcher has ambiguous runtime argument references.'); }
         }
-        return ['strategy' => $same ? 'verified_installed_runtime_reuse' : 'verified_published_runtime_migration',
+        if ($buildEvidence !== null) {
+            if (($buildEvidence['builder'] ?? '') !== \Arcturus\ModpackManager\Runtime\RuntimeBuild::SCHEMA || ! is_array($buildEvidence['files'] ?? null)) { throw new RuntimeException('Runtime build evidence is invalid.'); }
+            foreach ($buildEvidence['files'] as $path => $hash) {
+                if (! str_starts_with($path, 'libraries/') || ($manifest[$path] ?? null) !== $hash) { throw new RuntimeException('Generated runtime is outside its verified target manifest.'); }
+                $proof[$path] = $hash;
+            }
+        }
+        return ['strategy' => $same ? 'verified_installed_runtime_reuse' : ($buildEvidence ? 'verified_installer_runtime_migration' : 'verified_published_runtime_migration'),
             'target' => [...$target, 'java' => $java, 'runtime_prepared' => true], 'startup' => $startup, 'image' => $image, 'dependency_hashes' => $proof];
     }
 

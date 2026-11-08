@@ -38,6 +38,14 @@ final class PreviewService
             $target['version'] !== $server->targetVersion()) {
             throw new RuntimeException('Upstream manifest identity or version mismatch');
         }
+        if ($server->transport === 'native' && ($base['runtime_build']['builder'] ?? '') === \Arcturus\ModpackManager\Runtime\RuntimeBuild::SCHEMA) {
+            // Official installers add runtimes; obsolete generated libraries are harmless local
+            // extras. Do not turn them into automatic removals or repeated review requirements.
+            // Explicit exact remove/disable rules still enter ManifestComparison independently.
+            foreach ($base['runtime_build']['files'] ?? [] as $path => $hash) {
+                if (str_starts_with($path, 'libraries/') && ! isset($target['files'][$path])) { unset($base['files'][$path]); }
+            }
+        }
         $rules = $server->file_rules ?? [];
         $safetyRoots = array_merge($server->runtime_report['protected_roots'] ?? [], (new DirectoryPolicy)->protectedRoots($server, $base, $target));
         $metadata = [];

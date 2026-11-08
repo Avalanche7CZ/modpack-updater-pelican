@@ -144,6 +144,10 @@ check(str_contains($xpath->query('//li[@data-phase="hashing"]')->item(0)->textCo
 check(str_contains($xpath->query('//li[@data-phase="extracting"]')->item(0)->textContent, 'Completed'), 'Earlier successful extraction lost completion status');
 check(! str_contains($html, '/private') && ! str_contains($html, 'token=secret'), 'Technical details exposed unsafe diagnostic data');
 check($beforeRender === $progressOperation->fresh()->getRawOriginal(), 'Presentation changed persisted operation state');
+// Verified pack files do not imply an unavailable loader runtime is ready.
+$progressOperation->update(['phase' => 'completed', 'completed_at' => now(), 'progress' => ['runtime_preparation' => ['state' => 'blocked', 'message' => 'No trusted Java 25 runtime is available']]]);
+$child->call('$refresh');
+check(str_contains($child->html(), 'Runtime blocked') && str_contains($child->html(), 'No trusted Java 25'), 'Completed pack hashes hid the runtime blocker');
 // Known active totals have a measured phase percentage; terminal states have status badges only.
 foreach (['hashing' => null, 'completed' => now(), 'cancelled' => now(), 'interrupted' => now()] as $state => $completedAt) {
     $progressOperation->update(['phase' => $state, 'completed_at' => $completedAt, 'progress' => [
