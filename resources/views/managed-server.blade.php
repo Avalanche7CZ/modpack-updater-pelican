@@ -86,9 +86,29 @@
                     </dl>
                 </x-filament::section>
             @elseif($this->tab === 'updates')
-                <x-filament::section heading="Update preview">
-                    <p class="font-medium break-all">{{ $preview['from'] ?? $record->installed_version }} → {{ $preview['to'] ?? $record->targetVersion() ?? 'Select a release' }}</p>
-                    @if($preview)
+                <x-filament::section heading="Update modpack">
+                    <ol class="mb-4 flex flex-wrap gap-3 text-sm" aria-label="Update steps">
+                        <li>1. Select release</li><li>2. Prepare and review</li><li>3. Update with backup</li>
+                    </ol>
+                    <p class="font-medium break-all">{{ $record->installed_version }} → {{ $record->targetVersion() ?? 'Select a release' }}</p>
+                    @if($record->active_operation_id)
+                        <p class="mt-3 text-sm">An operation is running. Its progress appears above; wait for the result before continuing.</p>
+                    @elseif($record->baseline_status !== 'verified')
+                        <p class="mt-3 text-sm">First prepare the installed release in Overview to establish which files belong to the modpack.</p>
+                    @elseif(!$record->targetVersion() || $record->targetVersion() === $record->installed_version)
+                        <p class="mt-3 text-sm">Check releases, then select the version you want to install.</p>
+                    @elseif(!$record->target_manifest_path)
+                        <p class="mt-3 text-sm">Choose Prepare update. Download, verification and comparison run together in the background.</p>
+                    @elseif(!$preview || ($preview['policy_revision'] ?? -1) !== $record->policy_revision || ($preview['to'] ?? null) !== $record->targetVersion())
+                        <p class="mt-3 text-sm">The comparison needs refreshing. Open File Changes and choose Refresh comparison; the prepared pack is reused.</p>
+                    @elseif($preview['blocked'] ?? 0)
+                        <p class="mt-3 text-sm">Review the conflicts in File Changes before updating.</p>
+                        <x-filament::button class="mt-3" color="warning" wire:click="selectTab('changes')">Review file changes</x-filament::button>
+                    @else
+                        <p class="mt-3 text-sm">Review the changes below, then update with a Pelican backup. Runtime checks and exact-plan approval still apply.</p>
+                        <x-filament::button class="mt-3" color="gray" wire:click="selectTab('changes')">View file changes</x-filament::button>
+                    @endif
+                    @if($preview && ($preview['to'] ?? null) === $record->targetVersion() && ($preview['policy_revision'] ?? -1) === $record->policy_revision)
                         <dl class="mt-4 grid gap-3 sm:grid-cols-3">
                             @foreach(['add' => 'Added', 'update' => 'Updated', 'upgrade_mod' => 'Mod upgrades', 'remove' => 'Removed', 'preserve_local_change' => 'Local changes kept', 'skip_disabled' => 'Disabled mods kept', 'conflict' => 'Conflicts'] as $action => $label)
                                 <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd>{{ $preview['counts'][$action] ?? 0 }}</dd></div>
@@ -103,8 +123,8 @@
                             <li class="break-words">{{ $reason }}</li>
                         @endforeach
                     </ul>
-                    @if(!$this->canApplyUpdate() && !$record->active_operation_id)<p class="mt-2 text-sm">Resolve the listed blockers and Compare files again. Qualified readiness expires after 15 minutes; each manual deployment needs a new exact-plan approval.</p>@endif
-                    <x-filament::button color="danger" wire:click="mountAction('applyUpdate')" :disabled="!$this->canApplyUpdate()" class="mt-4">Apply Update{{ $this->canApplyUpdate() ? '' : ' — blocked' }}</x-filament::button>
+                    @if(!$this->canApplyUpdate() && !$record->active_operation_id)<p class="mt-2 text-sm">Review the listed requirements. Refresh comparison in File Changes if the prepared plan has expired. Qualified readiness expires after 15 minutes; each manual deployment needs a new exact-plan approval.</p>@endif
+                    <x-filament::button color="danger" wire:click="mountAction('applyUpdate')" :disabled="!$this->canApplyUpdate()" class="mt-4">Update with backup</x-filament::button>
                 </x-filament::section>
                 <x-filament::section heading="Release notes">
                     <div class="whitespace-pre-wrap break-words text-sm">{{ $target['notes'] ?? 'No release notes available.' }}</div>
@@ -132,7 +152,7 @@
                         x-on:file-decision-result.window="feedback = $event.detail.message; failed = !$event.detail.success; if ($event.detail.success) comparisonPending = true">
                     <p x-cloak x-show="feedback" x-text="feedback" role="status" aria-live="polite" class="mb-3 break-words text-sm"></p>
                     <p wire:loading wire:target="resolve" role="status" class="mb-3 text-sm">Saving decision…</p>
-                    @if($preview && ($preview['comparison_schema'] ?? null) !== \Arcturus\ModpackManager\Services\ManifestComparison::SCHEMA)<p class="mb-3 text-sm">This comparison uses the previous update engine. Use Compare files to rebuild the manifest delta before applying an update.</p>@endif
+                    @if($preview && ($preview['comparison_schema'] ?? null) !== \Arcturus\ModpackManager\Services\ManifestComparison::SCHEMA)<p class="mb-3 text-sm">This comparison uses the previous update engine. Use Refresh comparison to rebuild the manifest delta before applying an update.</p>@endif
                     <p class="mb-3 text-sm">KubeJS follows upstream when the local file matches the verified baseline. Local-only scripts and protected files stay local. Conflicts require Keep local or Use upstream; scripts, recipes and datapacks are never merged.</p>
                     @if(($preview['policy_revision'] ?? $record->policy_revision) !== $record->policy_revision)
                         <p class="mb-3 text-sm">Decisions saved. Showing previous comparison while a fresh comparison is required. No live files changed.</p>
@@ -193,7 +213,7 @@
                                             @else — @endif
                                         </td>
                                     </tr>
-                                @empty <tr><td colspan="4" class="p-3">{{ $preview || $record->adoption_report ? 'No matching changed files.' : 'Prepare the baseline or target, then compare files.' }}</td></tr>
+                                @empty <tr><td colspan="4" class="p-3">{{ $preview || $record->adoption_report ? 'No matching changed files.' : 'Prepare the baseline or target, then review the prepared changes.' }}</td></tr>
                                 @endforelse
                             </tbody>
                         </table>

@@ -64,7 +64,7 @@ foreach (['overview', 'updates', 'changes', 'mods', 'protection', 'backups', 'hi
     if ($tab === 'updates') {
         $dom = new DOMDocument;
         @$dom->loadHTML('<meta charset="utf-8">'.$html);
-        check((new DOMXPath($dom))->query('//button[contains(., "Apply Update") and @disabled]')->length === 1,
+        check((new DOMXPath($dom))->query('//button[contains(., "Update with backup") and @disabled]')->length === 1,
             'Destructive update control was not disabled');
     }
     if ($snapshotDir) {

@@ -4,6 +4,10 @@
 
 Install the plugin update including `node-worker/worker.py` and the new migration through Pelican's normal plugin update/migration flow, then restart Panel queue workers. Remote workers must be updated too: `scoped_inventory=1` is required. There is no fallback to the old broad scan if a worker is outdated. Run Compare files again: old plans/approvals cannot pass the new `manifest-delta-v1` deployment gate. Existing adopted servers and rules are retained. No automation is enabled by the migration.
 
+## Manual update
+
+Open Updates, check releases and select the target. **Prepare update** downloads, verifies and compares in one background operation. Review the resulting counts and any conflicts in File Changes, then choose **Update with backup**. **Refresh comparison** in File Changes reuses the prepared target when policies change or readiness expires. Filesystem setup and baseline recovery actions stay in Overview.
+
 ## Comparison
 
 The plugin reads the saved installed-release manifest and the target manifest first. It selects paths added, changed or removed upstream, plus explicit remove/disable/replace rules requiring enforcement. The worker checks only those paths and their ancestors, without recursively enumerating live directories or opening unrelated JARs. Missing paths are explicitly accounted for. World data, runtime data, excluded directories, inaccessible paths and symlinks are protected. An update involving three candidate paths does not scan another 22,000 unchanged files.

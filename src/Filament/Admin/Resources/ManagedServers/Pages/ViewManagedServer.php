@@ -116,7 +116,7 @@ final class ViewManagedServer extends ViewRecord
                         Notification::make()->title('Recovery verification was not queued')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Check the current recovery checkpoint and database/queue connectivity.')->danger()->send();
                     }
                 }),
-            Action::make('filesystemBackend')->label('Filesystem backend')->button()->color('gray')
+            Action::make('filesystemBackend')->label('Filesystem backend')->button()->color('gray')->visible(fn () => $this->tab === 'overview')
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->fillForm(fn () => ['transport' => $this->getRecord()->transport ?? 'wings'])
                 ->schema([Select::make('transport')->label('Preparation and inventory backend')->required()->options([
@@ -132,7 +132,7 @@ final class ViewManagedServer extends ViewRecord
                         Notification::make()->title('Filesystem backend unavailable')->body($error->getMessage())->danger()->send();
                     }
                 }),
-            Action::make('testFilesystem')->label('Test filesystem access')->button()->color('gray')
+            Action::make('testFilesystem')->label('Test filesystem access')->button()->color('gray')->visible(fn () => $this->tab === 'overview')
                 ->action(function (): void {
                     Access::requireAdmin();
                     try {
@@ -144,7 +144,7 @@ final class ViewManagedServer extends ViewRecord
                     }
                 }),
             Action::make('directoryDecisions')->label('Review upstream directories')->button()->color('gray')
-                ->visible(fn () => (bool) $this->getRecord()->base_manifest_path)
+                ->visible(fn () => $this->tab === 'overview' && (bool) $this->getRecord()->base_manifest_path)
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->modalDescription('Verified upstream structure. Standard folders default to Manage. Unfamiliar folders require a decision. Keep local and Exclude prevent inventory reads and updates. Protected runtime paths cannot be managed. Saving invalidates previous approval; compare again without downloading.')
                 ->fillForm(fn () => ['directories' => (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->rows($this->getRecord()), 'revision' => $this->getRecord()->policy_revision, 'request_id' => (string) \Illuminate\Support\Str::uuid()])
@@ -246,7 +246,7 @@ final class ViewManagedServer extends ViewRecord
                     $this->queuePreparation(true);
                 }),
             Action::make('retryComparison')->label('Retry installation comparison')->button()->icon('heroicon-o-arrow-path')
-                ->visible(fn () => $this->getRecord()->baseline_status === 'verified' && (bool) $this->getRecord()->base_manifest_path)
+                ->visible(fn () => $this->tab === 'overview' && $this->getRecord()->baseline_status === 'verified' && $this->getRecord()->comparison_status !== 'complete' && (bool) $this->getRecord()->base_manifest_path)
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->fillForm(fn () => ['request_id' => (string) \Illuminate\Support\Str::uuid()])->schema([Hidden::make('request_id')])
                 ->modalDescription('Reuse the verified upstream manifest with current directory decisions and protection rules. No download, extraction, staged hashing or live file changes.')
@@ -292,13 +292,14 @@ final class ViewManagedServer extends ViewRecord
                 });
                 $this->queued('Target release selected');
             }),
-            Action::make('prepare')->button()->icon('heroicon-o-arrow-down-tray')->label('Prepare target')->visible(fn () => $this->tab === 'updates')->requiresConfirmation()
+            Action::make('prepare')->button()->icon('heroicon-o-arrow-down-tray')->label('Prepare update')->modalDescription('Download and verify the selected server pack, then compare its changes with your installation. Preparation does not stop Minecraft or apply changes.')->visible(fn () => $this->tab === 'updates')->requiresConfirmation()
                 ->disabled(fn () => ! $this->getRecord()->targetVersion() || (bool) $this->getRecord()->active_operation_id)
                 ->action(function (): void {
                     Access::requireAdmin();
                     $this->queuePreparation(false);
                 }),
-            Action::make('preview')->button()->icon('heroicon-o-document-magnifying-glass')->label('Compare files')->color('gray')->visible(fn () => in_array($this->tab, ['updates', 'changes'], true))
+            Action::make('preview')->button()->icon('heroicon-o-document-magnifying-glass')->label('Refresh comparison')->color('gray')->visible(fn () => $this->tab === 'changes' && (bool) $this->getRecord()->target_manifest_path)
+                ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->fillForm(fn () => ['request_id' => (string) \Illuminate\Support\Str::uuid()])->schema([Hidden::make('request_id')])
                 ->action(function (array $data): void {
                 Access::requireAdmin();
@@ -428,7 +429,7 @@ final class ViewManagedServer extends ViewRecord
 
     public function applyUpdateAction(): Action
     {
-        return Action::make('applyUpdate')->label('Apply Update')->button()->color('danger')
+        return Action::make('applyUpdate')->label('Update with backup')->button()->color('danger')
             ->visible(fn () => $this->tab === 'updates')->disabled(fn () => ! $this->canApplyUpdate())
             ->fillForm(fn () => ['digest' => $this->getRecord()->preview_summary['plan_sha256'] ?? '', 'request_id' => (string) \Illuminate\Support\Str::uuid()])
             ->schema([Hidden::make('digest'), Hidden::make('request_id'),
