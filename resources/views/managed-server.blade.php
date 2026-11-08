@@ -13,7 +13,9 @@
         </x-filament::tabs>
         <div class="mt-4 space-y-4">
             @livewire(\Arcturus\ModpackManager\Livewire\DeploymentStatus::class, ['managedServerId' => $record->id], key('deployment-status-'.$record->id))
-            @livewire(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id], key('preparation-status-'.$record->id))
+            @if(in_array($this->tab, ['overview', 'updates', 'changes'], true) || $record->active_operation_id)
+                @livewire(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id, 'purpose' => $this->tab === 'updates' ? 'target' : 'all'], key('preparation-status-'.$record->id.'-'.$this->tab))
+            @endif
             @if($record->active_operation_id && $record->operations()->whereKey($record->active_operation_id)->whereIn('kind', ['baseline', 'prepare', 'comparison'])->exists())
                 <div class="flex flex-wrap gap-2">
                     <x-filament::button color="gray" wire:click="resumePreparation">Reconcile preparation</x-filament::button>
@@ -52,8 +54,13 @@
             @endif
             @if($this->tab === 'overview')
                 <x-filament::section heading="Existing installation">
-                    <p class="mb-3 text-sm">Preparation / inventory backend: {{ $record->transport === 'local' ? 'Same-host local filesystem' : 'Remote node worker' }}.
-                        <a class="text-primary-600 underline" href="https://github.com/Avalanche7CZ/modpack-updater-pelican/blob/main/docs/local-filesystem.md" target="_blank" rel="noopener noreferrer">Same-host setup instructions</a>. Complete Local filesystem setup once, then use Filesystem backend or the default on adoption.</p>
+                    <p class="mb-3 text-sm">Update backend: {{ match ($record->transport) { 'native' => 'Native Pelican / Wings', 'local' => 'Legacy same-host filesystem', default => 'Legacy remote node worker' } }}.
+                        @if($record->transport === 'native')
+                            Uses the existing Wings connection; no host volume permission setup is required.
+                        @else
+                            <a class="text-primary-600 underline" href="https://github.com/Avalanche7CZ/modpack-updater-pelican/blob/main/docs/native-deployment.md" target="_blank" rel="noopener noreferrer">Switch to Native Pelican / Wings</a> to avoid legacy host setup.
+                        @endif
+                    </p>
                     <dl class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         @foreach(['label' => 'Server', 'provider' => 'Provider', 'source' => 'Project', 'installed_version' => 'Installed release', 'available_version' => 'Available release', 'baseline_status' => 'Upstream baseline'] as $field => $label)
                             <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd class="break-all">{{ $record->$field ?? 'Unavailable' }}</dd></div>
@@ -288,8 +295,12 @@
                 </x-filament::section>
             @elseif($this->tab === 'backups')
                 <x-filament::section heading="Backup and recovery">
-                    <dl class="space-y-3"><div><dt>Backend</dt><dd>{{ $record->backup_mode }}</dd></div><div><dt>Exact pre-update backup UUID</dt><dd class="break-all">{{ $record->last_backup_uuid ?? 'No update backup recorded' }}</dd></div><div><dt>Excluded directories</dt><dd>{{ implode(', ', $record->backup_excluded_directories ?? []) ?: 'None' }}</dd></div></dl>
-                    <p class="mt-4 text-sm">Locked pre-update backups are retained. Truncating remote restores with excluded folders are blocked until outside-volume preservation is available. Do not restore with truncation without first protecting excluded data.</p>
+                    <dl class="space-y-3"><div><dt>Backend</dt><dd>{{ $record->backup_mode }}</dd></div><div><dt>Exact pre-update backup UUID</dt><dd class="break-all">{{ $record->last_backup_uuid ?? 'A locked backup will be created when deployment starts' }}</dd></div><div><dt>Excluded directories</dt><dd>{{ implode(', ', $record->backup_excluded_directories ?? []) ?: 'None' }}</dd></div></dl>
+                    @if($record->transport === 'native')
+                        <p class="mt-4 text-sm">Recovery preserves excluded backup directories and the supported launcher link, verifies that the remaining root entries were cleared, then restores the exact locked backup without truncation. Unverified recovery keeps Minecraft stopped.</p>
+                    @else
+                        <p class="mt-4 text-sm">Locked pre-update backups are retained. Legacy restore requires its qualified exclusion-preservation procedure. Do not use a truncating restore without protecting excluded data.</p>
+                    @endif
                 </x-filament::section>
             @elseif($this->tab === 'history')
                 <x-filament::section heading="Recent job timeline">

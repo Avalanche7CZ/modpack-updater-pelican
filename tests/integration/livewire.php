@@ -170,6 +170,16 @@ $statusComponent->mount($record->id);
 $export = $statusComponent->exportDiagnostics();
 check(str_contains($export, $diagnosticOperation->id) && str_contains($export, '504') &&
     ! str_contains($export, 'never-export-this') && ! str_contains($export, 'private.example'), 'Diagnostic export exposed private recipe or lost correlation/status');
+// A completed adoption comparison must not masquerade as a ready target update.
+$diagnosticOperation->update(['kind' => 'comparison', 'phase' => 'completed', 'completed_at' => now()]);
+$record->events()->create(['kind' => 'comparison', 'status' => 'completed', 'message' => 'Historical installation comparison', 'details' => ['operation_id' => $diagnosticOperation->id]]);
+$record->update(['active_operation_id' => null, 'target_manifest_path' => null, 'transport' => 'native']);
+$targetChild = Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id, 'purpose' => 'target']);
+check(! str_contains($targetChild->html(), 'Installation comparison'), 'Old adoption comparison was shown as target readiness');
+$test->call('selectTab', 'overview');
+check(str_contains($test->html(), 'Update backend: Native Pelican / Wings') && ! str_contains($test->html(), 'Complete Local filesystem setup once'), 'Native overview still requires legacy host setup');
+$test->call('selectTab', 'backups');
+check(! str_contains($test->html(), 'Installation comparison') && ! str_contains($test->html(), 'outside-volume preservation is available') && str_contains($test->html(), 'without truncation'), 'Native recovery screen retained obsolete or unrelated status');
 Auth::guard()->forgetUser();
 rejects(fn () => Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]), 'Guest mounted the managed-server review page');
 echo "All native Livewire detail tabs rendered; destructive control and guest access guards passed\n";

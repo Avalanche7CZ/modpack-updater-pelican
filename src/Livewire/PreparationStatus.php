@@ -16,17 +16,22 @@ final class PreparationStatus extends Component
     #[Locked]
     public int $managedServerId;
 
-    public function mount(int $managedServerId): void
+    #[Locked]
+    public string $purpose = 'all';
+
+    public function mount(int $managedServerId, string $purpose = 'all'): void
     {
         Access::requireAdmin();
+        abort_unless(in_array($purpose, ['all', 'target'], true), 422);
         $this->managedServerId = $managedServerId;
+        $this->purpose = $purpose;
     }
 
     #[\Livewire\Attributes\Renderless]
     public function exportDiagnostics(): string
     {
         Access::requireAdmin();
-        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id']);
+        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id', 'target_manifest_path']);
         $event = $server->events()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->latest('id')->first(['details']);
         $id = $server->active_operation_id ?: ($event?->details['operation_id'] ?? null);
         $operation = $id ? $server->operations()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->find($id) : null;
@@ -44,10 +49,17 @@ final class PreparationStatus extends Component
     public function render()
     {
         Access::requireAdmin();
-        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id']);
+        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id', 'target_manifest_path']);
         $event = $server->events()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->latest('id')->first(['details', 'status']);
         $id = $server->active_operation_id ?: ($event?->details['operation_id'] ?? null);
         $operation = $id ? $server->operations()->find($id, ['id', 'kind', 'phase', 'node_operation_id', 'heartbeat_at', 'completed_at', 'cancel_requested_at', 'progress']) : null;
+        // A historical baseline/adoption comparison is not readiness of a new target.
+        // Keep failures visible, but never label a discarded/missing target stage Completed.
+        if ($this->purpose === 'target' && ! $server->active_operation_id &&
+            ($operation?->kind === 'baseline' || ($operation?->phase === 'completed' && ! $server->target_manifest_path))) {
+            $operation = null;
+            $event = null;
+        }
         $report = $operation?->progress ?? [];
         $detail = $report['diagnostic'] ?? ($event?->details['diagnostic'] ?? null);
         $diagnostic = $detail ? PreparationDiagnostic::normalize($detail) : null;
