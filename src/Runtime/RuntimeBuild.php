@@ -37,7 +37,8 @@ final class RuntimeBuild
         if ($same) { return ['manifest' => $manifest, 'node_id' => $nodeId, 'manifest_sha256' => $manifestDigest]; }
         $coordinate = $target['loader'] === 'forge' ? 'minecraftforge/forge/'.$target['minecraft'].'-'.$target['loader_version'] : 'neoforged/neoforge/'.$target['loader_version'];
         $args = 'libraries/net/'.$coordinate.'/unix_args.txt';
-        if (isset($manifest['files'][$args])) {
+        $core = 'libraries/net/'.$coordinate.'/'.($target['loader'] === 'forge' ? 'forge-'.$target['minecraft'].'-'.$target['loader_version'] : 'neoforge-'.$target['loader_version']).'-server.jar';
+        if (isset($manifest['files'][$args], $manifest['files'][$core])) {
             preg_match_all('~libraries/[A-Za-z0-9_./+-]+\.jar~', $texts[$args] ?? '', $matches);
             if ($matches[0] && ! array_diff($matches[0], array_keys($manifest['files']))) { return ['manifest' => $manifest, 'node_id' => $nodeId, 'manifest_sha256' => $manifestDigest]; }
         }

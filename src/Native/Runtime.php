@@ -48,7 +48,9 @@ final class Runtime
             preg_match_all('~libraries/[A-Za-z0-9_./+-]+\.jar~', $text, $matches);
             $dependencies = array_values(array_unique($matches[0]));
             if ($dependencies === []) { throw new RuntimeException('Target runtime argument file declares no verifiable libraries.'); }
-            foreach ([$args, ...$dependencies] as $path) {
+            // Bootstrap classpaths do not necessarily name the patched server JAR.
+            $core = 'libraries/net/'.$coordinate.'/'.($target['loader'] === 'forge' ? 'forge-'.$target['minecraft'].'-'.$version : 'neoforge-'.$version).'-server.jar';
+            foreach ([$args, $core, ...$dependencies] as $path) {
                 if (! isset($manifest[$path])) { throw new RuntimeException($target['preparation_blocker'] ?? 'Target runtime dependency is absent from the verified stage: '.$path.'. Prepare the target again.'); }
                 $proof[$path] = $manifest[$path];
             }

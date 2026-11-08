@@ -37,7 +37,7 @@ $make = function (bool $migration, bool $installer = false) use (&$systems, &$st
     $newArgs = 'libraries/net/neoforged/neoforge/26.1.2.121/unix_args.txt';
     $base = ['config/options.cfg' => 'old', 'kubejs/server_scripts/upstream.js' => 'old script', $oldArgs => $args('1.21.1', '21.1.1'), 'libraries/fixture/runtime.jar' => 'verified runtime dependency'];
     $target = [...$base, 'config/options.cfg' => 'new', 'kubejs/server_scripts/upstream.js' => 'new script', 'config/added.cfg' => 'new added file'];
-    if ($migration) { unset($target[$oldArgs]); if (! $installer) { $target[$newArgs] = $args('26.1.2', '26.1.2.121'); } }
+    if ($migration) { unset($target[$oldArgs]); if (! $installer) { $target[$newArgs] = $args('26.1.2', '26.1.2.121'); $target['libraries/net/neoforged/neoforge/26.1.2.121/neoforge-26.1.2.121-server.jar'] = 'published patched server fixture'; } }
     $runtime = ['minecraft' => $migration ? '26.1.2' : '1.21.1', 'loader' => 'neoforge', 'loader_version' => $migration ? '26.1.2.121' : '21.1.1'];
     $manifest = fn ($version, $files, $runtime) => ['schema' => 2, 'provider' => 'custom', 'project' => 'native-fixture', 'version' => $version, 'verification' => 'upstream-checksums',
         'files' => array_map($hash, $files), 'runtime' => $runtime, 'artifacts' => [['sha256' => $hash($version), 'hashes' => ['sha256' => $hash($version)]]]];
@@ -149,7 +149,7 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
     return Http::response(['state' => $sys['state'], 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => 60000]], 200, $headers);
 });
 try {
-    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'], ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'], ['disabled destination collision', false, 'disable_collision']] as [$label, $migration, $scenario]) {
+    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'], ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'], ['disabled destination collision', false, 'disable_collision'], ['missing implicit runtime dependency', true, 'missing_core']] as [$label, $migration, $scenario]) {
         $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_')); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
         if (str_starts_with($scenario, 'disable_')) {
             $managed->update(['file_rules' => [...$managed->file_rules, ['scope' => 'exact', 'pattern' => 'mods/local-disable.jar', 'mode' => 'disable', 'priority' => 100, 'enabled' => true]]]);
@@ -197,7 +197,17 @@ try {
                 'target_metadata' => ['prepared' => [...$prepared, 'node_operation_id' => $built['node_id'], 'manifest_sha256' => $built['manifest_sha256']]]]);
             unlink($input);
         }
+        if ($scenario === 'missing_core') {
+            $incomplete = app(ReleaseStore::class)->load($managed->target_manifest_path);
+            unset($incomplete['files']['libraries/net/neoforged/neoforge/26.1.2.121/neoforge-26.1.2.121-server.jar']);
+            $managed->update(['target_manifest_path' => app(ReleaseStore::class)->put($incomplete)]);
+        }
         $preview = app(PreviewService::class)->generate($managed);
+        if ($scenario === 'missing_core') {
+            check(! $preview['applicable'] && str_contains(implode('; ', $preview['capability_blockers']), 'neoforge-26.1.2.121-server.jar'), 'Incomplete runtime with an implicit missing core was approved');
+            check($systems[$uuid]['data'] === $originalData && ! isset($snapshots[$uuid]), 'Incomplete runtime changed live files or created a backup');
+            echo $label." native qualification passed\n"; continue;
+        }
         if ($scenario === 'disable_collision') {
             check(! $preview['applicable'] && str_contains(implode('; ', $preview['capability_blockers']), 'Disabled mod destination already exists'), 'Occupied disabled destination did not block qualification');
             check($systems[$uuid]['data'] === $originalData && ! isset($snapshots[$uuid]), 'Collision changed files or created an update backup');
