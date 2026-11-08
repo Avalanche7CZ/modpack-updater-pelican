@@ -16,7 +16,7 @@ use Livewire\Attributes\Locked;
 final class LocalFilesystem extends Page
 {
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-folder-open';
-    protected static ?string $title = 'Local filesystem setup';
+    protected static ?string $title = 'Legacy local filesystem';
     protected static ?string $slug = 'arcturus-local-filesystem';
     protected static ?int $navigationSort = 3;
     protected string $view = 'arcturus-modpack-manager::local-filesystem';

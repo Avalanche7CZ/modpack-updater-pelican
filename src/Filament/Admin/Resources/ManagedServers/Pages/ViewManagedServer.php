@@ -132,11 +132,11 @@ final class ViewManagedServer extends ViewRecord
                         Notification::make()->title('Filesystem backend unavailable')->body($error->getMessage())->danger()->send();
                     }
                 }),
-            Action::make('deploymentAccess')->label('Set up update access')->button()->color('gray')
+            Action::make('deploymentAccess')->label('Legacy update access')->button()->color('gray')
                 ->visible(fn () => $this->tab === 'updates' && $this->getRecord()->transport === 'local')
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
-                ->modalHeading('One-time host permission setup')
-                ->modalDescription('Run this on the Wings host as an administrator. Only this UUID and reviewed managed directories receive update access; worlds and player data are excluded. No file hashes or ownership changes. PHP runs as www-data.')
+                ->modalHeading('Legacy host permission setup')
+                ->modalDescription('Native Pelican / Wings avoids this setup; switch backend in Overview. For the legacy local backend only, run this on the Wings host as an administrator. Only this UUID and reviewed managed directories receive update access; worlds and player data are excluded. No file hashes or ownership changes. PHP runs as www-data.')
                 ->fillForm(function (): array {
                     $server = $this->getRecord()->pelicanServer;
                     $node = $server->node;

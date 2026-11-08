@@ -64,7 +64,7 @@ final class Preparation implements IntegrityWorker
             'payload' => [...$payload, 'directory_scope' => (new DirectoryPolicy)->scope($this->server)]],
             in_array($operation, ['prepare', 'resolve'], true) ? LocalWorker::TIMEOUT : 120,
             $operation === 'cancel' ? null : $this->heartbeat, $operation === 'cancel' ? null : $this->progress);
-        if ($operation === 'capabilities') { $data = [...$data, 'backend' => 'native', 'scoped_inventory' => 1, 'deploy' => false]; }
+        if ($operation === 'capabilities') { $data = [...$data, 'backend' => 'native', 'scoped_inventory' => 1, 'deploy' => true, 'preserve_exclusions' => true, 'native_deployment_protocol' => Qualification::PROTOCOL, 'reason' => 'Native deployment requires an exact approved plan, a supported runtime and a completed locked Wings backup']; }
         return $data;
     }
 
