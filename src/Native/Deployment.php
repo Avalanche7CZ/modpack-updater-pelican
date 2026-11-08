@@ -11,7 +11,6 @@ use Arcturus\ModpackManager\Models\Operation;
 use Arcturus\ModpackManager\Services\BackupExclusions;
 use Arcturus\ModpackManager\Services\DeploymentGate;
 use Arcturus\ModpackManager\Services\DiscordNotifier;
-use Arcturus\ModpackManager\Services\ModUpgradePlanner;
 use Arcturus\ModpackManager\Services\OperationTracker;
 use Arcturus\ModpackManager\Services\PelicanBackupManager;
 use Arcturus\ModpackManager\Services\PelicanPowerController;
@@ -75,15 +74,10 @@ final class Deployment
             $original = $operation->context['panel_snapshot'];
             $expected = [...$original, 'startup' => $runtime['startup'], 'image' => $runtime['image']];
             app(Runtime::class)->requireSnapshot($server, $original);
-            $after = [];
-            foreach (ModUpgradePlanner::mutations($preview['changes']) as $change) {
-                if (! in_array($change['action'], ['add', 'update', 'replace_with_override', 'remove', 'remove_with_override'], true)) { continue; }
-                $path = $change['path']; $before[$path] = $change['local_sha256'];
-                $after[$path] = in_array($change['action'], ['remove', 'remove_with_override'], true) ? null : $change['target_sha256'];
-            }
-            ksort($before); ksort($after);
+            $scope = Transaction::scope($preview['changes']);
+            $before = $scope['before']; $after = $scope['after']; $moves = $scope['moves'];
             $excluded = BackupExclusions::normalize($managed->backup_excluded_directories ?? BackupExclusions::DEFAULT_FOLDERS);
-            $phase('stopping', 'Stopping Minecraft and confirming the native Wings maintenance guard', ['native_before' => $before, 'native_after' => $after,
+            $phase('stopping', 'Stopping Minecraft and confirming the native Wings maintenance guard', ['native_before' => $before, 'native_after' => $after, 'native_disabled_mod_moves' => $moves,
                 'native_world_properties_sha256' => $preview['qualification']['properties_sha256'], 'runtime_original' => $original, 'runtime_expected' => $expected, 'native_original_runtime' => $preview['qualification']['current'], 'excluded_directories' => $excluded]);
             $stopped = true;
             $power->guardAndStop($server, $heartbeat);
@@ -102,7 +96,7 @@ final class Deployment
             app(Runtime::class)->requireSnapshot($server, $original);
             $phase('applying', 'Transferring and verifying approved candidate files through Wings', ['backup_complete' => true, 'native_writes_started' => true]);
             $changed = true;
-            $transaction->apply($operation->id, $stage, $before, $after, $preview['policy_context']['safety_roots'] ?? [], $checkpoint);
+            $transaction->apply($operation->id, $stage, $before, $after, $preview['policy_context']['safety_roots'] ?? [], $checkpoint, $moves);
             $transaction->verify($runtime['dependency_hashes']);
             app(Runtime::class)->installSettings($server, $original, $runtime);
             app(Runtime::class)->syncAndRequire($server, $expected);

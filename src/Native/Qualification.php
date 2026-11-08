@@ -8,7 +8,6 @@ use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Services\BackupExclusions;
 use Arcturus\ModpackManager\Services\DirectoryInventory;
 use Arcturus\ModpackManager\Services\ManifestComparison;
-use Arcturus\ModpackManager\Services\ModUpgradePlanner;
 use Arcturus\ModpackManager\Services\PelicanBackupManager;
 use Arcturus\ModpackManager\Services\RuntimeInspector;
 use Arcturus\ModpackManager\Services\SameHostDeployment;
@@ -49,8 +48,9 @@ final class Qualification
         if (in_array('server.properties', $paths, true) && \Arcturus\ModpackManager\Services\SafetyPaths::roots(file_get_contents($stage.'/server.properties')) !== \Arcturus\ModpackManager\Services\SafetyPaths::roots($properties)) {
             throw new RuntimeException('Changing the world directory through a modpack update is not supported. Keep local server.properties and review the world migration separately.');
         }
-        foreach (ModUpgradePlanner::mutations($plan['changes']) as $change) {
-            if (($change['action'] ?? '') === 'disable_requires_enforcement') { throw new RuntimeException('This plan needs an active mod renamed to .disabled. Disable that mod through Pelican Files first, then compare again; native policy enforcement is not qualified yet.'); }
+        $scope = Transaction::scope($plan['changes']);
+        foreach ($scope['moves'] as $from => $to) {
+            if ($files->stat($to) !== null) { throw new RuntimeException('Disabled mod destination already exists: '.$to.'. Review it in Pelican Files and compare again.'); }
         }
         $details = app(\Arcturus\ModpackManager\Services\PelicanPowerController::class)->details($pelican);
         $uptime = $details['utilization']['uptime'] ?? null;
@@ -88,6 +88,6 @@ final class Qualification
         $snapshot = app(SameHostDeployment::class)->panelSnapshot($pelican);
         return ['protocol' => self::PROTOCOL, 'runtime_strategy' => $runtime['strategy'], 'current' => $current, 'target' => $runtime['target'],
             'runtime_plan' => $runtime, 'panel_sha256' => hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)),
-            'properties_sha256' => hash('sha256', $properties), 'staged_hashes' => $hashes];
+            'properties_sha256' => hash('sha256', $properties), 'staged_hashes' => $hashes, 'disabled_mod_moves' => $scope['moves']];
     }
 }

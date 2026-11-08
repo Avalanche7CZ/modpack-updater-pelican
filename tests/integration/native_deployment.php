@@ -114,7 +114,7 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
     if (str_ends_with($path, '/power')) {
         if ($request['action'] === 'stop') { $sys['state'] = 'offline'; }
         else {
-            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot'], true) && $sys['starts'] === 1;
+            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot'], true) && $sys['starts'] === 1;
             $sys['state'] = $fail ? 'offline' : 'running';
             if ($fail) { $sys['data']['world/region/new-failed-boot.mca'] = 'must disappear on full recovery'; }
             else {
@@ -149,8 +149,13 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
     return Http::response(['state' => $sys['state'], 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => 60000]], 200, $headers);
 });
 try {
-    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'], ['installer runtime rollback', true, 'installer_failed_boot']] as [$label, $migration, $scenario]) {
+    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'], ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'], ['disabled destination collision', false, 'disable_collision']] as [$label, $migration, $scenario]) {
         $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_')); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
+        if (str_starts_with($scenario, 'disable_')) {
+            $managed->update(['file_rules' => [...$managed->file_rules, ['scope' => 'exact', 'pattern' => 'mods/local-disable.jar', 'mode' => 'disable', 'priority' => 100, 'enabled' => true]]]);
+            $systems[$uuid]['data']['mods/local-disable.jar'] = 'local mod bytes';
+        }
+        if ($scenario === 'disable_collision') { $systems[$uuid]['data']['mods/local-disable.jar.disabled'] = 'existing disabled mod'; }
         $originalData = $systems[$uuid]['data'];
         check((new Preparation($managed))->request('capabilities')['backend'] === 'native', 'Native preparation still requires host provisioning');
 
@@ -193,6 +198,11 @@ try {
             unlink($input);
         }
         $preview = app(PreviewService::class)->generate($managed);
+        if ($scenario === 'disable_collision') {
+            check(! $preview['applicable'] && str_contains(implode('; ', $preview['capability_blockers']), 'Disabled mod destination already exists'), 'Occupied disabled destination did not block qualification');
+            check($systems[$uuid]['data'] === $originalData && ! isset($snapshots[$uuid]), 'Collision changed files or created an update backup');
+            echo $label." native qualification passed\n"; continue;
+        }
         check($preview['applicable'], $label.' blocked: '.implode('; ', $preview['capability_blockers']).' '.json_encode(array_values(array_filter($preview['changes'], fn ($c) => $c['blocked']))));
         check($managed->local_root === null && $managed->staging_parent === null, 'Native deployment inherited host volume access');
         $operation = app(DeploymentApproval::class)->queue($managed, $preview['plan_sha256'], (string) Str::uuid());
@@ -206,13 +216,18 @@ try {
             Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
             $operation->refresh(); $managed->refresh();
         }
-        if (in_array($scenario, ['success', 'installer_success'], true)) {
+        if (in_array($scenario, ['success', 'installer_success', 'disable_success'], true)) {
             check($operation->phase === 'completed' && $managed->installed_version === '2', $label.' did not complete: '.$operation->error);
             if ($migration) { check(str_contains($managed->pelicanServer->startup, '/26.1.2.121/') && $managed->pelicanServer->image === 'fixture:java_25', 'Runtime startup/image migration was not committed'); }
         } else {
             check($operation->phase === 'restored' && $managed->installed_version === '1' && $managed->active_operation_id === null, $label.' recovery failed: '.$operation->error);
             check($managed->pelicanServer->startup === $originalStartup && $managed->pelicanServer->image === 'fixture:java_21', 'Original runtime settings were not restored');
             check($systems[$uuid]['data']['config/options.cfg'] === 'old' && ! isset($systems[$uuid]['data']['config/added.cfg']) && ! isset($systems[$uuid]['data']['world/region/new-failed-boot.mca']), 'Full recovery left new config/world files');
+        }
+        if (str_starts_with($scenario, 'disable_')) {
+            $active = $scenario === 'disable_success' ? 'mods/local-disable.jar.disabled' : 'mods/local-disable.jar';
+            $absent = $scenario === 'disable_success' ? 'mods/local-disable.jar' : 'mods/local-disable.jar.disabled';
+            check(($systems[$uuid]['data'][$active] ?? null) === 'local mod bytes' && ! isset($systems[$uuid]['data'][$absent]), 'Disabled-mod success/rollback did not preserve exact bytes and absence');
         }
         foreach (['mods/Paradigm.jar', 'mods/ArcturusTokens.jar', 'mods/disabled.jar.disabled', 'kubejs/server_scripts/local.js', 'world/level.dat', 'backups/previous.zip'] as $path) { check($systems[$uuid]['data'][$path] === $originalData[$path], 'Custom/excluded content changed: '.$path); }
         if (! $migration) { check(isset($systems[$uuid]['links']['unix_args.txt']) && $systems[$uuid]['data']['unix_args.txt'] === $originalData['unix_args.txt'], 'Existing root launcher symlink was not preserved'); }
@@ -221,7 +236,7 @@ try {
         echo $label." native transaction passed\n";
     }
 
-    $mode = 'success';
+    $mode = 'success'; Auth::guard()->forgetUser();
     // Native Schedules bridge: real task handler, no-update restart, and prepared update.
     \App\Models\User::retrieved(function ($user): void {
         $user->setRelation('roles', new \Illuminate\Database\Eloquent\Collection([(new \App\Models\Role)->forceFill(['name' => \App\Models\Role::ROOT_ADMIN])]));
@@ -255,7 +270,7 @@ Schema::create('tasks', function (Blueprint $t) {
     \Illuminate\Support\Facades\Bus::dispatchNow(new \App\Jobs\Schedule\RunTaskJob(\App\Models\Task::findOrFail($taskId), true));
     $run = \Arcturus\ModpackManager\Models\NativeScheduleRun::latest('created_at')->firstOrFail();
     app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($run->id);
-    check($systems[$restartUuid]['starts'] === 1 && ! $restart->refresh()->active_operation_id, 'Native no-update schedule restart failed');
+    check($systems[$restartUuid]['starts'] === 1 && ! $restart->refresh()->active_operation_id, 'Native no-update schedule restart failed: '.json_encode($run->fresh()->toArray()).' '.$restart->fresh()->last_error);
     check(! array_filter(array_slice($requests, $from), fn ($r) => str_ends_with($r[1], '/backup')), 'No-update restart created an unnecessary backup');
     check(! \App\Models\Task::find($nextId)->is_queued, 'Following task advanced before observed restart completion');
     app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($run->id);

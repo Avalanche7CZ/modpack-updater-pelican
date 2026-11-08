@@ -13,12 +13,33 @@ final class Transaction
 {
     public function __construct(private readonly Files $files) {}
 
+    /** One physical scope for qualification, approval, deployment and recovery. */
+    public static function scope(array $changes): array
+    {
+        $before = []; $after = []; $moves = [];
+        foreach (\Arcturus\ModpackManager\Services\ModUpgradePlanner::mutations($changes) as $change) {
+            $action = $change['action'];
+            if (! in_array($action, ['add', 'update', 'replace_with_override', 'remove', 'remove_with_override', 'disable_requires_enforcement'], true)) { continue; }
+            $path = $change['path'];
+            if (array_key_exists($path, $before)) { throw new RuntimeException('Overlapping native mutations require a new comparison: '.$path); }
+            $before[$path] = $change['local_sha256'];
+            $after[$path] = in_array($action, ['remove', 'remove_with_override', 'disable_requires_enforcement'], true) ? null : $change['target_sha256'];
+            if ($action === 'disable_requires_enforcement') {
+                $destination = $path.'.disabled';
+                if (! preg_match('~^mods/(?:[^/]+/)*[^/]+\\.jar$~iD', $path) || $before[$path] === null || array_key_exists($destination, $before)) { throw new RuntimeException('Only an existing mod JAR can be disabled without overwriting another mutation.'); }
+                $before[$destination] = null; $after[$destination] = $before[$path]; $moves[$path] = $destination;
+            }
+        }
+        ksort($before); ksort($after); ksort($moves);
+        return ['before' => $before, 'after' => $after, 'moves' => $moves];
+    }
+
     /**
      * Caller owns the durable backup, stopped-container guard and exclusive operation receipt.
      * $before/$after contain ONLY approved mutations; null means an absent file.
      * Every journal intent must be durably saved before its corresponding remote mutation.
      */
-    public function apply(string $id, string $stage, array $before, array $after, array $safetyRoots, \Closure $journal): void
+    public function apply(string $id, string $stage, array $before, array $after, array $safetyRoots, \Closure $journal, array $moves = []): void
     {
         if (! preg_match('/^[a-f0-9-]{32,36}$/D', $id) || array_keys($before) !== array_keys($after)) { throw new RuntimeException('Invalid native transaction identity or scope.'); }
         $remote = '.arcturus-update-'.$id;
@@ -28,13 +49,22 @@ final class Transaction
             if (SafetyPaths::reason($path, $safetyRoots) !== null || str_starts_with($path, '.arcturus-update-')) { throw new RuntimeException('Protected path cannot enter a native transaction: '.$path); }
             foreach ([$hash, $after[$path]] as $digest) { if ($digest !== null && (! is_string($digest) || ! preg_match('/^[a-f0-9]{64}$/D', $digest))) { throw new RuntimeException('Invalid transaction file digest.'); } }
         }
-        $installs = array_keys(array_filter($after, fn ($h) => $h !== null));
+        $moved = [];
+        foreach ($moves as $from => $to) {
+            if (! is_string($to) || ! preg_match('~^mods/(?:[^/]+/)*[^/]+\\.jar$~iD', $from) || $to !== $from.'.disabled' ||
+                ! array_key_exists($from, $before) || ! array_key_exists($to, $before) || $before[$from] === null || $before[$to] !== null || $after[$from] !== null || $after[$to] !== $before[$from] || isset($moved[$from]) || isset($moved[$to])) {
+                throw new RuntimeException('Invalid approved disabled-mod rename.');
+            }
+            if ($this->files->stat($to) !== null) { throw new RuntimeException('Disabled mod destination already exists: '.$to.'. Review it in Pelican Files and compare again.'); }
+            $moved[$from] = true; $moved[$to] = true;
+        }
+        $installs = array_keys(array_filter(array_diff_key($after, $moved), fn ($h) => $h !== null));
         $actual = (new DirectoryInventory)->hashPaths($stage, $installs);
-        $expected = array_filter($after, fn ($h) => $h !== null); ksort($expected);
+        $expected = array_filter(array_diff_key($after, $moved), fn ($h) => $h !== null); ksort($expected);
         if ($actual !== $expected) { throw new RuntimeException('Private stage differs from the approved target manifest.'); }
         $this->verify($before);
         $modes = []; foreach ($before as $path => $digest) { if ($digest !== null) { $modes[$path] = $this->files->permissions($path); } }
-        $journal(['step' => 'stage_intent', 'stage' => $remote, 'before' => $before, 'after' => $after]);
+        $journal(['step' => 'stage_intent', 'stage' => $remote, 'before' => $before, 'after' => $after, 'moves' => $moves]);
         $this->files->mkdir($remote.'/new'); $this->files->mkdir($remote.'/old');
         foreach ($installs as $index => $path) {
             $journal(['step' => 'upload_intent', 'path' => $path]);
@@ -44,7 +74,14 @@ final class Transaction
         }
         // All target bytes are present and verified before the first live-path mutation.
         $this->verify($before);
-        $order = [...$installs, ...array_keys(array_filter($after, fn ($h) => $h === null))];
+        foreach ($moves as $from => $to) {
+            if ($this->files->hash($from) !== $before[$from] || $this->files->permissions($from) !== $modes[$from] || $this->files->stat($to) !== null) { throw new RuntimeException('Disabled mod source or destination changed after approval.'); }
+            $journal(['step' => 'disable_intent', 'path' => $from, 'destination' => $to]);
+            $this->files->rename($from, $to);
+            if ($this->files->hash($from) !== null || $this->files->hash($to) !== $before[$from] || $this->files->permissions($to) !== $modes[$from]) { throw new RuntimeException('Disabled mod rename failed integrity or permission verification.'); }
+            $journal(['step' => 'disable_verified', 'path' => $from, 'destination' => $to]);
+        }
+        $order = [...$installs, ...array_keys(array_filter(array_diff_key($after, $moved), fn ($h) => $h === null))];
         foreach ($order as $index => $path) {
             if ($this->files->hash($path) !== $before[$path]) { throw new RuntimeException('Live file changed since approval: '.$path); }
             if ($before[$path] !== null) {

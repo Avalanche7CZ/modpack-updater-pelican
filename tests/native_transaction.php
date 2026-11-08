@@ -67,5 +67,19 @@ try {
     rejects(fn () => (new Recovery($files))->clearForRestore(['backups'], fn () => null, $log), 'Incomplete clear must prevent overlay restore/start');
     $files = new NativeFixture;
     rejects(fn () => (new Transaction($files))->apply(str_repeat('c', 32), $stage, ['world/region/r.0.0.mca' => hash('sha256', 'world')], ['world/region/r.0.0.mca' => null], [], $log), 'Protected world entered an apply plan');
+    $files = new NativeFixture;
+    $change = ['path' => 'mods/custom.jar', 'action' => 'disable_requires_enforcement', 'local_sha256' => hash('sha256', 'custom'), 'target_sha256' => null];
+    $scope = Transaction::scope([$change]);
+    (new Transaction($files))->apply(str_repeat('d', 32), $stage, $scope['before'], $scope['after'], [], $log, $scope['moves']);
+    check(! isset($files->data['mods/custom.jar']) && $files->data['mods/custom.jar.disabled'] === 'custom', 'Native disable did not preserve exact original bytes');
+    check(in_array('disable_verified', array_column($journal, 'step')), 'Disabled-mod checkpoint missing');
+    $files = new NativeFixture; $files->data['mods/custom.jar.disabled'] = 'existing disabled'; $snapshot = $files->data;
+    rejects(fn () => (new Transaction($files))->apply(str_repeat('e', 32), $stage, $scope['before'], $scope['after'], [], $log, $scope['moves']), 'Existing disabled destination was overwritten');
+    check($files->data === $snapshot, 'Collision changed live data');
+    rejects(fn () => Transaction::scope([$change, [...$change, 'path' => 'mods/custom.jar.disabled', 'action' => 'remove']]), 'Overlapping disable and remove accepted');
+    rejects(fn () => Transaction::scope([[...$change, 'path' => 'config/custom.jar']]), 'Non-mod disable accepted');
+    $files = new NativeFixture; $files->fail = 'mods/custom.jar.disabled';
+    rejects(fn () => (new Transaction($files))->apply(str_repeat('f', 32), $stage, $scope['before'], $scope['after'], [], $log, $scope['moves']), 'Failed disable went unreported');
+    check($files->data['mods/custom.jar'] === 'custom', 'Failed rename lost original mod');
     echo "Native ordered file deployment, partial failure and exclusion-preserving recovery fixtures passed\n";
 } finally { unlink($stage.'/config/a.cfg'); unlink($stage.'/config/b.cfg'); rmdir($stage.'/config'); rmdir($stage); }

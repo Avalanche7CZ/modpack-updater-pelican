@@ -10,9 +10,9 @@ Normal deployment uses **Native Pelican / Wings**, without host-volume ACL provi
 | Provider metadata | Independent FTB, GitHub, Modrinth, CurseForge, ATLauncher and custom adapters | Fixtures; live FTB/Modrinth/GitHub metadata smoke checks |
 | Preparation | Fixed unprivileged Python archive/checksum worker in Panel-private storage; legacy node staging optional | Real worker fixtures; real NeoForge 21.1.172 installer smoke-tested in a private sandbox; no real Minecraft boot |
 | Adoption | Native read-only inspection, exact upstream baseline, customized-file report, explicit finish or unverified monitoring | Planner/provenance/framework tests; live Wings inspection not exercised |
-| Modrinth | `.mrpack` index, server environment, overrides then server-overrides, dependency metadata | Fixtures; no automatic loader installation; optional files require an explicit custom recipe |
+| Modrinth | `.mrpack` index, server environment, overrides then server-overrides, dependency metadata | Fixtures; native Forge/NeoForge installer preparation is conditional on isolated-build capabilities; Fabric/Quilt migrations remain blocked; optional files require an explicit custom recipe |
 | CurseForge | Exact file/server-pack resolution and checkpointed client-manifest preparation | Two-stage fixture preparation and queue reconciliation tested; missing keys/downloads/hashes/dependencies fail closed; optional selections still require explicit normalization |
-| FTB | Current official manifest endpoint, newest stable IDs, targets, client-only filtering, checksums, CurseForge reference resolution | Files can be staged; generated loader/Java runtime is not installed by this worker |
+| FTB | Current official manifest endpoint, newest stable IDs, targets, client-only filtering, checksums, CurseForge reference resolution | Published files stage through the read-only worker; supported native Forge/NeoForge runtime builds run separately before approval |
 | GitHub / GTNH | Exact tags, explicit server-asset glob, ambiguity rejection, GitHub SHA-256 asset digest | Missing digest requires an independently pinned custom recipe; no launcher or Java change |
 | ATLauncher | Official project/version/config metadata and checksummed permitted downloads | API bot protection, browser-only mods, MD5-only files and unsigned config ZIPs block preparation; no restriction bypass |
 | Custom | Allowlisted HTTPS schema-2 recipes or operator-owned local recipe files; exact node-local artifact IDs | Every artifact needs an upstream checksum; no user-provided filesystem download paths |
@@ -27,7 +27,7 @@ Normal deployment uses **Native Pelican / Wings**, without host-volume ACL provi
 | Same-host filesystem | One-time root-owned node approval, trusted UUID discovery, inherited read ACLs and private staging on adoption; existing unprivileged stdio preparation/inventory | Local archive, checksum, permission/path, lock/recovery, Laravel/Filament and remote compatibility fixtures; qualified manual updates require additional scoped deployment/read-only recovery ACLs; no live TFG runtime proof |
 | Database | Additive Arcturus-only tables and durable encrypted operation receipts; Native backend is the new-adoption default | SQLite install/upgrade/down and receipt tests; no MariaDB runtime test |
 
-Preparation completion means **the published files were staged and checksummed**. It does not mean a loader is installed, a launch script is trusted, the pack is deployable, or a world migration has been tested. Generated runtime files remain outside a published-file baseline.
+Preparation completion means **the published files were staged and checksummed**. It does not mean a loader is installed, a launch script is trusted, the pack is deployable, or a world migration has been tested. Supported installer-produced runtime files enter a derived verified target manifest before approval. Startup qualification remains separate.
 
 ## Destructive gates
 

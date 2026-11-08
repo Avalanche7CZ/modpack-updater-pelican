@@ -12,7 +12,7 @@ use Arcturus\ModpackManager\Services\RuntimeInspector;
 use Arcturus\ModpackManager\Services\SameHostDeployment;
 use RuntimeException;
 
-/** Published runtime files only. Missing/generated dependencies are an explicit blocker. */
+/** Exact staged runtime files, either published or built by the verified isolated installer. */
 final class Runtime
 {
     public function plan(Server $server, array $current, array $target, array $manifest, string $stage, ?array $buildEvidence = null): array
@@ -33,7 +33,7 @@ final class Runtime
         $proof = [];
         if (! $same) {
             if (! in_array($target['loader'], ['forge', 'neoforge'], true) || $target['loader'] !== $current['loader'] || empty($target['loader_version'])) {
-                throw new RuntimeException('This runtime migration is not qualified: only published complete Forge/NeoForge runtimes of the same loader are supported. Existing Fabric/Quilt/Crucible runtimes may be reused.');
+                throw new RuntimeException('This runtime migration is not qualified: only verified complete Forge/NeoForge runtimes of the same loader are supported. Existing Fabric/Quilt/Crucible runtimes may be reused.');
             }
             $version = $target['loader_version'];
             if (! preg_match('/^[0-9][A-Za-z0-9_.+-]{0,100}$/D', $version)) { throw new RuntimeException('Target loader coordinate is invalid.'); }
