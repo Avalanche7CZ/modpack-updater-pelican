@@ -141,7 +141,7 @@ final class RuntimeInspector
             $minecraft = $settings['minecraftVersion'] ?? '';
             $loaderType = strtolower($settings['loaderType'] ?? '');
             $loaderVersion = $settings['loaderVersion'] ?? '';
-            if (preg_match('/^1\\.[0-9]+(?:\\.[0-9]+)?$/D', $minecraft) === 1
+            if (preg_match('/^(?:1|26)\\.[0-9]+(?:\\.[0-9]+)?$/D', $minecraft) === 1
                 && in_array($loaderType, ['forge', 'neoforge'], true)
                 && preg_match('/^[0-9]+(?:\\.[0-9]+)+(?:[-.][a-z0-9]+)?$/iD', $loaderVersion) === 1) {
                 $metadata['minecraft'] ??= $minecraft;
@@ -179,17 +179,35 @@ final class RuntimeInspector
         return $result;
     }
 
-    /** Read actual Forge/ModLauncher startup output, never infer Java from an image name. */
+    /** Actual boot evidence; absent fields stay unknown. */
     public function fromStartupLog(string $log): array
     {
-        $result = ['minecraft' => null, 'loader' => 'forge', 'loader_version' => null, 'java' => null];
-        foreach (['minecraft' => '--fml.mcVersion', 'loader_version' => '--fml.forgeVersion'] as $key => $flag) {
-            if (preg_match('/'.preg_quote($flag, '/').'[=,\s]+["\x27]?([0-9]+(?:\.[0-9]+)+)/', $log, $match)) { $result[$key] = $match[1]; }
+        $r = ['minecraft' => null, 'loader' => null, 'loader_version' => null, 'java' => null];
+        $mc = '(?:1\.[0-9]+(?:\.[0-9]+)?|26\.[0-9]+(?:\.[0-9]+)?)';
+        if (preg_match('/--fml\.mcVersion[=,\s]+["\x27]?('.$mc.')/', $log, $m)) { $r['minecraft'] = $m[1]; }
+        foreach (['neoForgeVersion' => 'neoforge', 'forgeVersion' => 'forge'] as $flag => $loader) {
+            if (preg_match('/--fml\.'.$flag.'[=,\s]+["\x27]?([0-9]+(?:\.[0-9]+)+(?:-beta)?)/', $log, $m)) { $r['loader'] = $loader; $r['loader_version'] = $m[1]; break; }
         }
-        if (preg_match('/ModLauncher[^\r\n]*starting:[^\r\n]*java version ([0-9]+)(?:\.[0-9]+)*/i', $log, $match)) {
-            $result['java'] = (int) $match[1];
+        if (preg_match('/(?:Loading|Starting) Minecraft ('.$mc.') with (Fabric|Quilt) Loader ([A-Za-z0-9_.+-]+)/i', $log, $m)) {
+            $r = [...$r, 'minecraft' => $m[1], 'loader' => strtolower($m[2]), 'loader_version' => $m[3]];
         }
-        return $result;
+        if (preg_match('/NeoForge[^\r\n]*version[ :]+([0-9]+(?:\.[0-9]+)+(?:-beta)?)[^\r\n]*(?:for MC|Minecraft)[ :]+('.$mc.')/i', $log, $m)) {
+            $r = [...$r, 'minecraft' => $m[2], 'loader' => 'neoforge', 'loader_version' => $m[1]];
+        }
+        if (preg_match('/MinecraftForge v([0-9]+(?:\.[0-9]+)+)/i', $log, $m)) { $r['loader'] ??= 'forge'; $r['loader_version'] ??= $m[1]; }
+        if (preg_match('/Forge Mod Loader[^\r\n]*for Minecraft ('.$mc.')/i', $log, $m)) { $r['minecraft'] ??= $m[1]; $r['loader'] ??= 'forge'; }
+        if (stripos($log, 'Crucible') !== false && $r['minecraft'] === '1.7.10') { $r['loader'] = 'crucible'; }
+        if (preg_match('/ModLauncher[^\r\n]*starting:[^\r\n]*java version ([0-9]+)/i', $log, $m)) { $r['java'] = (int) $m[1]; }
+        if ($r['java'] === null && preg_match('/Java is [^\r\n]*?version (1\.)?([0-9]+)(?:[.\s]|$)/i', $log, $m)) { $r['java'] = (int) $m[2]; }
+        if ($r['loader'] === null && preg_match('/Starting minecraft server version ('.$mc.')/i', $log, $m)) {
+            $r['minecraft'] = $m[1]; $r['loader'] = 'vanilla'; $r['loader_version'] = $m[1];
+        }
+        return $r;
+    }
+
+    public function javaVersion(string $probe): ?int
+    {
+        return preg_match('/(?:openjdk|java) version ["\x27](1\.)?([0-9]+)(?:[.\-+"\x27])/i', $probe, $m) ? (int) $m[2] : null;
     }
 
     private function withoutComments(string $text): string
