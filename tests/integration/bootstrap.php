@@ -11,7 +11,7 @@ register_shutdown_function(function (): void {
 });
 $panelSource = getenv('PELICAN_SOURCE');
 if (! $panelSource || ! is_file($panelSource.'/vendor/autoload.php')) {
-    throw new RuntimeException('Set PELICAN_SOURCE to a disposable rc.1 checkout with composer dependencies installed');
+    throw new RuntimeException('Set PELICAN_SOURCE to a disposable rc.2 checkout with composer dependencies installed');
 }
 // No operator .env or existing database is read. This script only accepts a disposable source checkout.
 if (is_file($panelSource.'/.env')) {

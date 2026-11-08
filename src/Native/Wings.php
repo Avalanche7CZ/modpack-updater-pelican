@@ -1,0 +1,139 @@
+<?php
+
+declare(strict_types=1);
+namespace Arcturus\ModpackManager\Native;
+
+use App\Models\Server;
+use App\Repositories\Daemon\DaemonFileRepository;
+use Arcturus\ModpackManager\Services\UpdatePlanner;
+use RuntimeException;
+
+/** Pelican rc.2 authenticated binary streams; no client token and no host-volume access. */
+final class Wings implements Files
+{
+    public const MAX_FILE_BYTES = 2147483648;
+
+    public function __construct(private readonly Server $server, private readonly DaemonFileRepository $daemon,
+        private readonly ?\Closure $heartbeat = null) {}
+
+    private function repo(): DaemonFileRepository { return $this->daemon->setServer($this->server); }
+
+    public function listing(string $directory = ''): array
+    {
+        if ($directory !== '') { UpdatePlanner::assertPath($directory); }
+        $rows = $this->repo()->getDirectory($directory === '' ? '/' : '/'.$directory);
+        if (! array_is_list($rows) || count($rows) > 100000) { throw new RuntimeException('Wings returned an invalid or excessive directory listing.'); }
+        $seen = [];
+        foreach ($rows as $row) {
+            if (! is_array($row) || ! is_string($row['name'] ?? null) || str_contains($row['name'], '/') ||
+                isset($seen[$row['name']]) || ! is_bool($row['file'] ?? null) || ! is_bool($row['directory'] ?? null) || ! is_bool($row['symlink'] ?? null)) {
+                throw new RuntimeException('Wings listing is incomplete or ambiguous; native mutation is blocked.');
+            }
+            UpdatePlanner::assertPath($row['name']);
+            $seen[$row['name']] = true;
+        }
+        return $rows;
+    }
+
+    /** Inspect each ancestor using lstat metadata. Never follow volume symlinks. */
+    public function stat(string $path): ?array
+    {
+        return $this->metadata($path, false);
+    }
+
+    private function metadata(string $path, bool $allowLeafSymlink): ?array
+    {
+        UpdatePlanner::assertPath($path);
+        $parts = explode('/', $path); $parent = '';
+        foreach ($parts as $index => $part) {
+            $found = null;
+            foreach ($this->listing($parent) as $row) { if ($row['name'] === $part) { $found = $row; break; } }
+            if ($found === null) { return null; }
+            if ($found['symlink'] && ! ($allowLeafSymlink && $index === count($parts) - 1)) { throw new RuntimeException('Native operation blocked by a symlink at '.$parent.($parent === '' ? '' : '/').$part); }
+            if ($index === count($parts) - 1) { return $found; }
+            if (! $found['directory'] || $found['file']) { throw new RuntimeException('Native operation parent is not a regular directory.'); }
+            $parent = $parent === '' ? $part : $parent.'/'.$part;
+        }
+        throw new RuntimeException('Invalid native file path.');
+    }
+
+    private function regular(string $path): ?array
+    {
+        $meta = $this->stat($path);
+        if ($meta !== null && (! $meta['file'] || $meta['directory'] || ! is_int($meta['size'] ?? null) || $meta['size'] < 0 || $meta['size'] > self::MAX_FILE_BYTES)) {
+            throw new RuntimeException('Native file is not regular or exceeds the 2 GiB per-file limit: '.$path);
+        }
+        return $meta;
+    }
+
+    /** Stream only a requested candidate. No recursive enumeration or world hashing. */
+    public function hash(string $path): ?string
+    {
+        $before = $this->regular($path);
+        if ($before === null) { return null; }
+        $response = $this->repo()->getHttpClient()->connectTimeout(5)->timeout(600)->withOptions(['stream' => true])
+            ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
+        $stream = $response->toPsrResponse()->getBody();
+        $hash = hash_init('sha256'); $bytes = 0;
+        try {
+            while (! $stream->eof()) {
+                $chunk = $stream->read(1048576);
+                if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings file stream stalled.'); }
+                $bytes += strlen($chunk);
+                if ($bytes > $before['size']) { throw new RuntimeException('Wings file grew while being verified.'); }
+                hash_update($hash, $chunk); $this->heartbeat?->__invoke();
+            }
+        } finally { $stream->close(); }
+        $after = $this->regular($path);
+        if ($bytes !== $before['size'] || $after !== $before) { throw new RuntimeException('Wings file changed or transfer was truncated during verification.'); }
+        return hash_final($hash);
+    }
+
+    public function upload(string $localFile, string $path, string $sha256): void
+    {
+        UpdatePlanner::assertPath($path);
+        if (! preg_match('/^[a-f0-9]{64}$/D', $sha256) || is_link($localFile) || ! is_file($localFile) || filesize($localFile) > self::MAX_FILE_BYTES ||
+            ! hash_equals($sha256, hash_file('sha256', $localFile))) { throw new RuntimeException('Prepared artifact does not match its exact manifest.'); }
+        if ($this->stat($path) !== null) { throw new RuntimeException('Native upload destination already exists.'); }
+        $stream = fopen($localFile, 'rb');
+        if ($stream === false) { throw new RuntimeException('Cannot open private prepared artifact.'); }
+        try {
+            // Wings requires Content-Length and streams the raw body into this exact file.
+            $this->repo()->getHttpClient()->connectTimeout(5)->timeout(600)->withQueryParameters(['file' => '/'.$path])
+                ->withHeaders(['Content-Length' => (string) filesize($localFile)])
+                ->withBody($stream, 'application/octet-stream')->post('/api/servers/'.$this->server->uuid.'/files/write')->throw();
+        } finally { fclose($stream); }
+        if ($this->hash($path) !== $sha256) { throw new RuntimeException('Wings upload verification failed.'); }
+    }
+
+    public function mkdir(string $path): void
+    {
+        UpdatePlanner::assertPath($path);
+        $parent = ''; foreach (explode('/', $path) as $part) {
+            $next = $parent === '' ? $part : $parent.'/'.$part;
+            $meta = $this->stat($next);
+            if ($meta === null) {
+                $this->repo()->createDirectory($part, $parent === '' ? '/' : '/'.$parent)->throw();
+                $meta = $this->stat($next);
+            }
+            if (! $meta || ! $meta['directory'] || $meta['file'] || $meta['symlink']) { throw new RuntimeException('Wings did not create a safe directory.'); }
+            $parent = $next;
+        }
+    }
+
+    public function rename(string $from, string $to): void
+    {
+        UpdatePlanner::assertPath($from); UpdatePlanner::assertPath($to);
+        if ($this->stat($from) === null || $this->stat($to) !== null) { throw new RuntimeException('Wings rename source/destination changed.'); }
+        $this->repo()->renameFiles('/', [['from' => $from, 'to' => $to]])->throw();
+        if ($this->stat($from) !== null || $this->stat($to) === null) { throw new RuntimeException('Wings acknowledged a rename without completing it.'); }
+    }
+
+    public function delete(string $path): void
+    {
+        UpdatePlanner::assertPath($path);
+        $this->metadata($path, true); // Wings uses lstat: delete a leaf link, never follow an ancestor.
+        $this->repo()->deleteFiles('/', [$path])->throw();
+        if ($this->metadata($path, true) !== null) { throw new RuntimeException('Wings could not remove the exact entry; check its filesystem denylist.'); }
+    }
+}

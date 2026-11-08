@@ -1,0 +1,59 @@
+<?php
+
+declare(strict_types=1);
+$app = require __DIR__.'/bootstrap.php';
+
+use App\Models\Node;
+use App\Models\Server;
+use App\Repositories\Daemon\DaemonFileRepository;
+use Arcturus\ModpackManager\Native\Wings;
+use Illuminate\Support\Facades\Http;
+
+$node = new Node; $node->forceFill(['scheme' => 'https', 'fqdn' => 'wings.fixture.test', 'daemon_connect' => 8080, 'daemon_token' => 'fixture-token', 'daemon_token_id' => 'fixture']);
+$server = new Server; $server->forceFill(['uuid' => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']); $server->setRelation('node', $node);
+$data = ['candidate.jar' => "PK\x00\x01binary\xff"];
+$headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
+$noopRename = false; $truncated = false; $symlink = false; $writes = 0;
+Http::preventStrayRequests();
+Http::fake(function ($request) use (&$data, &$noopRename, &$truncated, &$symlink, &$writes, $headers) {
+    parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+    $path = parse_url($request->url(), PHP_URL_PATH);
+    if (str_ends_with($path, '/files/list-directory')) {
+        return Http::response(array_map(fn ($name) => ['name' => $name, 'file' => true, 'directory' => false, 'symlink' => $symlink && $name === 'candidate.jar', 'size' => strlen($data[$name])], array_keys($data)), 200, $headers);
+    }
+    if (str_ends_with($path, '/files/contents')) {
+        $value = $data[ltrim($query['file'], '/')];
+        return Http::response($truncated ? substr($value, 0, 3) : $value, 200, $headers);
+    }
+    if (str_ends_with($path, '/files/write')) {
+        check($request->method() === 'POST', 'Wrong native upload method');
+        check((int) $request->header('Content-Length')[0] === strlen($request->body()), 'Binary upload Content-Length differs from body');
+        $data[ltrim($query['file'], '/')] = $request->body(); $writes++;
+        return Http::response('', 204, $headers);
+    }
+    if (str_ends_with($path, '/files/rename')) {
+        if (! $noopRename) { $from = $request['files'][0]['from']; $to = $request['files'][0]['to']; $data[$to] = $data[$from]; unset($data[$from]); }
+        return Http::response('', 204, $headers);
+    }
+    if (str_ends_with($path, '/files/delete')) { foreach ($request['files'] as $p) { unset($data[$p]); } return Http::response('', 204, $headers); }
+    throw new RuntimeException('Unexpected Wings request '.$request->method().' '.$path);
+});
+$files = new Wings($server, app(DaemonFileRepository::class));
+check($files->hash('candidate.jar') === hash('sha256', $data['candidate.jar']), 'Binary candidate was not streamed correctly');
+check($files->hash('absent.jar') === null, 'Absent candidate was invented');
+$temp = tempnam(sys_get_temp_dir(), 'arcturus-binary-'); file_put_contents($temp, str_repeat("\xff\x00", 65536));
+try {
+    $files->upload($temp, 'uploaded.jar', hash_file('sha256', $temp));
+    check($writes === 1 && $data['uploaded.jar'] === file_get_contents($temp), 'Authenticated native binary upload failed');
+    $files->rename('uploaded.jar', 'installed.jar');
+    $noopRename = true;
+    rejects(fn () => $files->rename('installed.jar', 'not-installed.jar'), 'A no-op 204 rename was trusted');
+    $truncated = true;
+    rejects(fn () => $files->hash('candidate.jar'), 'Truncated response was accepted');
+    $truncated = false; $symlink = true;
+    rejects(fn () => $files->hash('candidate.jar'), 'Symlink file was read');
+    $files->delete('candidate.jar'); // Safe leaf symlink removal during root recovery.
+    check(! isset($data['candidate.jar']), 'Leaf link could not be removed for recovery');
+} finally { unlink($temp); }
+echo "Pelican rc.2 native Wings binary transfer, truncation, symlink and no-op rename integration passed (HTTP fixtures)\n";
+$GLOBALS['arcturus_integration_passed'] = true;
