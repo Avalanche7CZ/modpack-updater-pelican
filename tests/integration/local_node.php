@@ -219,5 +219,27 @@ check($record->file_inventory['requested_paths'] === ['config/example.cfg', 'uni
 check($record->file_inventory['skipped_symlinks'] === ['unix_args.txt'], 'Touched symlink was not protected');
 check(array_column($plan['changes'], 'action', 'path')['unix_args.txt'] === 'preserve', 'Manifest update could replace a launcher symlink');
 check(file_exists($live.'/config/unsafe.fifo') && file_get_contents($dir.'/args-target.txt') === 'local arguments', 'Comparison changed unrelated files or followed a link');
+// An unexpected Panel exception must remain diagnosable without exposing it in UI evidence.
+$loggedFailures = [];
+Illuminate\Support\Facades\Event::listen(Illuminate\Log\Events\MessageLogged::class,
+    function ($event) use (&$loggedFailures): void {
+        if ($event->message === 'Arcturus preparation failed') { $loggedFailures[] = $event->context; }
+    });
+$broken = app(Arcturus\ModpackManager\Services\OperationTracker::class)->create($record, 'prepare',
+    ['provider' => $record->provider, 'source' => 'changed-source', 'version' => $record->targetVersion()]);
+$failedJob = new Arcturus\ModpackManager\Jobs\PrepareUpdate($record->id, false, $broken->id);
+try {
+    $failedJob->handle(app(Arcturus\ModpackManager\Services\PrepareRelease::class), app(Arcturus\ModpackManager\Services\OperationTracker::class));
+    throw new RuntimeException('Changed preparation source unexpectedly succeeded');
+} catch (Arcturus\ModpackManager\Services\PreparationException $error) {
+    check($error->diagnostic['code'] === 'PANEL_ERROR', 'Unexpected exception lost sanitized Panel diagnostic');
+    check(! str_contains($error->getMessage(), 'Server source or version changed'), 'Original exception leaked through user-facing diagnostic');
+}
+check(count($loggedFailures) === 1 && $loggedFailures[0]['operation_id'] === $broken->id &&
+    $loggedFailures[0]['managed_server_id'] === $record->id, 'Panel failure log lost correlation IDs');
+check($loggedFailures[0]['exception'] instanceof RuntimeException &&
+    str_contains($loggedFailures[0]['exception']->getMessage(), 'Server source or version changed'), 'Original Panel exception was discarded');
+check($broken->refresh()->context['diagnostic']['code'] === 'PANEL_ERROR' &&
+    ! str_contains($broken->error, 'Server source or version changed'), 'Original exception leaked into saved operation evidence');
 echo "Local node setup, per-server directory review, lightweight adoption and exact manifest-delta stdio comparison passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

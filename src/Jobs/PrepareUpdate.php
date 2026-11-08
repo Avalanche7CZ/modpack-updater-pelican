@@ -15,6 +15,7 @@ use Arcturus\ModpackManager\Services\PreparationException;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
@@ -85,6 +86,14 @@ final class PrepareUpdate implements ShouldQueue
                 app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->deployPrepared($server, $operation);
             }
         } catch (Throwable $error) {
+            // Keep the real exception in administrator logs; UI and saved evidence stay sanitized.
+            if (! $error instanceof PreparationException) {
+                Log::error('Arcturus preparation failed', [
+                    'operation_id' => $operation?->id ?? $this->operationId ?? $this->requestId,
+                    'managed_server_id' => $this->managedServerId,
+                    'exception' => $error,
+                ]);
+            }
             $detail = $error instanceof PreparationException ? $error->diagnostic : PreparationDiagnostic::normalize([
                 'code' => $error instanceof \Arcturus\ModpackManager\Remote\CapabilityUnavailable ? 'WORKER_CONFIGURATION' : 'PANEL_ERROR',
                 'phase' => $operation?->progress['current']['phase'] ?? 'queued',

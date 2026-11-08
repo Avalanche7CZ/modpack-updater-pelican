@@ -152,3 +152,5 @@ A directory decision save and its comparison intent commit together. The form's 
 ## Manual update deployment
 
 The read-only setup above remains sufficient for adoption and comparison. It does not grant update write access. The [manual same-host workflow](manual-deployment.md) adds scoped operator-provisioned permissions, independent runtime evidence, exact administrator approval, native locked Wings backup verification and a full recovery checkpoint. Only installed Forge 1.20.1 / Java 17 runtime reuse is qualified by the current fixture suite. Remote deployment remains disabled. For daily same-host automation and delta-only comparison, see [manifest updates](manifest-updates.md).
+
+Unexpected Panel preparation failures are logged as `Arcturus preparation failed` with `operation_id`, `managed_server_id` and the original exception/stack trace in the normal Laravel log. User-facing diagnostics remain sanitized. Treat administrator logs as private and review exception details before sharing them.
