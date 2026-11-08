@@ -91,3 +91,37 @@ jobs:
           Install: download arcturus-modpack-manager.zip and import in Pelican Admin → Plugins.
           Update feed: update.json is consumed by Pelican's built-in plugin updater.
           Safety: read docs/capabilities.md. Remote destructive deployment remains disabled pending integration qualification."
+
+      - name: Check out public update feed
+        uses: actions/checkout@v4
+        with:
+          ref: update-feed
+          path: .update-feed
+      - name: Publish exact released metadata to the raw update feed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Read the asset actually attached to the release. A rerun can build a
+          # different ZIP; its newly computed hash must never replace the published hash.
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern update.json --dir /tmp/arcturus-published-feed --clobber
+          php -r '
+            $feed = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
+            $entry = $feed["*"] ?? [];
+            $expected = "https://github.com/" . $argv[3] . "/releases/download/" . $argv[2] . "/arcturus-modpack-manager.zip";
+            if (($entry["version"] ?? "") !== substr($argv[2], 1) || ($entry["download_url"] ?? "") !== $expected ||
+                !preg_match("/^[a-f0-9]{64}$/D", $entry["sha256"] ?? "")) {
+                fwrite(STDERR, "Released update feed is inconsistent\n"); exit(1);
+            }
+          ' /tmp/arcturus-published-feed/update.json "$TAG" "$GITHUB_REPOSITORY"
+          cp /tmp/arcturus-published-feed/update.json .update-feed/update.json
+          git -C .update-feed config user.name 'github-actions[bot]'
+          git -C .update-feed config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C .update-feed add update.json
+          if ! git -C .update-feed diff --cached --quiet; then
+            git -C .update-feed commit -m "Publish update feed for $TAG"
+            git -C .update-feed push origin HEAD:refs/heads/update-feed
+          fi

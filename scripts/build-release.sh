@@ -22,7 +22,7 @@ php -r '
       fwrite(STDERR, "Unexpected plugin ID\n"); exit(1);
   }
   $file["version"] = $argv[1];
-  $file["update_url"] = "https://github.com/" . $argv[2] . "/releases/latest/download/update.json";
+  $file["update_url"] = "https://raw.githubusercontent.com/" . $argv[2] . "/update-feed/update.json";
   unset($file["meta"]);
   file_put_contents($argv[3], json_encode($file, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");
 ' "$VERSION" "$REPOSITORY" "$ROOT/plugin.json"
@@ -102,8 +102,11 @@ php -r '
   if (($data["version"] ?? "") !== $argv[1] || ($data["id"] ?? "") !== "arcturus-modpack-manager") {
       fwrite(STDERR, "Invalid embedded plugin metadata\n"); exit(1);
   }
+  if (($data["update_url"] ?? "") !== "https://raw.githubusercontent.com/" . $argv[2] . "/update-feed/update.json") {
+      fwrite(STDERR, "Invalid embedded update feed URL\n"); exit(1);
+  }
   $archive->close();
-' "$VERSION"
+' "$VERSION" "$REPOSITORY"
 
 SHA256="$(sha256sum dist/arcturus-modpack-manager.zip | awk '{print $1}')"
 printf '%s  arcturus-modpack-manager.zip\n' "$SHA256" > dist/SHA256SUMS.txt

@@ -31,3 +31,12 @@ Stop → completed locked native Pelican backup → conditional file mutations �
 ## Verification
 
 Regressions cover 22,000 untouched paths, a sparse 8 GiB world, ordinary JAR updates without embedded metadata, custom mods, symlink/world exclusions, real queued Pelican manual/automatic mod replacement, one daily no-update restart, revoked administrator authority and stale preparation policy. Wings responses are fixture-controlled; this is not a claim of production runtime verification.
+
+## Plugin update feed
+
+Plugin metadata uses `https://raw.githubusercontent.com/Avalanche7CZ/modpack-updater-pelican/update-feed/update.json`.
+The tiny metadata response bypasses GitHub release redirects and asset downloads, which can exceed Pelican's 5-second feed timeout or return an upstream 504. The ZIP remains a version-pinned release asset; Pelican has a separate 60-second archive download timeout and verifies the advertised SHA-256.
+
+After publishing a release, the release workflow downloads that release's actual `update.json` and copies it to the dedicated `update-feed` branch. It does not modify main or trigger a release loop. Rerunning a release copies the existing published metadata, never a checksum from a newly rebuilt but unpublished ZIP. Preserve the `update-feed` branch.
+
+Existing installations that cannot read their old release-based feed need a one-time change of only `update_url` in their installed plugin.json to the raw URL above, preserving all other fields including `meta`. Clear only `plugins.arcturus-modpack-manager.update` afterward. Future plugin packages already contain the new URL.
