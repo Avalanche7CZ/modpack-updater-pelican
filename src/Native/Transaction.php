@@ -33,11 +33,13 @@ final class Transaction
         $expected = array_filter($after, fn ($h) => $h !== null); ksort($expected);
         if ($actual !== $expected) { throw new RuntimeException('Private stage differs from the approved target manifest.'); }
         $this->verify($before);
+        $modes = []; foreach ($before as $path => $digest) { if ($digest !== null) { $modes[$path] = $this->files->permissions($path); } }
         $journal(['step' => 'stage_intent', 'stage' => $remote, 'before' => $before, 'after' => $after]);
         $this->files->mkdir($remote.'/new'); $this->files->mkdir($remote.'/old');
         foreach ($installs as $index => $path) {
             $journal(['step' => 'upload_intent', 'path' => $path]);
             $this->files->upload($stage.'/'.$path, $remote.'/new/'.$index, $after[$path]);
+            if (isset($modes[$path])) { $this->files->permissions($remote.'/new/'.$index, $modes[$path]); }
             $journal(['step' => 'upload_verified', 'path' => $path]);
         }
         // All target bytes are present and verified before the first live-path mutation.
@@ -46,6 +48,7 @@ final class Transaction
         foreach ($order as $index => $path) {
             if ($this->files->hash($path) !== $before[$path]) { throw new RuntimeException('Live file changed since approval: '.$path); }
             if ($before[$path] !== null) {
+                if ($this->files->permissions($path) !== $modes[$path]) { throw new RuntimeException('Live permissions changed during transfer: '.$path); }
                 $journal(['step' => 'retire_intent', 'path' => $path, 'saved' => $remote.'/old/'.$index]);
                 $this->files->rename($path, $remote.'/old/'.$index);
                 if ($this->files->hash($remote.'/old/'.$index) !== $before[$path]) { throw new RuntimeException('Retired file failed integrity verification.'); }

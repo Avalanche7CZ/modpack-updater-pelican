@@ -18,3 +18,5 @@ PELICAN_SOURCE="$TEST_PANEL" php tests/integration/runtime.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/policies.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/discord.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/discord_deployment.php
+PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_wings.php
+PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_deployment.php

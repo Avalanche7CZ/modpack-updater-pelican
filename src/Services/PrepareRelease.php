@@ -29,7 +29,7 @@ final class PrepareRelease
             throw new RuntimeException('Preparation deadline exceeded; retain node stage and inspect before retrying');
         }
         $worker = app(ServerFilesFactory::class)->worker($server);
-        if ($worker instanceof LocalWorker) {
+        if ($worker instanceof LocalWorker || $worker instanceof \Arcturus\ModpackManager\Native\Preparation) {
             $worker->withProgress(fn (array $snapshot) => PreparationProgress::record($operation, $snapshot));
             $worker->withHeartbeat(function () use ($operation, $server): void {
                 $operation->update(['heartbeat_at' => now()]);
@@ -136,7 +136,7 @@ final class PrepareRelease
                 'baseline_provenance' => $provenance, 'adoption_report' => null, 'comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'approved_plan_sha256' => null]);
             app(AdoptionService::class)->compare($server, $operation);
         } else {
-            $server->update(['target_manifest_path' => $path, 'prepared_root' => ($server->transport === 'local' ? 'local:' : 'node:').$operation->node_operation_id,
+            $server->update(['target_manifest_path' => $path, 'prepared_root' => (match ($server->transport) { 'native' => 'native:', 'local' => 'local:', default => 'node:' }).$operation->node_operation_id,
                 'target_metadata' => array_replace($server->target_metadata ?? $server->release_metadata ?? [], ['prepared' => $provenance, 'runtime' => $manifest['runtime']]),
                 'preview_summary' => null, 'approved_plan_sha256' => null]);
             app(PreviewService::class)->generate($server, $operation);

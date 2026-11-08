@@ -36,7 +36,7 @@ final class PrepareUpdate implements ShouldQueue
         public readonly bool $baseline = false, public readonly ?string $operationId = null)
     {
         $this->requestId = (string) Str::uuid();
-        if (ManagedServer::find($managedServerId)?->transport === 'local') {
+        if (in_array(ManagedServer::find($managedServerId)?->transport, ['local', 'native'], true)) {
             $this->timeout = LocalWorker::TIMEOUT + 30;
         }
     }
@@ -52,7 +52,7 @@ final class PrepareUpdate implements ShouldQueue
         $operation = null;
         try {
             $server = ManagedServer::findOrFail($this->managedServerId);
-            if ($server->transport === 'local') {
+            if (in_array($server->transport, ['local', 'native'], true)) {
                 app(QueuePreparation::class)->requireLocalQueue();
             }
             if (! $this->baseline && $server->baseline_status !== 'verified') {

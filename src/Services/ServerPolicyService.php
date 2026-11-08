@@ -62,7 +62,7 @@ final class ServerPolicyService
                     'maintenance_time' => ['sometimes', 'nullable', 'regex:/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/'],
                     'maintenance_timezone' => ['sometimes', 'required', 'timezone'],
                     'restart_when_current' => ['sometimes', 'boolean'], 'deploy_enabled' => ['sometimes', 'boolean'],
-                    'transport' => ['sometimes', Rule::in(['wings', 'local'])],
+                    'transport' => ['sometimes', Rule::in(['native', 'wings', 'local'])],
                 ])->validate();
                 $transport = $attributes['transport'] ?? $fresh->transport;
                 unset($attributes['transport']);

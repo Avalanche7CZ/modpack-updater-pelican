@@ -125,6 +125,7 @@ final class LocalNode
 
     public function adoptionAttributes(string $uuid, string $selection): array
     {
+        if ($selection === 'native' || ($selection === 'default' && config('arcturus-modpack-manager.default_filesystem_backend', 'native') === 'native')) { return ['transport' => 'native']; }
         if ($selection === 'default') {
             if (config('arcturus-modpack-manager.default_filesystem_backend', 'wings') !== 'local') {
                 return ['transport' => 'wings'];

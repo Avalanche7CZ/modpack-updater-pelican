@@ -17,9 +17,11 @@ final class Recovery
      * with truncate=false, waits for its callback, and verifies original critical files.
      * This method never restores or starts the server by itself.
      */
-    public function clearForRestore(array $excluded, \Closure $authorize, \Closure $journal): void
+    public function clearForRestore(array $excluded, \Closure $authorize, \Closure $journal, array $retainedRoots = []): void
     {
         $excluded = BackupExclusions::normalize($excluded);
+        foreach ($retainedRoots as $path) { if (! is_string($path) || ! preg_match('/^\.arcturus-recovery-[a-f0-9-]{36}$/D', $path)) { throw new RuntimeException('Invalid native recovery preservation root.'); } }
+        $excluded = [...$excluded, ...$retainedRoots];
         $authorize();
         $preserved = [];
         foreach ($this->files->listing() as $row) {

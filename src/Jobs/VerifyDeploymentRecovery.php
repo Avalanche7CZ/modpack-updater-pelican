@@ -32,6 +32,7 @@ final class VerifyDeploymentRecovery implements ShouldQueue
             $row->update(['phase' => 'checking_recovery', 'heartbeat_at' => now()]); return $row;
         });
         if (! $operation) { return; }
+        if (($operation->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL) { app(\Arcturus\ModpackManager\Native\RecoveryVerification::class)->run($operation); return; }
         $server = ManagedServer::lightweight()->findOrFail($operation->managed_server_id);
         $requireOpen = function () use ($operation): void { if ($operation->fresh()->completed_at) { throw new RuntimeException('Recovery verification receipt is closed. Retain its stopped recovery checkpoint.'); } };
         $pulseAt = 0;

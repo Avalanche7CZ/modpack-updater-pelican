@@ -53,7 +53,7 @@ final class PluginSettings
             throw new \RuntimeException('Complete the one-time local node setup and pass readiness checks before selecting the local default.');
         }
         Validator::make($data, [
-            'default_filesystem_backend' => ['sometimes', 'in:wings,local'],
+            'default_filesystem_backend' => ['sometimes', 'in:native,wings,local'],
             'default_policy' => ['required', 'in:notify,approve'], 'check_interval_hours' => ['required', 'integer', 'min:1', 'max:24'],
             'discord_events' => ['boolean'], 'default_backup_exclusions' => ['array', 'max:16'],
             'max_archive_bytes' => ['required', 'integer', 'min:1048576', 'max:34359738368'],

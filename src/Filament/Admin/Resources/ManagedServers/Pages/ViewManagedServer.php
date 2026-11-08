@@ -105,9 +105,9 @@ final class ViewManagedServer extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
-            Action::make('verifyRecovery')->label('Verify restored original snapshot')->button()->color('warning')
+            Action::make('verifyRecovery')->label(fn () => $this->getRecord()->transport === 'native' ? 'Recover original installation' : 'Verify restored original snapshot')->button()->color('warning')
                 ->visible(fn () => $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('kind', 'deploy')->where('phase', 'manual_intervention')->exists())
-                ->requiresConfirmation()->modalDescription('First restore the exact locked Pelican backup while Minecraft is stopped. This verifies the complete original offline inventory, returns any preserved excluded folders, and tests the original startup. It never reapplies the update.')
+                ->requiresConfirmation()->modalDescription(fn () => $this->getRecord()->transport === 'native' ? 'Restore the exact recorded native backup, preserve excluded backup directories and the retained launcher link, restore original launch settings, and verify a fresh Minecraft boot. An unverified server stays stopped. The update is never reapplied.' : 'First restore the exact locked Pelican backup while Minecraft is stopped. This verifies the original scoped receipt, returns any preserved excluded folders, and tests the original startup. It never reapplies the update.')
                 ->action(function (): void {
                     try {
                         app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->verifyRecovery($this->getRecord());
@@ -119,15 +119,15 @@ final class ViewManagedServer extends ViewRecord
             Action::make('filesystemBackend')->label('Filesystem backend')->button()->color('gray')->visible(fn () => $this->tab === 'overview')
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
                 ->fillForm(fn () => ['transport' => $this->getRecord()->transport ?? 'wings'])
-                ->schema([Select::make('transport')->label('Preparation and inventory backend')->required()->options([
-                    'wings' => 'Remote node worker', 'local' => 'Same-host local filesystem',
-                ])->helperText('Local servers are discovered from the approved Wings node. Complete Local filesystem setup once; private UUID staging is created automatically.')])
-                ->modalDescription('Changing backend invalidates baseline and plan verification. Existing protection rules and Minecraft files remain unchanged.')
+                ->schema([Select::make('transport')->label('Update backend')->required()->options([
+                    'native' => 'Native Pelican / Wings', 'wings' => 'Legacy remote worker', 'local' => 'Legacy same-host filesystem',
+                ])->helperText('Native Pelican / Wings needs no host volume permissions or extra API token. Legacy backends retain their original setup requirements.')])
+                ->modalDescription('Switching to Native Pelican / Wings keeps verified upstream baselines and protection policies. Prepare the target again before deployment.')
                 ->action(function (array $data): void {
                     try {
                         app(FilesystemBackendSettings::class)->save($this->getRecord(), $data['transport']);
                         $this->nodeCapabilities = null;
-                        $this->queued('Filesystem backend validated; prepare the installed baseline');
+                        $this->queued($data['transport'] === 'native' ? 'Native backend selected; prepare the target again' : 'Filesystem backend validated; prepare the installed baseline');
                     } catch (\Throwable $error) {
                         Notification::make()->title('Filesystem backend unavailable')->body($error->getMessage())->danger()->send();
                     }
@@ -457,7 +457,7 @@ final class ViewManagedServer extends ViewRecord
             ->visible(fn () => $this->tab === 'updates')->disabled(fn () => ! $this->canApplyUpdate())
             ->fillForm(fn () => ['digest' => $this->getRecord()->preview_summary['plan_sha256'] ?? '', 'request_id' => (string) \Illuminate\Support\Str::uuid()])
             ->schema([Hidden::make('digest'), Hidden::make('request_id'),
-                Checkbox::make('confirm')->label('I reviewed this exact file plan and approve stopping Minecraft, creating a locked Pelican backup, applying the staged update and verifying startup. A failed update may require restoring the full offline backup.')->required()->accepted(),
+                Checkbox::make('confirm')->label('I reviewed this exact file and runtime plan, including any startup/image changes, and approve stopping Minecraft, creating a locked Pelican backup, applying the staged update and verifying startup. A failed update may require restoring the full offline backup.')->required()->accepted(),
             ])->modalHeading('Approve this exact manual update')
             ->modalDescription(fn () => ($this->getRecord()->preview_summary['from'] ?? '').' → '.($this->getRecord()->preview_summary['to'] ?? '').'. Plan: '.($this->getRecord()->preview_summary['plan_sha256'] ?? 'unavailable'))
             ->modalSubmitActionLabel('Approve and queue update')

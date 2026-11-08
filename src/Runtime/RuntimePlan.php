@@ -56,7 +56,7 @@ final class RuntimePlan
         }
         $nextImage = ($current['java'] ?? null) === $java ? $image : ($images[$java] ?? null);
         if (! is_string($nextImage) || ! preg_match('~^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$~D', $nextImage)) {
-            throw new RuntimeException('Configure an administrator-approved Java '.$java.' Docker image in plugin settings.');
+            throw new RuntimeException('The server needs a verified Java '.$java.' Docker image supported by its Pelican configuration.');
         }
         $flags = '-Xms128M -XX:MaxRAMPercentage=95.0 -Dterminal.jline=false -Dterminal.ansi=true';
         if (preg_match('/^java\s+((?:(?:-[A-Za-z0-9_.:=+,%\/{}-]+|\{\{[A-Z0-9_]+\}\})\s+)+)(?:@|-jar\b)/', $startup, $m)) { $flags = trim($m[1]); }

@@ -120,7 +120,7 @@ $screen = Livewire\Livewire::test(LocalFilesystem::class);
 check(str_contains($screen->html(), 'One-time Ubuntu host setup'), 'Native setup screen did not render');
 chmod($dir.'/approval.json', 0666); clearstatcache();
 $screen->call('mountAction', 'localDefault')->call('callMountedAction');
-check(config('arcturus-modpack-manager.default_filesystem_backend') === 'wings', 'Stale UI readiness bypassed protected-approval recheck');
+check(config('arcturus-modpack-manager.default_filesystem_backend') === 'native', 'Stale UI readiness bypassed protected-approval recheck');
 chmod($dir.'/approval.json', 0644); clearstatcache();
 $screen->call('refreshReadiness');
 $screen->call('mountAction', 'localDefault')->call('callMountedAction');

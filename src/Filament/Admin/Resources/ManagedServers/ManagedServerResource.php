@@ -132,8 +132,8 @@ final class ManagedServerResource extends Resource
                         ->maxLength(120)->required(),
                 ]),
             Section::make('Filesystem backend')->visible(fn ($record) => $record !== null)->schema([
-                Select::make('transport')->label('Preparation / inventory backend')->required()->native(false)
-                    ->options(['wings' => 'Remote node worker', 'local' => 'Same-host local filesystem'])
+                Select::make('transport')->label('Update backend')->required()->native(false)
+                    ->options(['native' => 'Native Pelican / Wings', 'wings' => 'Legacy remote worker', 'local' => 'Legacy same-host filesystem'])
                     ->helperText('Same-host access uses the approved node setup and trusted server UUID. Backend changes require a new baseline; paths and permissions cannot be granted from this form.'),
             ]),
             Section::make('Update policy')

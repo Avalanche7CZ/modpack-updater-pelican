@@ -1,5 +1,8 @@
 > Version 0.5 changes comparison to candidate paths only and makes adoption lightweight. See [current comparison and schedule behavior](manifest-updates.md); older inventory examples below describe the explicit full-inventory worker capability.
 
+> Legacy backend documentation. Normal updates now use [Native Pelican / Wings](native-deployment.md), without server-volume ACL provisioning or a separate node worker. The restrictions and setup commands below apply only to the explicitly selected legacy backend.
+
+
 # One-time local Wings node setup (Ubuntu / Pelican)
 
 Target flow: **One-time host setup → Adopt a local server → Prepare installed baseline**.

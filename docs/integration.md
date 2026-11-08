@@ -13,7 +13,6 @@ The Python tests perform real filesystem hashing/extraction and a complete small
 ## Framework and database integration
 
 ```sh
-bash scripts/integration.sh v1.0.0-rc.1
 bash scripts/integration.sh v1.0.0-rc.2
 ```
 
@@ -28,6 +27,8 @@ php tests/integration/local.php
 php tests/integration/local_node.php
 php tests/integration/curseforge.php
 php tests/integration/runtime.php
+php tests/integration/native_wings.php
+php tests/integration/native_deployment.php
 php tests/integration/policies.php
 php tests/integration/discord.php
 php tests/integration/discord_deployment.php
@@ -43,17 +44,17 @@ Do not substitute a production Panel checkout, database, Wings node or server. F
 
 Provision separate Panel/Wings containers/VMs, test-only keys and a small fixture server volume. Keep this completely isolated from production. The host used for development did not offer Docker access, so a live Wings environment was not available.
 
-Before implementing/enabling remote destructive transactions, cover:
+Before production qualification of native deployment, rehearse:
 
 1. Real file API metadata, bounded reads, remote stages/hashes and per-server authorization.
 2. Node/queue/process restarts during every operation; duplicate delivery and ambiguous HTTP responses.
 3. Native backup quota, failed/partial callback, exact UUID/lock/checksum metadata and delayed callbacks.
-4. Excluded data preserved outside the truncated volume; restore success/failure callback, post-restore hashes and stopped-server behavior on uncertainty.
+4. Excluded backup directories and retained launcher links preserved through verified root clearing and nontruncating restore; restore success/failure callback, post-restore hashes and stopped-server behavior on uncertainty.
 5. Conditional transaction writes against the reviewed plan, rollback after partial apply, launcher permissions and retained diagnostics.
 6. Fresh startup evidence across log rotation, loader/Java/image/egg compatibility, then operator checks of real worlds and dimensions. A `Done` line alone is insufficient.
 7. Browser interaction at desktop, tablet and mobile widths in both themes, including long paths, conflict decisions, cancel/reconcile and revoked permissions.
 
-Remote destructive operations stay disabled until these checks are implemented and pass. MariaDB runtime migrations, graphical browser behavior, real Wings power/backup/restore, full pack/loader installation and Minecraft/world migration are separate from the validated unit/framework boundaries. See [capabilities](capabilities.md) for the shipped limits.
+Legacy remote-worker deployment remains disabled. Native deployment is covered by the bounded integration fixtures above and still requires live operator qualification. MariaDB runtime migrations, graphical browser behavior, real Wings power/backup/restore, full pack/loader installation and Minecraft/world migration are separate from the validated unit/framework boundaries. See [capabilities](capabilities.md) for the shipped limits.
 
 ## Browser layout check performed
 

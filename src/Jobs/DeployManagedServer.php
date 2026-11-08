@@ -59,6 +59,7 @@ final class DeployManagedServer implements ShouldQueue
         ExcludedFolderPreserver $preserver,
         DiscordNotifier $discord
     ): void {
+        if (ManagedServer::findOrFail($this->managedServerId)->transport === 'native') { app(\Arcturus\ModpackManager\Native\Deployment::class)->run($this); return; }
         if ($this->operationId === null && ! config('arcturus-modpack-manager.enable_deploy', false)) {
             throw new RuntimeException('Deploy feature not enabled by operator');
         }

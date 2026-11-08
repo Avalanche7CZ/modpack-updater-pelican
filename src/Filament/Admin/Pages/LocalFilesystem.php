@@ -60,6 +60,7 @@ final class LocalFilesystem extends Page
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('nativeDefault')->label('Use Native Pelican / Wings')->action(fn () => $this->setDefault('native')),
             Action::make('refreshReadiness')->label('Refresh readiness')->color('gray')->action(fn () => $this->refreshReadiness()),
             Action::make('localDefault')->label('Use local for new eligible servers')->disabled(fn () => ! ($this->report['ready'] ?? false))
                 ->action(fn () => $this->setDefault('local')),

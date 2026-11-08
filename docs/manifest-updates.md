@@ -20,7 +20,7 @@ Preparing a previously unseen upstream archive still downloads, extracts and cre
 
 In managed modpack settings, enable **Allow Update Modpack schedule tasks** and **Allow scheduled deployment** as a root administrator. Then open the server's native **Schedules**, create or edit its cron schedule, and choose **Create Task → Update Modpack**. Choose whether the task should do a normal restart when no release is available. For a 07:00 maintenance window, use the time configuration of Pelican's native scheduler. Do not add another power restart for the same purpose.
 
-The plugin registers a native task schema and a bus handler adapter; built-in power, command, backup and delete tasks retain their original handler. Only a root administrator can create or change this update action. It requires an adopted, verified same-host server, Pelican backups and administrator opt-in. The runtime rechecks the approving administrator's authority and the saved policy revision.
+The plugin registers a native task schema and a bus handler adapter; built-in power, command, backup and delete tasks retain their original handler. Only a root administrator can create or change this update action. It requires an adopted, verified server on Native Pelican / Wings (or the qualified legacy local backend), Pelican backups and administrator opt-in. The runtime rechecks the approving administrator's authority and the saved policy revision.
 
 The task checks the latest provider release. Same version: optionally restart normally, with no comparison or update backup. New version: prepare and compare the manifest delta, then run the existing deployment/backup/recovery job. Preparation and deployment happen in asynchronous jobs. The native schedule remains processing, and later tasks wait until a successful terminal result. A conflict, rejected runtime, failed update, restored original installation or manual-recovery checkpoint ends this schedule without running later tasks. The result is recorded in modpack History.
 
@@ -28,7 +28,7 @@ The native receipt survives worker restarts. Recovery reconciles the same operat
 
 **Upgrade from the old daily timer:** its Laravel schedule registration is removed, the legacy maintenance command no longer queues work, and old queued timer jobs do nothing. Existing daily-time columns are retained for reference. Recreate the desired timing in Pelican Schedules; no native schedule is silently enabled by migration. The existing Panel cron and queue workers are still required. Restart queue workers after the plugin update.
 
-The supported deployment runtime remains the existing qualified same-host Forge 1.20.1 / Java 17 runtime reuse. This change does not install arbitrary loader/Java migrations or enable remote deployment.
+Native deployment supports proven runtime reuse and complete published Forge/NeoForge runtime migrations, with qualified startup/image changes. Installer-generated dependencies and other unsupported combinations remain explicit blockers. See [native deployment](native-deployment.md) for the exact support boundary.
 
 The standard root `unix_args.txt` symlink is accepted when it resolves to the already verified Forge argument file. Its original link target is recorded and verified during recovery; other symlink mutation paths stay protected.
 

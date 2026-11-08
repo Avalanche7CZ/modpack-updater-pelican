@@ -117,7 +117,11 @@ final class NativeSchedules
                     if ($power->state($server->pelicanServer) === 'running') {
                         $heartbeat = fn () => $operation->update(['heartbeat_at' => now()]);
                         $power->stop($server->pelicanServer, heartbeat: $heartbeat);
-                        $power->startAndVerify($server->pelicanServer, $server->local_root, heartbeat: $heartbeat);
+                        if ($server->transport === 'native') {
+                            $files = new \Arcturus\ModpackManager\Native\Wings($server->pelicanServer, app(\App\Repositories\Daemon\DaemonFileRepository::class), $heartbeat);
+                            app(\Arcturus\ModpackManager\Native\Boot::class)->start($server->pelicanServer, $files, $operation->id,
+                                [], fn (array $row) => $operation->update(['context' => [...$operation->context, 'native_checkpoint' => $row]]), $heartbeat);
+                        } else { $power->startAndVerify($server->pelicanServer, $server->local_root, heartbeat: $heartbeat); }
                     }
                     app(OperationTracker::class)->transition($operation, 'completed');
                 } catch (\Throwable $error) {

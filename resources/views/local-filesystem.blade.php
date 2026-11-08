@@ -1,8 +1,9 @@
 <x-filament-panels::page>
+    <p class="mb-4 text-sm">This page configures the legacy local backend. Native Pelican / Wings requires no host volume permission setup.</p>
     <x-filament::section heading="Node readiness">
         <p class="font-medium">{{ ($this->report['ready'] ?? false) ? 'Ready for local adoption and baseline preparation' : 'Host setup required or readiness checks failed' }}</p>
         @foreach($this->report['checks'] ?? [] as $check)<p class="mt-2 break-words text-sm">{{ $check }}</p>@endforeach
-        <p class="mt-3">New server default: {{ config('arcturus-modpack-manager.default_filesystem_backend', 'wings') === 'local' ? 'Local for the approved node; remote for other nodes' : 'Remote node worker' }}.</p>
+        <p class="mt-3">New server default: {{ match (config('arcturus-modpack-manager.default_filesystem_backend', 'native')) { 'native' => 'Native Pelican / Wings', 'local' => 'Legacy local for the approved node', default => 'Legacy remote node worker' } }}.</p>
         <p class="text-sm">Checks read metadata only. This page never grants ACLs, executes sudo, changes live file contents or enables deployment.</p>
     </x-filament::section>
     <x-filament::section heading="One-time Ubuntu host setup">

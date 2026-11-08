@@ -18,6 +18,7 @@ final class ServerFilesFactory
     public function worker(ManagedServer $server): IntegrityWorker
     {
         return match ($server->transport ?? 'wings') {
+            'native' => new \Arcturus\ModpackManager\Native\Preparation($server),
             'local' => new LocalWorker($server),
             'wings' => new NodeWorker($server->pelican_server_uuid, (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->scope($server)),
             default => throw new RuntimeException('Unknown server filesystem backend; select an explicit backend in server settings'),
@@ -27,7 +28,7 @@ final class ServerFilesFactory
     public function managed(ManagedServer $server, ?Operation $operation = null): WingsFiles
     {
         $worker = $this->worker($server);
-        if ($operation && $worker instanceof LocalWorker) {
+        if ($operation && ($worker instanceof LocalWorker || $worker instanceof \Arcturus\ModpackManager\Native\Preparation)) {
             $worker->withProgress(fn (array $snapshot) => PreparationProgress::record($operation, $snapshot));
             $worker->withHeartbeat(function () use ($operation, $server): void {
                 $operation->update(['heartbeat_at' => now()]);

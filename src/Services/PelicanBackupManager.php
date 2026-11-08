@@ -38,7 +38,7 @@ final class PelicanBackupManager
         if (! $host || ! app(\App\Extensions\BackupAdapter\BackupAdapterService::class)->get($host->schema)) {
             throw new RuntimeException('Configure a working Pelican backup host/adapter before approving deployment.');
         }
-        if ($host->schema !== 'wings') { throw new RuntimeException('Manual same-host deployment currently qualifies the native Wings backup adapter. Other backup adapters remain blocked pending complete restore integration qualification.'); }
+        if ($host->schema !== 'wings') { throw new RuntimeException('Managed deployment currently qualifies the native Wings backup adapter. Other backup adapters remain blocked pending complete restore integration qualification.'); }
         if (! $server->user) { throw new RuntimeException('Server owner must be resolvable for authenticated backup restore.'); }
     }
 
@@ -125,6 +125,33 @@ final class PelicanBackupManager
                 }
             }
         }
+        $this->requestRestoreAndWait($server, $backup, $excludedFolders, $timeoutSeconds, true, $heartbeat);
+    }
+
+    /** A full native restore which preserves approved excluded root directories in place. */
+    public function restoreNativeAndWait(Server $server, Backup $backup, array $excludedFolders, \Arcturus\ModpackManager\Native\Wings $files,
+        \Closure $journal, int $timeoutSeconds = 3600, ?\Closure $heartbeat = null, ?array $linkReceipt = null): void
+    {
+        $authorize = function () use ($server, $backup, $excludedFolders): void {
+            $this->requireStopped($server);
+            if ($backup->server_id !== $server->id || $server->refresh()->status !== null) { throw new RuntimeException('Native recovery backup identity or server operation changed.'); }
+            $this->requireCompleted($backup->refresh(), BackupExclusions::patterns($excludedFolders));
+            $this->power->deploymentGuard($server, false);
+        };
+        $authorize();
+        $links = new \Arcturus\ModpackManager\Native\RootLinks($files);
+        $linkReceipt = $links->preserve('.arcturus-recovery-'.$backup->uuid, $linkReceipt, $journal);
+        (new \Arcturus\ModpackManager\Native\Recovery($files))->clearForRestore($excludedFolders, $authorize, $journal, $linkReceipt ? [$linkReceipt['path']] : []);
+        $journal(['step' => 'native_restore_intent', 'backup_uuid' => $backup->uuid, 'truncate' => false]);
+        $this->requestRestoreAndWait($server, $backup, $excludedFolders, $timeoutSeconds, false, $heartbeat);
+        // Wings temporarily manages suspension during restore. Re-arm our guard explicitly.
+        $this->power->guardAndStop($server, $heartbeat);
+        $links->restore($linkReceipt, $journal);
+        $journal(['step' => 'native_restore_callback_verified', 'backup_uuid' => $backup->uuid]);
+    }
+
+    private function requestRestoreAndWait(Server $server, Backup $backup, array $excludedFolders, int $timeoutSeconds, bool $truncate, ?\Closure $heartbeat): void
+    {
         $this->requireCompleted($backup->refresh(), BackupExclusions::patterns($excludedFolders));
         if ($server->refresh()->status !== null) {
             throw new RuntimeException('Pelican server already has an active operation');
@@ -141,7 +168,7 @@ final class PelicanBackupManager
         $server->update(['status' => ServerState::RestoringBackup]);
         // Throws on Wings error. If the status is uncertain, leave Pelican locked
         // for operator intervention instead of starting Minecraft over the restore.
-        $this->daemon->setServer($server)->restore($backup, $url, true)->throw();
+        $this->daemon->setServer($server)->restore($backup, $url, $truncate)->throw();
 
         $deadline = microtime(true) + $timeoutSeconds;
         do {

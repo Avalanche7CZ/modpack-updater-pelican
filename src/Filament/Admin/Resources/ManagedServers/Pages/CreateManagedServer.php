@@ -47,8 +47,8 @@ final class CreateManagedServer extends CreateRecord
                 Select::make('pelican_server_uuid')->label('Pelican server')->required()->searchable()
                     ->options(fn () => Server::orderBy('name')->pluck('name', 'uuid'))->unique(ignoreRecord: true),
                 Select::make('filesystem_backend')->label('Preparation backend')->required()->default('default')
-                    ->options(['default' => 'Use node default (remote for other nodes)', 'local' => 'Same-host filesystem', 'wings' => 'Remote node worker'])
-                    ->helperText('After one-time host setup, local UUID volumes are discovered from Pelican and private staging is created automatically.'),
+                    ->options(['default' => 'Use plugin default', 'native' => 'Native Pelican / Wings', 'local' => 'Legacy same-host filesystem', 'wings' => 'Legacy remote worker'])
+                    ->helperText('Native Pelican / Wings uses Panel-private preparation and the existing node connection. No server-volume ACL setup or extra API token.'),
                 TextInput::make('label')->label('Managed server name')->required()->maxLength(120),
                 Actions::make([Action::make('inspect')->button()->icon('heroicon-o-magnifying-glass')->label('Inspect runtime and launch method')
                     ->action(fn ($get) => $this->inspectSelection((string) $get('pelican_server_uuid')))]),

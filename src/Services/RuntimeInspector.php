@@ -196,7 +196,7 @@ final class RuntimeInspector
         }
         if (preg_match('/MinecraftForge v([0-9]+(?:\.[0-9]+)+)/i', $log, $m)) { $r['loader'] ??= 'forge'; $r['loader_version'] ??= $m[1]; }
         if (preg_match('/Forge Mod Loader[^\r\n]*for Minecraft ('.$mc.')/i', $log, $m)) { $r['minecraft'] ??= $m[1]; $r['loader'] ??= 'forge'; }
-        if (stripos($log, 'Crucible') !== false && $r['minecraft'] === '1.7.10') { $r['loader'] = 'crucible'; }
+        if (stripos($log, 'Crucible') !== false && $r['minecraft'] === '1.7.10') { $r['loader'] = 'crucible'; $r['loader_version'] = null; }
         if (preg_match('/ModLauncher[^\r\n]*starting:[^\r\n]*java version ([0-9]+)/i', $log, $m)) { $r['java'] = (int) $m[1]; }
         if ($r['java'] === null && preg_match('/Java is [^\r\n]*?version (1\.)?([0-9]+)(?:[.\s]|$)/i', $log, $m)) { $r['java'] = (int) $m[2]; }
         if ($r['loader'] === null && preg_match('/Starting minecraft server version ('.$mc.')/i', $log, $m)) {

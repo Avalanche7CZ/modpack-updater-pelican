@@ -14,11 +14,11 @@ final class ScheduledMaintenance
     {
         $actor = $server->automation_actor_id ? \App\Models\User::find($server->automation_actor_id) : null;
         if (! $server->enabled || ! $server->deploy_enabled || $server->policy !== 'auto' ||
-            $server->transport !== 'local' || ! $server->local_root || ! is_dir($server->local_root) || $server->backup_mode !== 'pelican' || $server->baseline_status !== 'verified' || ! $server->adopted_at ||
+            (! in_array($server->transport, ['local', 'native'], true) || ($server->transport === 'local' && (! $server->local_root || ! is_dir($server->local_root)))) || $server->backup_mode !== 'pelican' || $server->baseline_status !== 'verified' || ! $server->adopted_at ||
             ! $actor || ! $actor->isRootAdmin()) {
-            throw new RuntimeException('Scheduled maintenance requires per-server administrator opt-in, a verified local installation and Pelican backups.');
+            throw new RuntimeException('Scheduled maintenance requires per-server administrator opt-in, a verified adopted installation and Pelican backups.');
         }
-        (new \Arcturus\ModpackManager\Local\LocalWorker($server))->configuration();
+        if ($server->transport === 'local') { (new \Arcturus\ModpackManager\Local\LocalWorker($server))->configuration(); }
         app(QueuePreparation::class)->requireLocalQueue();
     }
 

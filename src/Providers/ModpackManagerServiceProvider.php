@@ -14,6 +14,7 @@ final class ModpackManagerServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->bind(\App\Repositories\Daemon\DaemonServerRepository::class, \Arcturus\ModpackManager\Services\Pelican\GuardedDaemonServerRepository::class);
         $this->app->bind(\App\Services\Servers\ServerConfigurationStructureService::class, \Arcturus\ModpackManager\Services\Pelican\GuardedServerConfiguration::class);
         $this->mergeConfigFrom(plugin_path('arcturus-modpack-manager', 'config/arcturus-modpack-manager.php'), 'arcturus-modpack-manager');
     }
@@ -21,6 +22,10 @@ final class ModpackManagerServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->app->make(LocalNode::class)->configureQueue();
+        $queueKey = 'queue.connections.'.config('queue.default');
+        if (in_array(config($queueKey.'.driver'), ['database', 'redis'], true)) {
+            config([$queueKey.'.retry_after' => max(14520, (int) config($queueKey.'.retry_after', 0))]);
+        }
         $this->app->booted(function (): void {
             $this->app->make(\App\Extensions\Tasks\TaskService::class)->register(new \Arcturus\ModpackManager\Schedules\UpdateModpackTask);
             \Illuminate\Support\Facades\Bus::map([\App\Jobs\Schedule\RunTaskJob::class => \Arcturus\ModpackManager\Schedules\NativeTaskHandler::class]);

@@ -19,7 +19,7 @@ final class GuardedServerConfiguration extends ServerConfigurationStructureServi
         $managed = ManagedServer::where('pelican_server_uuid', $server->uuid)->first(['id', 'active_operation_id']);
         $operation = $managed?->active_operation_id ? $managed->operations()->find($managed->active_operation_id) : null;
         if (! $operation || $operation->kind !== 'deploy' || ($operation->context['manual_approval'] ?? false) !== true ||
-            ($operation->context['protocol'] ?? '') !== SameHostDeployment::PROTOCOL ||
+            ! in_array($operation->context['protocol'] ?? '', [SameHostDeployment::PROTOCOL, \Arcturus\ModpackManager\Native\Qualification::PROTOCOL], true) ||
             in_array($operation->phase, ['queued', 'verifying', 'completed', 'restored', 'cancelled'], true)) { return $configuration; }
         $configuration['crash_detection_enabled'] = false;
         $configuration['suspended'] = ! in_array($operation->phase, ['starting', 'restarting_original', 'recovery_starting'], true);

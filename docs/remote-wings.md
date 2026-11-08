@@ -1,5 +1,8 @@
 # Remote Wings setup
 
+> Legacy backend documentation. Normal updates now use [Native Pelican / Wings](native-deployment.md), without server-volume ACL provisioning or a separate node worker. The restrictions and setup commands below apply only to the explicitly selected legacy backend.
+
+
 If Panel, Wings and volumes share one host, you can instead explicitly select the [local filesystem backend](local-filesystem.md), which reuses this worker's safe staging code without a service, proxy or tokens.
 
 No Panel volume mount is required for inspection, adoption, staging or comparison. Native file operations use Pelican's existing node credentials. Efficient SHA-256 inventory and safe archive staging use the separate worker shipped in `node-worker/worker.py`.

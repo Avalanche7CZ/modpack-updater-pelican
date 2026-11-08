@@ -37,7 +37,7 @@ final class QueuePreparation
                 throw new RuntimeException('Prepare the exact upstream baseline and requested target before comparison');
             }
             // Enforce an asynchronous queue for every backend; validation/planning belongs to its worker.
-            if ($fresh->transport === 'local') { $this->requireLocalQueue(); }
+            if (in_array($fresh->transport, ['local', 'native'], true)) { $this->requireLocalQueue(); }
             elseif (! in_array(config('queue.connections.'.config('queue.default').'.driver'), ['database', 'redis'], true)) {
                 throw new RuntimeException('Installation comparison requires an asynchronous database or Redis queue');
             }
@@ -62,12 +62,12 @@ final class QueuePreparation
     public function queue(ManagedServer $server, bool $baseline = false): void
     {
         $server->refresh();
-        if ($server->transport !== 'local') {
+        if (! in_array($server->transport, ['local', 'native'], true)) {
             PrepareUpdate::dispatch($server->id, $baseline);
 
             return;
         }
-        (new LocalWorker($server))->request('capabilities');
+        app(\Arcturus\ModpackManager\Remote\ServerFilesFactory::class)->worker($server)->request('capabilities');
         // Local preparation runs inside this queue job, never inside an HTTP request.
         $this->requireLocalQueue();
         if (! $baseline && $server->baseline_status !== 'verified') {

@@ -13,11 +13,11 @@ final class DeploymentGate
     {
         $preview = $server->preview_summary ?? [];
         if (($preview['comparison_schema'] ?? null) !== ManifestComparison::SCHEMA) { throw new RuntimeException('Compare files again: this plan predates manifest-scoped comparison. Previous approvals cannot be reused.'); }
-        if ($server->transport !== 'local' || ($preview['qualification']['protocol'] ?? null) !== SameHostDeployment::PROTOCOL ||
-            ($server->baseline_provenance['transport'] ?? null) !== 'local' ||
-            ($server->target_metadata['prepared']['transport'] ?? null) !== 'local') {
-            throw new RuntimeException('A qualified same-host stage and verified installed baseline are required. Run Compare files and inspect its blockers.');
-        }
+        $native = $server->transport === 'native' && ($preview['qualification']['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL &&
+            ($server->target_metadata['prepared']['transport'] ?? '') === 'native';
+        $local = $server->transport === 'local' && ($preview['qualification']['protocol'] ?? '') === SameHostDeployment::PROTOCOL &&
+            ($server->baseline_provenance['transport'] ?? '') === 'local' && ($server->target_metadata['prepared']['transport'] ?? '') === 'local';
+        if (! $native && ! $local) { throw new RuntimeException('Prepare and qualify the target using Native Pelican/Wings or the explicit legacy local backend. Inspect comparison blockers.'); }
         if ($server->comparison_status !== 'complete' || ! $server->enabled || ! $server->adopted_at || $server->baseline_status !== 'verified' ||
             ! ($preview['applicable'] ?? false) || ($preview['blocked'] ?? 1) !== 0 ||
             ($preview['policy_revision'] ?? null) !== $server->policy_revision ||
@@ -33,7 +33,7 @@ final class DeploymentGate
         if (isset($server->baseline_provenance['transport'])) {
             $this->requireReady($server);
         }
-        if ($server->transport !== 'local') {
+        if (! in_array($server->transport, ['local', 'native'], true)) {
             throw new RuntimeException('Remote deployment is disabled: a qualified node transaction and exclusion-preserving restore are not available');
         }
         if (($server->runtime_report['world_path_verified'] ?? null) === false) {

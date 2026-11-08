@@ -24,7 +24,7 @@ final class DeploymentApproval
             $operation = $fresh->operations()->lockForUpdate()->findOrFail($fresh->active_operation_id);
             if ($operation->phase === 'recovery_queued') { return $operation; }
             if ($operation->kind !== 'deploy' || $operation->phase !== 'manual_intervention') { throw new RuntimeException('Only a stopped deployment recovery checkpoint can be verified.'); }
-            $operation->update(['phase' => 'recovery_queued', 'completed_at' => null, 'heartbeat_at' => now(), 'context' => [...$operation->context, 'recovery_actor_id' => auth()->id()],
+            $operation->update(['phase' => 'recovery_queued', 'completed_at' => null, 'heartbeat_at' => now(), 'context' => [...$operation->context, 'recovery_actor_id' => auth()->id(), 'native_execution_id' => bin2hex(random_bytes(16))],
                 'progress' => ['message' => 'Administrator requested verification of the manually restored original snapshot']]);
             DB::afterCommit(function () use ($operation): void {
                 try { Bus::dispatch(new \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery($operation->id)); }
@@ -67,7 +67,7 @@ final class DeploymentApproval
             if (! hash_equals($fresh->preview_summary['qualification']['panel_sha256'], hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)))) { throw new RuntimeException('Pelican launch settings changed since comparison; inspect and compare again.'); }
             $operation = app(OperationTracker::class)->create($fresh, 'deploy', ['actor_id' => $actorId, 'manual_approval' => true, 'automatic_approval' => $automatic,
                 'plan_sha256' => $digest, 'from' => $fresh->installed_version, 'to' => $fresh->targetVersion(),
-                'policy_revision' => $fresh->policy_revision, 'panel_snapshot' => $snapshot, 'panel_sha256' => $fresh->preview_summary['qualification']['panel_sha256'], 'protocol' => SameHostDeployment::PROTOCOL], $requestId);
+                'policy_revision' => $fresh->policy_revision, 'panel_snapshot' => $snapshot, 'panel_sha256' => $fresh->preview_summary['qualification']['panel_sha256'], 'protocol' => $fresh->preview_summary['qualification']['protocol']], $requestId);
             $fresh->update(['approved_plan_sha256' => $digest, 'approved_at' => now(), 'approved_by' => $actorId]);
             DB::afterCommit(function () use ($fresh, $operation, $digest, $automatic): void {
                 try { Bus::dispatch(new DeployManagedServer($fresh->id, $automatic, $digest, $operation->id)); }

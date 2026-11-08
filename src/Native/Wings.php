@@ -89,6 +89,26 @@ final class Wings implements Files
         return hash_final($hash);
     }
 
+    public function read(string $path, int $limit = 1048576): string
+    {
+        if ($limit < 1 || $limit > 4194304) { throw new RuntimeException('Native text read limit exceeded.'); }
+        $before = $this->regular($path);
+        if ($before === null || $before['size'] > $limit) { throw new RuntimeException('Required native text file is missing or too large: '.$path); }
+        $response = $this->repo()->getHttpClient()->connectTimeout(5)->timeout(30)->withOptions(['stream' => true])
+            ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
+        $stream = $response->toPsrResponse()->getBody(); $data = '';
+        try {
+            while (! $stream->eof()) {
+                $chunk = $stream->read(min(65536, $limit + 1 - strlen($data)));
+                if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings text stream stalled.'); }
+                $data .= $chunk;
+                if (strlen($data) > $limit) { throw new RuntimeException('Wings text file grew beyond its limit.'); }
+            }
+        } finally { $stream->close(); }
+        if (strlen($data) !== $before['size'] || $this->regular($path) !== $before) { throw new RuntimeException('Native text changed during inspection.'); }
+        return $data;
+    }
+
     public function upload(string $localFile, string $path, string $sha256): void
     {
         UpdatePlanner::assertPath($path);
@@ -104,6 +124,18 @@ final class Wings implements Files
                 ->withBody($stream, 'application/octet-stream')->post('/api/servers/'.$this->server->uuid.'/files/write')->throw();
         } finally { fclose($stream); }
         if ($this->hash($path) !== $sha256) { throw new RuntimeException('Wings upload verification failed.'); }
+    }
+
+    public function permissions(string $path, ?int $mode = null): ?int
+    {
+        $meta = $this->regular($path);
+        if ($meta === null) { return null; }
+        if (! is_string($meta['mode_bits'] ?? null) || ! preg_match('/^[0-7]{1,3}$/D', $meta['mode_bits'])) { throw new RuntimeException('Wings did not provide valid file permission metadata.'); }
+        if ($mode === null) { return octdec($meta['mode_bits']); }
+        if ($mode < 0 || $mode > 0777) { throw new RuntimeException('Only ordinary file permission bits can be retained.'); }
+        $this->repo()->chmodFiles('/', [['file' => $path, 'mode' => decoct($mode)]])->throw();
+        if ($this->permissions($path) !== $mode) { throw new RuntimeException('Wings did not retain the existing file permissions.'); }
+        return $mode;
     }
 
     public function mkdir(string $path): void
@@ -127,6 +159,25 @@ final class Wings implements Files
         if ($this->stat($from) === null || $this->stat($to) !== null) { throw new RuntimeException('Wings rename source/destination changed.'); }
         $this->repo()->renameFiles('/', [['from' => $from, 'to' => $to]])->throw();
         if ($this->stat($from) !== null || $this->stat($to) === null) { throw new RuntimeException('Wings acknowledged a rename without completing it.'); }
+    }
+
+    public function linkMetadata(string $path): ?array { return $this->metadata($path, true); }
+
+    public static function sameLink(array $expected, ?array $actual): bool
+    {
+        if ($actual === null || ! ($expected['symlink'] ?? false) || ! ($actual['symlink'] ?? false)) { return false; }
+        foreach (['size', 'modified'] as $key) { if (! array_key_exists($key, $expected) || ($actual[$key] ?? null) !== $expected[$key]) { return false; } }
+        return true;
+    }
+
+    /** Rename a leaf symlink itself, with no dereference, into/out of a retained recovery directory. */
+    public function moveLink(string $from, string $to): void
+    {
+        UpdatePlanner::assertPath($from); UpdatePlanner::assertPath($to);
+        $before = $this->metadata($from, true);
+        if (! ($before['symlink'] ?? false) || $this->metadata($to, true) !== null) { throw new RuntimeException('Native launcher link move source/destination changed.'); }
+        $this->repo()->renameFiles('/', [['from' => $from, 'to' => $to]])->throw();
+        if ($this->metadata($from, true) !== null || ! self::sameLink($before, $this->metadata($to, true))) { throw new RuntimeException('Wings did not preserve the launcher link during rename.'); }
     }
 
     public function delete(string $path): void

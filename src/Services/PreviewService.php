@@ -77,20 +77,22 @@ final class PreviewService
             $server->file_inventory = [...$server->file_inventory, 'target_metadata' => $target['metadata'] ?? []];
         }
         $qualification = null;
+        $native = $server->transport === 'native';
         $qualificationError = null;
-        if ($server->transport === 'local' && isset($server->baseline_provenance['transport'])) {
+        if ($native || ($server->transport === 'local' && isset($server->baseline_provenance['transport']))) {
             try {
                 $lastPulse = 0;
                 $pulse = $operation ? function () use ($operation, &$lastPulse): void { if (time() - $lastPulse >= 10) { $operation->update(['heartbeat_at' => now()]); $lastPulse = time(); } } : null;
-                $qualification = app(SameHostDeployment::class)->qualify($server, $fullTarget, $plan, $pulse);
+                $qualification = app($native ? \Arcturus\ModpackManager\Native\Qualification::class : SameHostDeployment::class)->qualify($server, $fullTarget, $plan, $pulse);
             } catch (\Throwable $error) {
+                if (get_class($error) !== \RuntimeException::class) { report($error); }
                 $qualificationError = get_class($error) === \RuntimeException::class ? $error->getMessage()
-                    : 'Same-host qualification unavailable: check approved local paths, runtime files, queue permissions and Pelican backup configuration.';
+                    : ($native ? 'Native deployment qualification unavailable; inspect the private Panel log and operation ID.' : 'Same-host qualification unavailable: check approved local paths, runtime files, queue permissions and Pelican backup configuration.');
             }
         }
         $compatibility = $qualificationError !== null
             ? ['compatible' => false, 'blockers' => [$qualificationError], 'warnings' => [], 'changes_applied' => false, 'current' => $server->runtime_report ?? [], 'target' => $target['runtime'] ?? []]
-            : $this->runtime->preflight($qualification['current'] ?? $server->runtime_report ?? [], $qualification['target'] ?? $target['runtime'] ?? []);
+            : ($native && $qualification !== null ? ['compatible' => true, 'blockers' => [], 'warnings' => [], 'changes_applied' => false, 'current' => $qualification['current'], 'target' => $qualification['target']] : $this->runtime->preflight($qualification['current'] ?? $server->runtime_report ?? [], $qualification['target'] ?? $target['runtime'] ?? []));
         $gateReasons = $modEvidence['diagnostics'];
         if ((new DirectoryPolicy)->pending($server)) {
             $gateReasons[] = 'Review newly discovered upstream directories';
@@ -108,8 +110,8 @@ final class PreviewService
             $gateReasons[] = $plan['blocked'].' unresolved file changes';
         }
         $gateReasons = array_merge($gateReasons, $compatibility['blockers']);
-        if ($server->transport !== 'local' || (isset($server->baseline_provenance['transport']) && $qualification === null)) {
-            $gateReasons[] = $server->transport === 'local'
+        if (! in_array($server->transport, ['local', 'native'], true) || ((isset($server->baseline_provenance['transport']) || $native) && $qualification === null)) {
+            $gateReasons[] = in_array($server->transport, ['local', 'native'], true)
                 ? ($qualificationError ?? 'Complete same-host deployment qualification before approval')
                 : 'Remote deployment is disabled pending transaction/restore integration qualification';
         }

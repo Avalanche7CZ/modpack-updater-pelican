@@ -15,7 +15,7 @@ final class FilesystemBackendSettings
     public function save(ManagedServer $server, string $transport): void
     {
         Access::requireAdmin();
-        if (! in_array($transport, ['wings', 'local'], true)) {
+        if (! in_array($transport, ['native', 'wings', 'local'], true)) {
             throw new RuntimeException('Select a supported filesystem backend');
         }
         $entry = [];
@@ -36,6 +36,14 @@ final class FilesystemBackendSettings
             $paths = ['transport' => $transport, 'local_root' => $entry['root'] ?? null,
                 'staging_parent' => $entry['staging'] ?? null];
             if ($fresh->transport === $transport && $fresh->local_root === $paths['local_root'] && $fresh->staging_parent === $paths['staging_parent']) {
+                return;
+            }
+            if ($transport === 'native') {
+                $fresh->update([...$paths, 'policy_revision' => $fresh->policy_revision + 1, 'target_manifest_path' => null, 'prepared_root' => null, 'target_metadata' => null,
+                    'file_inventory' => null, 'preview_summary' => null, 'last_preview_at' => null,
+                    'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
+                $fresh->events()->create(['kind' => 'filesystem', 'status' => 'success',
+                    'message' => 'Native Pelican/Wings selected. Verified upstream baseline and protection policies retained. Prepare the target again; no host volume permissions are needed.']);
                 return;
             }
             $fresh->update([...$paths, 'baseline_status' => 'unverified', 'base_manifest_path' => null,

@@ -14,6 +14,8 @@ final class NativeFixture implements Files
     public array $directories = ['config', 'mods', 'world', 'world/region', 'backups'];
     public array $hashes = [];
     public ?string $fail = null;
+    public array $modes = ['config/a.cfg' => 0755];
+    public function permissions(string $path, ?int $mode = null): ?int { if (! isset($this->data[$path])) { return null; } if ($mode !== null) { $this->modes[$path] = $mode; } return $this->modes[$path] ?? 0644; }
     public function listing(string $directory = ''): array {
         $prefix = $directory === '' ? '' : $directory.'/'; $rows = [];
         foreach ([...array_keys($this->data), ...$this->directories] as $path) {
@@ -29,7 +31,7 @@ final class NativeFixture implements Files
     public function mkdir(string $path): void { $parts = explode('/', $path); $parent = ''; foreach ($parts as $part) { $parent = $parent === '' ? $part : $parent.'/'.$part; if (! in_array($parent, $this->directories)) { $this->directories[] = $parent; } } }
     public function rename(string $from, string $to): void {
         if ($this->fail === $to) { throw new RuntimeException('Injected partial write failure'); }
-        $this->data[$to] = $this->data[$from]; unset($this->data[$from]);
+        $this->data[$to] = $this->data[$from]; $this->modes[$to] = $this->modes[$from] ?? 0644; unset($this->data[$from], $this->modes[$from]);
     }
     public function delete(string $path): void {
         if ($this->fail === $path) { return; } // Model Wings denylist no-op/204.
@@ -45,12 +47,14 @@ try {
     $after = ['config/a.cfg' => hash('sha256', 'new'), 'config/b.cfg' => hash('sha256', 'added')];
     $log = function ($row) use (&$journal) { $journal[] = $row; };
     $tx->apply(str_repeat('a', 32), $stage, $before, $after, [], $log);
+    check($files->permissions('config/a.cfg') === 0755, 'Replacement lost existing executable permission bits');
     check($files->data['config/a.cfg'] === 'new' && $files->data['config/b.cfg'] === 'added', 'Native changes were not installed');
     check($files->data['mods/custom.jar'] === 'custom' && $files->data['world/region/r.0.0.mca'] === 'world', 'Custom/world data changed');
     check(! array_filter($files->hashes, fn ($p) => str_starts_with($p, 'world/')), 'World data entered hashing scope');
     check(end($journal)['step'] === 'files_verified', 'Durable completion checkpoint missing');
     $files = new NativeFixture; $snapshot = $files->data; $files->fail = 'config/b.cfg';
     rejects(fn () => (new Transaction($files))->apply(str_repeat('b', 32), $stage, $before, $after, [], $log), 'Partial file failure went unreported');
+    check($files->permissions('config/a.cfg') === 0755, 'Replacement lost existing executable permission bits');
     check($files->data['config/a.cfg'] === 'new', 'Fixture did not exercise a partial deployment');
     $authorized = 0; $files->fail = null;
     (new Recovery($files))->clearForRestore(['backups'], function () use (&$authorized) { $authorized++; }, $log);

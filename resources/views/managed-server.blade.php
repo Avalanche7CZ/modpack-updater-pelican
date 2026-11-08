@@ -119,11 +119,19 @@
                         </dl>
                         <p class="mt-3 text-sm font-medium">{{ $preview['blocked'] ?? 0 }} changes need a decision.</p>
                     @endif
-                    @if($preview['qualification']['runtime_strategy'] ?? null)<p class="mt-3 text-sm">Runtime: reuse verified installed Forge {{ $preview['qualification']['current']['loader_version'] }} / Minecraft {{ $preview['qualification']['current']['minecraft'] }} / Java {{ $preview['qualification']['current']['java'] }}. No installer is run and working launch settings are preserved.</p>@endif
-                    <p class="mt-4">A completed, locked Pelican backup is required before deployment. Runtime settings are preserved.</p>
+                    @if($preview['qualification']['runtime_strategy'] ?? null)<p class="mt-3 text-sm">Runtime: {{ $preview['qualification']['current']['loader'] ?? 'unknown' }} {{ $preview['qualification']['current']['loader_version'] ?? '' }} → {{ $preview['qualification']['target']['loader'] ?? 'unknown' }} {{ $preview['qualification']['target']['loader_version'] ?? '' }} / Minecraft {{ $preview['qualification']['target']['minecraft'] ?? 'unknown' }} / Java {{ $preview['qualification']['target']['java'] ?? 'unknown' }}.</p>@endif
+                    @php($runtimePlan = $preview['qualification']['runtime_plan'] ?? null)
+                    @if($runtimePlan && (($runtimePlan['startup'] ?? '') !== ($preview['qualification']['current']['startup'] ?? '') || ($runtimePlan['image'] ?? '') !== ($preview['qualification']['current']['image'] ?? '')))
+                        <details class="mt-3 text-sm"><summary class="cursor-pointer">Review startup and image changes</summary>
+                            <p class="mt-2 break-all">Image: {{ $preview['qualification']['current']['image'] ?? 'unknown' }} → {{ $runtimePlan['image'] }}</p>
+                            <p class="mt-2">Current startup</p><pre class="whitespace-pre-wrap break-all">{{ $preview['qualification']['current']['startup'] ?? 'unknown' }}</pre>
+                            <p class="mt-2">Target startup</p><pre class="whitespace-pre-wrap break-all">{{ $runtimePlan['startup'] }}</pre>
+                        </details>
+                    @endif
+                    <p class="mt-4">A completed, locked Pelican backup is required before deployment. Runtime settings change only when the approved runtime plan requires it.</p>
                     <p class="text-sm text-gray-500 dark:text-gray-400">Estimated download: {{ isset($target['download_bytes']) ? number_format($target['download_bytes']) . ' bytes' : 'Unavailable' }}</p>
                     <ul class="mt-3 list-inside list-disc text-sm">
-                        @foreach(array_unique(array_merge($target['blockers'] ?? [], $preview['capability_blockers'] ?? [], $record->transport !== 'local' ? ['Remote deployment remains disabled. Select and qualify an approved same-host backend.'] : [])) as $reason)
+                        @foreach(array_unique(array_merge($target['blockers'] ?? [], $preview['capability_blockers'] ?? [], ! in_array($record->transport, ['local', 'native'], true) ? ['Select Native Pelican / Wings and prepare the target to qualify deployment.'] : [])) as $reason)
                             <li class="break-words">{{ $reason }}</li>
                         @endforeach
                     </ul>

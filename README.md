@@ -1,10 +1,10 @@
 # Arcturus Modpack Manager
 
-Native Pelican tooling for adopting customized Minecraft servers, checking releases, preparing verified upstream files on remote nodes and reviewing three-way file changes.
+Native Pelican tooling for adopting customized Minecraft servers, checking releases, preparing verified upstream files and updating through native Wings services with three-way file protection and Pelican backups.
 
-**Read the [capability matrix](docs/capabilities.md) before enabling this plugin. Remote destructive deployment remains disabled.** Adoption, checking, staging and preview do not stop, restart or reinstall the server.
+**Read the [native deployment guide](docs/native-deployment.md) and [capability matrix](docs/capabilities.md) before enabling updates. Installer-generated runtime migrations remain blocked.** Adoption, checking, staging and preview do not stop, restart or reinstall the server.
 
-Version 0.5 uses **manifest deltas**: Compare checks candidate files only, with no recursive live inventory. Upgrade the plugin and worker together, run plugin migrations, restart queue workers, and rebuild old comparisons. See [upgrade and scheduling instructions](docs/manifest-updates.md).
+Version 0.5 uses **manifest deltas**: Compare checks candidate files only, with no recursive live inventory. Upgrade the plugin (and any explicitly retained legacy remote worker), run plugin migrations, restart queue workers, and rebuild old comparisons. See [upgrade and scheduling instructions](docs/manifest-updates.md).
 
 Identity is permanently isolated from cosmii02's Modpack Manager:
 
@@ -17,19 +17,17 @@ Identity is permanently isolated from cosmii02's Modpack Manager:
 
 Both plugins can coexist. Arcturus never reads, migrates or modifies cosmii02's tables, files or configuration.
 
-For a same-host Ubuntu installation, use the [local filesystem setup](docs/local-filesystem.md): one-time administrator approval of the local Wings node, automatic UUID discovery and private staging on adoption. Open **Local filesystem setup**, run its host command once, then enable the local default. No separate node-worker service, HTTPS proxy, tokens, per-server JSON or environment edits are needed. Remote deployments retain the [remote worker setup](docs/remote-wings.md).
-
-Modpack-specific roots require explicit operator review. For the reported TFG-Modern 0.13.5 `DiscordIntegration-Data` and `tacz` directories, see [reviewed directory setup](docs/local-filesystem.md#reviewed-modpack-specific-directories-tfg-modern-0135). Unknown archive folders are never automatically trusted.
+The default backend is **Native Pelican / Wings**. It uses the existing node connection for candidate reads, verified binary transfers, file changes, power operations and native backups. Upstream preparation uses private Panel storage. No routine volume ACLs, per-server SSH commands, extra API token or separate node service are needed. Existing legacy backends remain available; their old setup requirements do not apply to native deployment.
 
 ## Requirements and installation
 
-Target: Pelican Panel **1.0.0-rc.2**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. For remote preparation, keep queue `retry_after` above its 150-second tick timeout (180 seconds or more). Approved local-node setup configures a longer effective retry window for bounded local preparation; see the local setup guide. Manual deployment jobs have a 10,800-second timeout; the local queue requires a longer effective visibility window. See [manual deployment](docs/manual-deployment.md) for host permissions, supported runtimes and recovery requirements.
+Target: Pelican Panel **1.0.0-rc.2**, API version 1, PHP 8.4/8.5, Filament 5 and Python 3.11+. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. Keep the shared persistent database/cache, scheduler and asynchronous database/Redis queue operational. The plugin sets its queue visibility window to at least 14,520 seconds; restart existing workers after updates. Preparation and deployment never run synchronously in a Livewire request.
 
 1. Download `arcturus-modpack-manager.zip` and `SHA256SUMS.txt` from a successful [GitHub Release](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases).
 2. Verify `sha256sum -c SHA256SUMS.txt`.
 3. Import the ZIP through **Pelican Admin → Plugins**, then install/enable it. Do not unpack it over another plugin.
 4. Open the plugin's native settings action. Set provider credentials, notification preferences, check frequency, backup exclusions and staging limits.
-5. Configure the [node worker](docs/remote-wings.md) on each managed Wings node. Remote inventories fail explicitly when it is absent; the Panel does not need a volume mount.
+5. Choose **Native Pelican / Wings** when adopting a server. Existing adopted records can switch on Overview; the verified baseline and policies are retained and the target must be prepared again. Use a native Wings backup host with a free quota slot.
 6. Keep Pelican's normal scheduler and queue worker running. Restart queue workers after upgrading plugin code/settings. Settings are refreshed before each job; scheduler frequency changes take effect in a fresh scheduler process.
 
 ## Adopt an existing server
@@ -39,13 +37,13 @@ Open **Arcturus Modpack Manager → Managed servers → Adopt Existing Server**.
 1. Select the existing Pelican server and inspect runtime/launch evidence.
 2. Enter the actual provider/project and exact installed release ID. FTB uses a numeric version ID; CurseForge a file ID; Modrinth an immutable version ID; GitHub the exact tag. An image tag is a Java hint, not proof of the running runtime.
 3. Set an explicit server asset pattern for GitHub, particularly GTNH's Java/Crucible variants. Choose an editable per-server policy template (or Empty), rules, disabled mod IDs, backup backend and safe exclusions.
-4. Review the final summary and click **Create adoption draft** (or **Adopt for monitoring only**). Choose **Prepare installed baseline** on its detail page. Files are fetched into isolated node staging, independently of the live customized server.
+4. Review the final summary and click **Create adoption draft** (or **Adopt for monitoring only**). Choose **Prepare installed baseline** on its detail page. Files are fetched into isolated Panel-private staging (or the selected legacy backend), independently of the live customized server.
 5. Finish adoption after reviewing the upstream association and directory rules. Adoption does not scan the live file tree. Local customizations are checked when a target update would touch those files. Retain baseline stages for text-diff review.
 6. Finish verified adoption. If the exact upstream release cannot be verified, use **Adopt for monitoring only**. Destructive operations stay restricted.
 
 After an independently performed manual update, use **Record a manual update** on Overview to record the exact release now installed. It invalidates the previous baseline/approvals and requires a fresh adoption comparison; it never updates server files itself.
 
-The wizard never fabricates provenance by hashing live files. Existing startup commands, eggs, Docker images and Java choices are preserved. Arcturus stores association/provenance in its own database, not the reference plugin's metadata. Back up the Panel database and APP_KEY as well as server backups.
+The wizard never fabricates provenance by hashing live files. Adoption preserves startup commands, eggs, Docker images and Java choices. Qualified deployment can change startup/image in the approved runtime transaction, with original settings retained for rollback. Arcturus stores association/provenance in its own database, not the reference plugin's metadata. Back up the Panel database and APP_KEY as well as server backups.
 
 ## Arcturus protection presets
 
@@ -80,7 +78,7 @@ Use **Mods & Files** for searchable inventory and bulk file/mod policies, or **P
 
 Upstream manifests establish file ownership using paths and hashes. Optional mod metadata groups known old/new JARs into one operation; missing metadata in another installed mod never blocks an ordinary replacement. Known disabled/absent mods remain disabled. A missing old JAR with no identity evidence requires review of possible replacement additions. Additional local mods are left untouched. Strict single-line `.properties` merges can be reviewed as text; unsupported syntax or conflicting keys requires manual work through Pelican's file editor. No merge writes live data automatically.
 
-The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Apply Update requires an administrator-approved current plan and qualified same-host Forge 1.20.1 / Java 17 runtime reuse with native Wings backups.** See [manual deployment and recovery](docs/manual-deployment.md). [Mod JAR upgrades](docs/mod-upgrades.md) use the same native backup and recovery workflow. Automatic updates and optional no-update restarts run through Pelican Schedules → Update Modpack after per-server administrator opt-in. Remote deployment remains disabled. See [manifest updates and scheduled maintenance](docs/manifest-updates.md).
+The Updates tab shows real file counts, known download bytes, runtime blockers and backup requirements. **Update requires an administrator-approved current plan, a supported runtime and a completed locked native Wings backup.** Native runtime reuse is not fixed to Forge 1.20.1/Java 17. Published complete Forge/NeoForge runtimes can migrate with controlled startup/image changes; installer-generated runtime dependencies remain blocked. See [native deployment and recovery](docs/native-deployment.md). [Mod JAR upgrades](docs/mod-upgrades.md) use the same native backup and recovery workflow. Automatic updates and optional no-update restarts run through Pelican Schedules → Update Modpack after per-server administrator opt-in. Legacy remote-worker deployment remains disabled. See [manifest updates and scheduled maintenance](docs/manifest-updates.md).
 
 ## Backups and recovery
 
