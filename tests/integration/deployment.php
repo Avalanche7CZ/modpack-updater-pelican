@@ -518,6 +518,15 @@ $restoredReceipt->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), '
 app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($restoredReceipt->id);
 check($restoredReceipt->refresh()->state === 'failed' && ! \App\Models\Schedule::find($updateScheduleId)->is_processing &&
     ! \App\Models\Task::find($followingTaskId)->is_queued, 'Restored update failure incorrectly released following tasks');
+// Removing the update task during work still releases its original schedule after recovery.
+DB::table('schedules')->where('id', $updateScheduleId)->update(['is_processing' => true]);
+DB::table('tasks')->where('id', $updateTaskId)->delete();
+$deletedTaskReceipt = $restoredReceipt->replicate(['id', 'dispatch_key', 'completed_at']);
+$deletedTaskReceipt->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), 'dispatch_key' => 'fixture:deleted',
+    'state' => 'waiting', 'completed_at' => null])->save();
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($deletedTaskReceipt->id);
+check($deletedTaskReceipt->refresh()->state === 'failed' && ! \App\Models\Schedule::find($updateScheduleId)->is_processing &&
+    ! \App\Models\Task::find($followingTaskId)->is_queued, 'Deleted update task left its original schedule processing');
 // A queued native task uses the same bridge. Re-delivery of its queue ID creates no second run.
 DB::table('jobs')->delete();
 DB::table('tasks')->where('id', $taskId)->update(['payload' => 'update', 'is_queued' => true]);
@@ -533,6 +542,16 @@ check(\Arcturus\ModpackManager\Models\NativeScheduleRun::count() === $receiptCou
 $queuedReceipt = \Arcturus\ModpackManager\Models\NativeScheduleRun::where('dispatch_key', $taskId.':deployment-fixture:'.$queuedNative->id)->firstOrFail();
 app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($queuedReceipt->id);
 check($queuedReceipt->refresh()->state === 'completed' && $starts[$restartUuid] === 1, 'Update-only task restarted a current server');
+// A cancelled native run must not start later when its durable observer is recovered.
+DB::table('tasks')->where('id', $taskId)->update(['is_queued' => true]);
+DB::table('schedules')->where('id', $scheduleId)->update(['is_processing' => true]);
+\Illuminate\Support\Facades\Bus::dispatchNow(new \App\Jobs\Schedule\RunTaskJob(\App\Models\Task::findOrFail($taskId), true));
+$cancelledReceipt = \Arcturus\ModpackManager\Models\NativeScheduleRun::whereNull('completed_at')->firstOrFail();
+DB::table('tasks')->where('id', $taskId)->update(['is_queued' => false]);
+DB::table('schedules')->where('id', $scheduleId)->update(['is_processing' => false]);
+$before = count($requests);
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($cancelledReceipt->id);
+check($cancelledReceipt->refresh()->state === 'failed' && count($requests) === $before, 'Cancelled schedule started maintenance later');
 rejects(function () use ($taskId): void { $task = \App\Models\Task::findOrFail($taskId); $task->payload = 'update_restart'; $task->save(); },
     'Unauthenticated background context could change the update task payload');
 // A preparation completion cannot authorize an update after its settings or authority changed.

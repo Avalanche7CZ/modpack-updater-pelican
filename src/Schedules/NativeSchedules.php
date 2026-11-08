@@ -80,7 +80,7 @@ final class NativeSchedules
             }
             $this->authorize($run, $server);
             $task = Task::find($run->task_id);
-            if (! $task || ! $this->matches($run, $task) || (! $task->schedule->is_active && ! $run->manual_run) || $task->server->status !== null) {
+            if (! $task || ! $task->is_queued || ! $task->schedule->is_processing || ! $this->matches($run, $task) || (! $task->schedule->is_active && ! $run->manual_run) || $task->server->status !== null) {
                 $this->finish($run, false, 'Native task or server changed before maintenance started.'); return;
             }
             $result = app(ReleaseChecker::class)->check($server);
@@ -159,10 +159,10 @@ final class NativeSchedules
             ManagedServer::find($fresh->managed_server_id)?->events()->create(['kind' => 'schedule', 'status' => $success ? 'success' : 'failed',
                 'message' => $success ? 'Native Update Modpack task completed.' : ($error ?? 'Native Update Modpack task failed.'),
                 'details' => ['schedule_run_id' => $fresh->id, 'task_id' => $fresh->task_id, 'operation_id' => $fresh->operation_id]]);
-            if (! $task) { return; }
-            $schedule = $task->schedule()->lockForUpdate()->first();
-            $task->update(['is_queued' => false]);
-            $next = $success && $this->matches($fresh, $task) && ($schedule->is_active || $fresh->manual_run) && $task->server->status === null
+            $schedule = \App\Models\Schedule::lockForUpdate()->find($fresh->task_snapshot['schedule_id']);
+            if (! $schedule) { return; }
+            if ($task && $task->schedule_id === $schedule->id) { $task->update(['is_queued' => false]); }
+            $next = $success && $task && $this->matches($fresh, $task) && ($schedule->is_active || $fresh->manual_run) && $task->server->status === null
                 ? $schedule->tasks()->where('sequence_id', '>', $task->sequence_id)->orderBy('sequence_id')->first() : null;
             if ($next) {
                 $next->update(['is_queued' => true]);
