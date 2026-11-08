@@ -64,23 +64,23 @@ final class RuntimeInspector
                 $args = $texts[$path];
                 if (preg_match('/--fml\.(neoForgeVersion|forgeVersion)[=\s]+([A-Za-z0-9_.+-]+)/', $args, $m)) {
                     $candidate = ['loader' => $m[1] === 'neoForgeVersion' ? 'neoforge' : 'forge', 'loader_version' => $m[2], 'minecraft' => null];
-                    if (preg_match('/--fml\.mcVersion[=\s]+(1\.[0-9]+(?:\.[0-9]+)?)/', $args, $v)) {
+                    if (preg_match('/--fml\.mcVersion[=\s]+((?:1|26)\.[0-9]+(?:\.[0-9]+)?)/', $args, $v)) {
                         $candidate['minecraft'] = $v[1];
                     }
                 }
             } elseif (preg_match('~libraries/net/(minecraftforge/forge|neoforged/neoforge|neoforged/forge)/([^/]+)/unix_args\.txt$~', $path, $m)) {
                 $candidate = ['loader' => $m[1] === 'minecraftforge/forge' ? 'forge' : 'neoforge', 'loader_version' => $m[2], 'minecraft' => null];
-                if (preg_match('/^(1\.[0-9]+(?:\.[0-9]+)?)-(.+)$/', $m[2], $v)) {
+                if (preg_match('/^((?:1|26)\.[0-9]+(?:\.[0-9]+)?)-(.+)$/', $m[2], $v)) {
                     $candidate['minecraft'] = $v[1];
                     $candidate['loader_version'] = $v[2];
                 }
                 $args = $texts[$path] ?? '';
-                if (preg_match('/--fml\.mcVersion[=\s]+["\x27]?(1\.[0-9]+(?:\.[0-9]+)?)/', $args, $v)) {
+                if (preg_match('/--fml\.mcVersion[=\s]+["\x27]?((?:1|26)\.[0-9]+(?:\.[0-9]+)?)/', $args, $v)) {
                     $candidate['minecraft'] = $v[1];
                 }
             } elseif (stripos($path, 'crucible') !== false && str_ends_with(strtolower($path), '.jar')) {
                 $candidate = ['loader' => 'crucible', 'loader_version' => null, 'minecraft' => '1.7.10'];
-            } elseif (preg_match('~(?:^|/)forge-(1\.[0-9]+(?:\.[0-9]+)?)-([0-9.]+).*\.jar$~i', $path, $m)) {
+            } elseif (preg_match('~(?:^|/)forge-((?:1|26)\.[0-9]+(?:\.[0-9]+)?)-([0-9.]+).*\.jar$~i', $path, $m)) {
                 $candidate = ['loader' => 'forge', 'loader_version' => $m[2], 'minecraft' => $m[1]];
             } elseif (preg_match('~libraries/net/(fabricmc/fabric-loader|quiltmc/quilt-loader)/([^/]+)/[^/]+\.jar$~', $path, $m)) {
                 $candidate = ['loader' => str_starts_with($m[1], 'fabricmc') ? 'fabric' : 'quilt', 'loader_version' => $m[2], 'minecraft' => null];
@@ -152,7 +152,7 @@ final class RuntimeInspector
             }
         }
         foreach (['fabric-server-launcher.properties', 'quilt-server-launcher.properties'] as $file) {
-            if (isset($texts[$file]) && preg_match('/^serverJar=(?:[^\r\n]*\/)?(?:minecraft_server\.|server-)(1\.[0-9]+(?:\.[0-9]+)?)\.jar\s*$/m', $texts[$file], $m)) {
+            if (isset($texts[$file]) && preg_match('/^serverJar=(?:[^\r\n]*\/)?(?:minecraft_server\.|server-)((?:1|26)\.[0-9]+(?:\.[0-9]+)?)\.jar\s*$/m', $texts[$file], $m)) {
                 $metadata['minecraft'] ??= $m[1];
                 $result['evidence'][] = $file;
             }

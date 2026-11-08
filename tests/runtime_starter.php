@@ -47,4 +47,12 @@ $active = $inspector->inspect($paths, $texts,
 check($active['loader'] === 'neoforge' && $active['loader_confidence'] === 'file_evidence',
     'Stale Forge starter config overrode explicitly referenced active launcher');
 
+// Modern published server runtimes need the game version from their actual args,
+// even when no provider-specific runtime metadata accompanies the archive.
+$modernArgs = 'libraries/net/neoforged/neoforge/26.1.2.121/unix_args.txt';
+$modern = $inspector->inspect([$modernArgs], [$modernArgs => '--fml.neoForgeVersion 26.1.2.121 --fml.mcVersion 26.1.2'],
+    'java @'.$modernArgs.' nogui', 'fixture:java_25');
+check($modern['minecraft'] === '26.1.2' && $modern['loader'] === 'neoforge' && $modern['loader_version'] === '26.1.2.121',
+    'Published Minecraft 26 runtime requires unavailable provider metadata');
+
 echo "Forge Server Starter/TerraFirmaGreg runtime metadata tests passed\n";
