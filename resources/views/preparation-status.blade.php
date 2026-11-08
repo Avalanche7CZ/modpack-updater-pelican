@@ -61,6 +61,11 @@
             @elseif($terminal && $operation->phase !== 'completed')
                 <p class="mt-3 text-sm">No structured diagnostic was recorded. Use the operation IDs in technical details to inspect retained evidence.</p>
             @endif
+            <div class="mt-3" x-data="{ copied: false, copyError: false }">
+                <x-filament::button color="gray" size="xs" x-on:click="copied = false; copyError = false; $wire.exportDiagnostics().then(text => navigator.clipboard.writeText(text)).then(() => copied = true).catch(() => copyError = true)">Copy diagnostics</x-filament::button>
+                <span x-cloak x-show="copied" role="status" class="ml-2 text-sm">Copied</span>
+                <span x-cloak x-show="copyError" role="status" class="ml-2 text-sm">Clipboard unavailable. Copy the operation IDs from Technical details.</span>
+            </div>
             <details wire:key="preparation-details-{{ $operation->id }}" class="mt-4 border-t border-gray-200 pt-3 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
                 <summary class="cursor-pointer font-medium">Technical details</summary>
                 <div class="mt-2 space-y-2">

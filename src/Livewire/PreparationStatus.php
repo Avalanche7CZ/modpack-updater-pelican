@@ -22,6 +22,25 @@ final class PreparationStatus extends Component
         $this->managedServerId = $managedServerId;
     }
 
+    #[\Livewire\Attributes\Renderless]
+    public function exportDiagnostics(): string
+    {
+        Access::requireAdmin();
+        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id']);
+        $event = $server->events()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->latest('id')->first(['details']);
+        $id = $server->active_operation_id ?: ($event?->details['operation_id'] ?? null);
+        $operation = $id ? $server->operations()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->find($id) : null;
+        abort_unless($operation, 404);
+        $detail = $operation->progress['diagnostic'] ?? $operation->context['diagnostic'] ?? null;
+        $detail = $detail ? PreparationDiagnostic::normalize($detail) : null;
+        // An explicit allowlist: never export encrypted context, recipes, URLs, credentials or raw logs.
+        return json_encode(['schema' => 1, 'operation_id' => $operation->id, 'worker_operation_id' => $operation->node_operation_id,
+            'kind' => $operation->kind, 'state' => $operation->phase, 'diagnostic' => $detail ? [
+                'code' => $detail['code'], 'phase' => $detail['phase'], 'description' => $detail['description'],
+                'context' => array_intersect_key($detail['context'], array_flip(['http_status', 'errno', 'artifact_index', 'entry_index', 'file_index', 'file_id'])),
+            ] : null], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    }
+
     public function render()
     {
         Access::requireAdmin();

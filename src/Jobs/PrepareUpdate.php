@@ -94,10 +94,7 @@ final class PrepareUpdate implements ShouldQueue
                     'exception' => $error,
                 ]);
             }
-            $detail = $error instanceof PreparationException ? $error->diagnostic : PreparationDiagnostic::normalize([
-                'code' => $error instanceof \Arcturus\ModpackManager\Remote\CapabilityUnavailable ? 'WORKER_CONFIGURATION' : 'PANEL_ERROR',
-                'phase' => $operation?->progress['current']['phase'] ?? 'queued',
-            ]);
+            $detail = PreparationDiagnostic::fromException($error, $operation?->progress['current']['phase'] ?? 'queued');
             if ($operation && ! $operation->completed_at) {
                 $operation->update(['context' => [...$operation->context, 'diagnostic' => $detail]]);
                 $message = PreparationDiagnostic::message($detail);

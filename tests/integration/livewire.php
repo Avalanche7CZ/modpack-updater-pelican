@@ -158,6 +158,18 @@ $progressOperation->update(['phase' => 'downloading', 'completed_at' => null, 'p
     'current' => ['phase' => 'downloading', 'bytes_done' => 100, 'bytes_total' => null, 'updated_at' => time() - 120]]]);
 $child->call('$refresh');
 check(str_contains($child->html(), 'Waiting for the next progress sample') && ! str_contains($child->html(), 'MiB/s') && ! str_contains($child->html(), '~00:'), 'Stale/absent samples fabricated live speed or ETA');
+$diagnosticOperation = Arcturus\ModpackManager\Models\Operation::create([
+    'id' => (string) Str::uuid(), 'managed_server_id' => $record->id, 'node_operation_id' => str_repeat('a', 32),
+    'kind' => 'prepare', 'phase' => 'failed', 'completed_at' => now(),
+    'context' => ['recipe' => ['url' => 'https://private.example/?token=never-export-this'],
+        'diagnostic' => ['code' => 'HTTP_STATUS', 'phase' => 'queued', 'context' => ['http_status' => 504]]],
+]);
+$record->update(['active_operation_id' => $diagnosticOperation->id]);
+$statusComponent = new Arcturus\ModpackManager\Livewire\PreparationStatus;
+$statusComponent->mount($record->id);
+$export = $statusComponent->exportDiagnostics();
+check(str_contains($export, $diagnosticOperation->id) && str_contains($export, '504') &&
+    ! str_contains($export, 'never-export-this') && ! str_contains($export, 'private.example'), 'Diagnostic export exposed private recipe or lost correlation/status');
 Auth::guard()->forgetUser();
 rejects(fn () => Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]), 'Guest mounted the managed-server review page');
 echo "All native Livewire detail tabs rendered; destructive control and guest access guards passed\n";

@@ -49,6 +49,16 @@ final class PreparationDiagnostic
     ];
     public const PHASES = ['queued', 'downloading', 'verifying', 'extracting', 'hashing', 'comparing', 'awaiting_resolution'];
 
+    public static function fromException(\Throwable $error, string $phase = 'queued'): array
+    {
+        if ($error instanceof PreparationException) { return $error->diagnostic; }
+        if ($error instanceof \Illuminate\Http\Client\RequestException) {
+            return self::normalize(['code' => 'HTTP_STATUS', 'phase' => $phase, 'context' => ['http_status' => $error->response->status()]]);
+        }
+        return self::normalize(['code' => $error instanceof \Arcturus\ModpackManager\Remote\CapabilityUnavailable ? 'WORKER_CONFIGURATION' :
+            ($error instanceof \Illuminate\Http\Client\ConnectionException ? 'NETWORK_IO' : 'PANEL_ERROR'), 'phase' => $phase]);
+    }
+
     public static function normalize(mixed $value): array
     {
         if ($managed = ManagedPathDiagnostic::normalize($value)) {
@@ -72,6 +82,10 @@ final class PreparationDiagnostic
         $id = $value['context']['file_id'] ?? null;
         if (is_string($id) && preg_match('/^[a-f0-9]{12}$/D', $id)) {
             $context['file_id'] = $id;
+        }
+        if ($code === 'HTTP_STATUS' && in_array($context['http_status'] ?? null, [502, 503, 504], true)) {
+            $description = 'The upstream service is temporarily unavailable (HTTP '.$context['http_status'].').';
+            $action = 'Try preparation again later. If the problem persists, check the provider status and connectivity from the Panel and worker host.';
         }
         return ['schema' => 1, 'code' => $code, 'phase' => $phase, 'description' => $description, 'action' => $action, 'context' => $context];
     }

@@ -110,10 +110,11 @@
                     @endif
                     @if($preview && ($preview['to'] ?? null) === $record->targetVersion() && ($preview['policy_revision'] ?? -1) === $record->policy_revision)
                         <dl class="mt-4 grid gap-3 sm:grid-cols-3">
-                            @foreach(['add' => 'Added', 'update' => 'Updated', 'upgrade_mod' => 'Mod upgrades', 'remove' => 'Removed', 'preserve_local_change' => 'Local changes kept', 'skip_disabled' => 'Disabled mods kept', 'conflict' => 'Conflicts'] as $action => $label)
+                            @foreach(['upgrade_mod' => 'Mod upgrades', 'add' => 'Files added', 'update' => 'Files updated', 'remove' => 'Files removed', 'preserve_local_change' => 'Local changes kept', 'skip_disabled' => 'Disabled mods kept'] as $action => $label)
                                 <div><dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt><dd>{{ $preview['counts'][$action] ?? 0 }}</dd></div>
                             @endforeach
                         </dl>
+                        <p class="mt-3 text-sm font-medium">{{ $preview['blocked'] ?? 0 }} changes need a decision.</p>
                     @endif
                     @if($preview['qualification']['runtime_strategy'] ?? null)<p class="mt-3 text-sm">Runtime: reuse verified installed Forge {{ $preview['qualification']['current']['loader_version'] }} / Minecraft {{ $preview['qualification']['current']['minecraft'] }} / Java {{ $preview['qualification']['current']['java'] }}. No installer is run and working launch settings are preserved.</p>@endif
                     <p class="mt-4">A completed, locked Pelican backup is required before deployment. Runtime settings are preserved.</p>
@@ -181,6 +182,7 @@
                                             @endif
                                             <x-filament::input.checkbox wire:model.live="selectedPaths" value="{{ $change['path'] }}" aria-label="Select {{ $change['path'] }}" /> <details><summary class="cursor-pointer break-all">{{ $change['path'] }}</summary>
                                             @if($change['mod_upgrade'] ?? null)
+                                                <p class="mt-2 break-words">{{ $change['mod_upgrade']['reason'] }}</p>
                                                 <p class="mt-2 break-all">Baseline: {{ $change['mod_upgrade']['baseline']['path'] ?? 'Ambiguous' }} · {{ $change['mod_upgrade']['baseline']['version'] ?? 'Version unavailable' }}</p>
                                                 @foreach($change['mod_upgrade']['candidates'] as $scope => $candidates)
                                                     @if(count($candidates) > 1)<p class="break-all">{{ ucfirst($scope) }} candidates: {{ implode(', ', array_keys($candidates)) }}</p>@endif
@@ -192,8 +194,13 @@
                                             <dt class="text-gray-500">Matching rule rows</dt><dd>{{ implode(', ', $change['matching_rules'] ?? []) ?: 'None' }}</dd>
                                             <dt class="text-gray-500">Approval / destructive</dt><dd>{{ ($change['approval_required'] ?? false) ? 'Approval required' : 'Plan review' }} · {{ ($change['destructive'] ?? false) ? 'Destructive' : 'Preserves live data' }}</dd>
                                         </dl></details></td>
-                                        <td class="p-2">{{ str_replace('_', ' ', $change['classification']) }}
-                                            @if($change['mod_upgrade'] ?? null)<p class="mt-2 text-sm">{{ $change['mod_upgrade']['reason'] }}</p>@elseif(str_starts_with($change['action'], 'unsafe_'))<p class="mt-2 text-sm">Refresh verified embedded metadata or review duplicate identities. A filename cannot establish mod identity.</p>@endif
+                                        <td class="p-2">{{ ($change['blocked'] ?? false) ? 'Needs review' : str_replace('_', ' ', $change['classification']) }}
+                                            @if($change['blocked'] ?? false)
+                                                <details class="mt-2"><summary class="cursor-pointer">Why?</summary>
+                                                    <p class="mt-1">{{ str_replace('_', ' ', $change['classification']) }}</p>
+                                                    @if(str_starts_with($change['action'], 'unsafe_'))<p>Review missing or conflicting mod identity evidence before choosing a replacement.</p>@endif
+                                                </details>
+                                            @endif
                                         </td>
                                         <td class="p-2">{{ ['upgrade_mod' => 'Upgrade mod', 'keep_mod' => 'Keep installed mod', 'keep_mod_disabled' => 'Keep disabled / absent', 'mod_upgrade_conflict' => 'Locally modified mod — choice required', 'mod_identity_review' => 'Identity review required', 'mod_upgrade_review' => 'Mod policy review required'][$change['action']] ?? str_replace('_', ' ', $change['action']) }}</td>
                                         <td class="p-2">
