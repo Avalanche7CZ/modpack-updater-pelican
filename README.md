@@ -23,7 +23,7 @@ Modpack-specific roots require explicit operator review. For the reported TFG-Mo
 
 ## Requirements and installation
 
-Target: Pelican Panel **1.0.0-rc.1**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. For remote preparation, keep queue `retry_after` above its 150-second tick timeout (180 seconds or more). Approved local-node setup configures a longer effective retry window for bounded local preparation; see the local setup guide. Manual deployment jobs have a 10,800-second timeout; the local queue requires a longer effective visibility window. See [manual deployment](docs/manual-deployment.md) for host permissions, supported runtimes and recovery requirements.
+Target: Pelican Panel **1.0.0-rc.2**, API version 1, PHP 8.4 or 8.5, Filament 5. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. A shared persistent database/cache and an operational queue worker are needed. For remote preparation, keep queue `retry_after` above its 150-second tick timeout (180 seconds or more). Approved local-node setup configures a longer effective retry window for bounded local preparation; see the local setup guide. Manual deployment jobs have a 10,800-second timeout; the local queue requires a longer effective visibility window. See [manual deployment](docs/manual-deployment.md) for host permissions, supported runtimes and recovery requirements.
 
 1. Download `arcturus-modpack-manager.zip` and `SHA256SUMS.txt` from a successful [GitHub Release](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases).
 2. Verify `sha256sum -c SHA256SUMS.txt`.
@@ -118,7 +118,7 @@ Upgrade only the `arcturus-modpack-manager` plugin. The additive migration prese
 
 Run `bash scripts/test.sh` for the existing and expanded offline regression suites. See [integration validation](docs/integration.md) for actual Pelican/Filament contracts, disposable node fixtures, API checks and limits. Do not point integration tests at production.
 
-CI checks PHP 8.4/8.5, the Python worker, packaging and official Pelican rc.1/rc.2 lockfiles. Every successful main commit publishes a uniquely versioned install ZIP, native `update.json`, and SHA-256 sums after the required checks pass. Preview builds use the source version; release ZIP metadata and update feed share the computed release version. Local artifacts are not proof of publication.
+CI checks PHP 8.4/8.5, the Python worker, packaging and the official Pelican rc.2 lockfile. Every successful main commit publishes a uniquely versioned install ZIP, native `update.json`, and SHA-256 sums after the required checks pass. Preview builds use the source version; release ZIP metadata and update feed share the computed release version. Local artifacts are not proof of publication.
 
 The public release ZIP and `update.json` are available to Pelican's native updater. Cached update checks may take up to ten minutes to refresh.
 
