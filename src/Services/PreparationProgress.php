@@ -21,7 +21,7 @@ final class PreparationProgress
             $n = $value[$key] ?? null;
             $result[$key] = is_numeric($n) && is_finite((float) $n) && $n >= 0 ? (float) $n : null;
         }
-        $steps = ['comparing_streamed_checksums', 'validating_archive', 'extracting_files', 'inventory_enumeration', 'inventory_hashing', 'reading_mod_metadata', 'planning', 'resolving_required_files'];
+        $steps = ['retrying_download', 'comparing_streamed_checksums', 'validating_archive', 'extracting_files', 'inventory_enumeration', 'inventory_hashing', 'reading_mod_metadata', 'planning', 'resolving_required_files'];
         $result['step'] = in_array($value['step'] ?? null, $steps, true) ? $value['step'] : null;
         $result['finished'] = ($value['finished'] ?? false) === true;
         return $result;

@@ -66,3 +66,5 @@ For a file recipe, use `"format": "files"` and one entry per required file with 
 
 
 A schema-2 catalog can retain old immutable baselines at the same source URL: replace the single recipe with `{"schema":2,"latest":"2.0","releases":[...]}`, where every release entry has its own exact `version`, `downloads`, optional `format`, `runtime` and `stable` flag. Entries must have unique versions; `latest` must point to an existing entry. Declare releases newest-first when no pointer is supplied. This permits selecting the original release for adoption even after a newer custom version is published. Custom sources have no public search index and report that capability explicitly.
+
+Artifact downloads retry HTTP 502/503/504 at most twice, with short cancellable delays. Each attempt starts from the original publisher URL and revalidates redirects, hosts and DNS. Retries happen before creating the artifact; partial transfers and integrity failures are not replayed. The preparation status displays when a retry is in progress.

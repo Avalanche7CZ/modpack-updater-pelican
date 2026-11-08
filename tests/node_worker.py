@@ -600,6 +600,65 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(size, 7)
         self.assertEqual(digest, w.hashlib.sha256(b'content').hexdigest())
 
+    def test_gateway_errors_retry_before_creating_artifact(self):
+        for status in (502, 503, 504):
+            with self.subTest(status=status), patch.object(w.time, 'sleep') as pause:
+                digest, size = self.run_fetch([self.response(status=status), self.response()])
+                self.assertEqual(size, 7)
+                self.assertEqual(digest, w.hashlib.sha256(b'content').hexdigest())
+                self.assertEqual(pause.call_count, 4)
+
+    def test_gateway_retries_restart_original_url_and_refresh_redirect(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(w, 'public_address', return_value='1.1.1.1'), patch.object(w, 'PinnedHTTPS') as transport, patch.object(w.time, 'sleep'):
+            responses = [self.response(status=302, headers={'Location': '/cdn?ticket=old'}), self.response(status=504),
+                         self.response(status=302, headers={'Location': '/cdn?ticket=new'}), self.response()]
+            transport.return_value.getresponse.side_effect = responses
+            destination = Path(temp) / 'file'
+            requests = []
+            def record(method, path, headers):
+                self.assertFalse(destination.exists(), 'Retry or redirect opened the destination prematurely')
+                requests.append((path, headers.copy()))
+            transport.return_value.request.side_effect = record
+            w.fetch('https://github.com/original', destination, ['github.com'], {'sha256': w.hashlib.sha256(b'content').hexdigest()}, 1000)
+            self.assertEqual([x[0] for x in requests], ['/original', '/cdn?ticket=old', '/original', '/cdn?ticket=new'])
+            self.assertEqual(requests[2][1]['Cache-Control'], 'no-cache')
+            self.assertEqual(destination.read_bytes(), b'content')
+
+    def test_gateway_retries_are_bounded_and_leave_no_artifact(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(w, 'public_address', return_value='1.1.1.1'), patch.object(w, 'PinnedHTTPS') as transport, patch.object(w.time, 'sleep'):
+            transport.return_value.getresponse.side_effect = [self.response(status=504) for _ in range(3)]
+            destination = Path(temp) / 'file'
+            with self.assertRaises(w.PreparationFailure) as failure:
+                w.fetch('https://github.com/original', destination, ['github.com'], {'sha256': 'a' * 64}, 1000)
+            self.assertEqual(failure.exception.code, 'HTTP_STATUS')
+            self.assertEqual(failure.exception.context['http_status'], 504)
+            self.assertEqual(transport.return_value.request.call_count, 3)
+            self.assertFalse(destination.exists())
+
+    def test_permanent_http_errors_are_not_retried(self):
+        for status in (401, 403, 404):
+            with self.subTest(status=status), patch.object(w.time, 'sleep') as pause:
+                with self.assertRaises(w.PreparationFailure) as failure:
+                    self.run_fetch([self.response(status=status)])
+                self.assertEqual(failure.exception.context['http_status'], status)
+                pause.assert_not_called()
+
+    def test_retry_cancellation_prevents_another_request(self):
+        cancelled = False
+        def stop(_):
+            nonlocal cancelled
+            cancelled = True
+        with patch.object(w.time, 'sleep', side_effect=stop):
+            with self.assertRaises(InterruptedError):
+                self.run_fetch([self.response(status=504)], cancelled=lambda: cancelled)
+
+    def test_partial_successful_response_is_never_retried(self):
+        response = self.response()
+        response.read.side_effect = [b'partial', ConnectionResetError('fixture disconnect')]
+        with self.assertRaises(ConnectionResetError), patch.object(w.time, 'sleep') as pause:
+            self.run_fetch([response])
+        pause.assert_not_called()
+
     def test_checksum_mismatch(self):
         with self.assertRaises(ValueError):
             self.run_fetch([self.response()], 'a' * 64)

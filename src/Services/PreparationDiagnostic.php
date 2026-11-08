@@ -23,7 +23,7 @@ final class PreparationDiagnostic
         'NETWORK_TIMEOUT' => ['The upstream connection timed out.', 'Check outbound connectivity and upstream availability before retrying.'],
         'NETWORK_TLS' => ['The upstream HTTPS connection could not be verified.', 'Check certificates, system time and trust store. Keep TLS verification enabled.'],
         'NETWORK_IO' => ['The upstream connection was interrupted.', 'Check connectivity and retain the partial download before retrying.'],
-        'HTTP_STATUS' => ['The upstream server rejected the artifact request.', 'Check upstream availability, release asset selection and download permissions.'],
+        'HTTP_STATUS' => ['The download endpoint returned an HTTP error.', 'Up to three download attempts are made for 502/503/504 before writing an artifact. If they persist, check upstream availability; for other status codes check asset selection and permissions.'],
         'DOWNLOAD_POLICY' => ['The artifact or redirect violates the HTTPS/public-address/host policy.', 'Review the exact upstream CDN hosts in the operator configuration; do not allow private downloads.'],
         'DOWNLOAD_LIMIT' => ['The download exceeds its configured byte limit.', 'Review the expected release size and available staging space before adjusting operator limits.'],
         'TRANSFER_SIZE' => ['The transfer ended with a different byte count than declared.', 'Retain the partial download and check the exact upstream asset and connection.'],

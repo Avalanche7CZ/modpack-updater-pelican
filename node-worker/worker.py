@@ -86,7 +86,7 @@ FAILURES = {
     'NETWORK_TIMEOUT': ('The upstream connection timed out.', 'Check outbound connectivity and upstream availability before retrying.'),
     'NETWORK_TLS': ('The upstream HTTPS connection could not be verified.', 'Check certificates, system time and trust store. Keep TLS verification enabled.'),
     'NETWORK_IO': ('The upstream connection was interrupted.', 'Check connectivity and retain the partial download before retrying.'),
-    'HTTP_STATUS': ('The upstream server rejected the artifact request.', 'Check upstream availability, release asset selection and download permissions.'),
+    'HTTP_STATUS': ('The download endpoint returned an HTTP error.', 'Up to three download attempts are made for 502/503/504 before writing an artifact. If they persist, check upstream availability; for other status codes check asset selection and permissions.'),
     'DOWNLOAD_POLICY': ('The artifact or redirect violates the HTTPS/public-address/host policy.', 'Review the exact upstream CDN hosts in the operator configuration; do not allow private downloads.'),
     'DOWNLOAD_LIMIT': ('The download exceeds its configured byte limit.', 'Review the expected release size and available staging space before adjusting operator limits.'),
     'TRANSFER_SIZE': ('The transfer ended with a different byte count than declared.', 'Retain the partial download and check the exact upstream asset and connection.'),
@@ -402,37 +402,61 @@ def validate_checksums(hashes):
 
 def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress=lambda n: None,
           cancelled=lambda: False, report=lambda **values: None):
-    """Pinned HTTPS, streaming checksums and measured progress. Never retry partial mutations."""
+    """Pinned HTTPS with bounded gateway retries before file creation; no partial-transfer replay."""
     validate_checksums(hashes)
     response = connection = None
     try:
-        for _ in range(4):
-            try:
-                p = urlsplit(url)
-                allowed = (len(url) <= 4096 and p.scheme == 'https' and p.hostname in hosts
-                           and p.port in (None, 443) and not p.username and not p.password
-                           and not p.fragment and not any(ord(c) <= 32 for c in url))
-            except ValueError:
-                allowed = False
-            if not allowed:
+        origin_url = url
+        for attempt in range(3):
+            # Start at the publisher URL again: a CDN URL may contain an expired signature.
+            url = origin_url
+            retry = False
+            for _ in range(4):
+                if cancelled():
+                    raise InterruptedError('Operation cancelled')
+                try:
+                    p = urlsplit(url)
+                    allowed = (len(url) <= 4096 and p.scheme == 'https' and p.hostname in hosts
+                               and p.port in (None, 443) and not p.username and not p.password
+                               and not p.fragment and not any(ord(c) <= 32 for c in url))
+                except ValueError:
+                    allowed = False
+                if not allowed:
+                    raise PreparationFailure('DOWNLOAD_POLICY')
+                connection = PinnedHTTPS(p.hostname, public_address(p.hostname))
+                headers = {'User-Agent': 'Arcturus-Modpack-Manager/0.5'}
+                if attempt:
+                    headers['Cache-Control'] = 'no-cache'
+                connection.request('GET', p.path + ('?' + p.query if p.query else ''), headers=headers)
+                response = connection.getresponse()
+                if response.status in (301, 302, 303, 307, 308):
+                    url = urljoin(url, response.getheader('Location', ''))
+                    response.close(); connection.close()
+                    response = connection = None
+                    continue
+                if response.status in (502, 503, 504) and attempt < 2:
+                    # No destination has been opened and no bytes have been written.
+                    response.close(); connection.close()
+                    response = connection = None
+                    report(force=True, state='downloading', step='retrying_download', bytes_done=0, bytes_total=expected_size)
+                    for _ in range(4 * (attempt + 1)):
+                        if cancelled():
+                            raise InterruptedError('Operation cancelled')
+                        time.sleep(0.25)
+                    retry = True
+                    break
+                if response.status != 200:
+                    raise PreparationFailure('HTTP_STATUS', http_status=response.status)
+                break
+            else:
                 raise PreparationFailure('DOWNLOAD_POLICY')
-            connection = PinnedHTTPS(p.hostname, public_address(p.hostname))
-            connection.request('GET', p.path + ('?' + p.query if p.query else ''), headers={'User-Agent': 'Arcturus-Modpack-Manager/0.4'})
-            response = connection.getresponse()
-            if response.status in (301, 302, 303, 307, 308):
-                url = urljoin(url, response.getheader('Location', ''))
-                response.close(); connection.close()
-                continue
-            if response.status != 200:
-                raise PreparationFailure('HTTP_STATUS', http_status=response.status)
-            break
-        else:
-            raise PreparationFailure('DOWNLOAD_POLICY')
+            if not retry:
+                break
         length = response.getheader('Content-Length')
         if length is not None and (not length.isdigit() or int(length) > maximum):
             raise PreparationFailure('DOWNLOAD_LIMIT')
         total = int(length) if length is not None else expected_size
-        report(state='downloading', bytes_done=0, bytes_total=total, files_done=0, files_total=1)
+        report(state='downloading', step=None, bytes_done=0, bytes_total=total, files_done=0, files_total=1)
         digests = {a: hashlib.new(a) for a in set(hashes) | {'sha256'}}
         size = 0
         with destination.open('xb') as output:
@@ -478,7 +502,7 @@ def local_artifact(identifier, destination, entry, hashes, maximum, report=lambd
     size = 0
     with open_regular(source.parent, source.name) as src, destination.open('xb') as dest:
         total = os.fstat(src.fileno()).st_size
-        report(state='downloading', bytes_done=0, bytes_total=total, files_done=0, files_total=1)
+        report(state='downloading', step=None, bytes_done=0, bytes_total=total, files_done=0, files_total=1)
         while chunk := src.read(1024 * 1024):
             if cancelled():
                 raise InterruptedError('Operation cancelled')

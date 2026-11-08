@@ -30,6 +30,9 @@
                                     </div>
                                 @endif
                             @endif
+                            @if($row['active'] && ($row['snapshot']['step'] ?? null) === 'retrying_download')
+                                <p class="mt-1 text-sm">Temporary upstream gateway error. Retrying the original download URL before writing any files.</p>
+                            @endif
                             @if($row['metrics'])
                                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ implode(' · ', $row['metrics']) }}</p>
                             @endif
