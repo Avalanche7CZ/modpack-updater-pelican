@@ -52,6 +52,9 @@ final class PreparationDiagnostic
     public static function fromException(\Throwable $error, string $phase = 'queued'): array
     {
         if ($error instanceof PreparationException) { return $error->diagnostic; }
+        if ($error instanceof \Arcturus\ModpackManager\Modpacks\ProviderHttpException) {
+            return self::normalize(['code' => 'HTTP_STATUS', 'phase' => $phase, 'context' => ['http_status' => $error->status]]);
+        }
         if ($error instanceof \Illuminate\Http\Client\RequestException) {
             return self::normalize(['code' => 'HTTP_STATUS', 'phase' => $phase, 'context' => ['http_status' => $error->response->status()]]);
         }

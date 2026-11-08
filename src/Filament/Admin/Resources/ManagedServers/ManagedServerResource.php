@@ -141,17 +141,12 @@ final class ManagedServerResource extends Resource
                 ->columns(2)->schema([
                     Select::make('policy')->required()->default('notify')->native(false)
                         ->options(['notify' => 'Notify only', 'approve' => 'Require admin approval',
-                            'auto' => 'Automatic at scheduled time']),
+                            'auto' => 'Allow Update Modpack schedule tasks']),
                     Toggle::make('enabled')->label('Monitor this server')->default(true),
                     Toggle::make('deploy_enabled')->label('Allow scheduled deployment')->default(false)
                         ->helperText('Enable only after a successful manual update on this server. Same-host deployment is required.'),
                 ]),
-            Section::make('Scheduled maintenance')->columns(2)->schema([
-                \Filament\Forms\Components\TextInput::make('maintenance_time')->label('Daily time (HH:MM)')->nullable()
-                    ->regex('/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/')->helperText('Leave empty to disable. Replaces your separate restart schedule.'),
-                \Filament\Forms\Components\TextInput::make('maintenance_timezone')->label('Timezone')->default(config('app.timezone', 'UTC'))->required()->rules(['timezone']),
-                Toggle::make('restart_when_current')->label('Restart when no update is available')->default(false),
-            ]),
+            Section::make('Pelican Schedules')->description('Choose Schedules on the server, create or edit a schedule, then add an Update Modpack task. The task can restart normally when no new release is available. Subsequent tasks wait for the update result. Existing plugin daily times are no longer executed.')->schema([]),
             DiscordFields::section(),
             Section::make('Backups')->columns(1)->schema([
                 Select::make('backup_mode')->label('Backup backend')->required()->native(false)

@@ -24,6 +24,8 @@ final class RecoverOperations extends Command
             } elseif (in_array($op->kind, ['prepare', 'baseline'], true)) {
                 PrepareUpdate::dispatch($op->managed_server_id, $op->kind === 'baseline', $op->id);
                 $this->line('Queued preparation reconciliation: '.$op->id);
+            } elseif ($op->kind === 'restart') {
+                app(\Arcturus\ModpackManager\Services\OperationTracker::class)->fail($op, 'Restart worker interrupted. Inspect the Minecraft console before another run.');
             } elseif ($op->kind === 'deploy' && ($op->context['manual_approval'] ?? false) === true) {
                 if ($op->phase === 'recovery_queued') {
                     \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery::dispatch($op->id);
@@ -42,6 +44,9 @@ final class RecoverOperations extends Command
             }
         }
 
+        foreach (\Arcturus\ModpackManager\Models\NativeScheduleRun::whereNull('completed_at')->get(['id']) as $run) {
+            \Arcturus\ModpackManager\Jobs\RunNativeSchedule::dispatch($run->id);
+        }
         app(DiscordNotifier::class)->recover();
 
         return self::SUCCESS;

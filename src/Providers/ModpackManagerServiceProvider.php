@@ -21,6 +21,19 @@ final class ModpackManagerServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->app->make(LocalNode::class)->configureQueue();
+        $this->app->booted(function (): void {
+            $this->app->make(\App\Extensions\Tasks\TaskService::class)->register(new \Arcturus\ModpackManager\Schedules\UpdateModpackTask);
+            \Illuminate\Support\Facades\Bus::map([\App\Jobs\Schedule\RunTaskJob::class => \Arcturus\ModpackManager\Schedules\NativeTaskHandler::class]);
+        });
+        \App\Models\Task::saving(function ($task): void {
+            if (($task->action === \Arcturus\ModpackManager\Schedules\UpdateModpackTask::ID || $task->getOriginal('action') === \Arcturus\ModpackManager\Schedules\UpdateModpackTask::ID) &&
+                (! $task->exists || $task->isDirty(['action', 'payload', 'schedule_id']))) {
+                \Arcturus\ModpackManager\Security\Access::requireAdmin();
+                if ($task->action === \Arcturus\ModpackManager\Schedules\UpdateModpackTask::ID && ! in_array($task->payload, ['update', 'update_restart'], true)) {
+                    throw new \RuntimeException('Invalid Update Modpack task payload.');
+                }
+            }
+        });
         $this->loadViewsFrom(plugin_path('arcturus-modpack-manager', 'resources/views'), 'arcturus-modpack-manager');
         // Configuration is refreshed on each job in long-lived workers as well as web requests.
         $loadSettings = function (): void {
@@ -35,7 +48,6 @@ final class ModpackManagerServiceProvider extends ServiceProvider
             if (! $this->app->runningInConsole()) {
                 return;
             }
-            $this->app->make(Schedule::class)->command('arcturus-modpack:maintenance')->everyMinute()->withoutOverlapping();
             $this->app->make(Schedule::class)->command('arcturus-modpack:recover')->everyFiveMinutes()->withoutOverlapping();
             $hours = max(1, min(24, (int) config('arcturus-modpack-manager.check_interval_hours', 6)));
             $this->app->make(Schedule::class)->command('arcturus-modpack:check')

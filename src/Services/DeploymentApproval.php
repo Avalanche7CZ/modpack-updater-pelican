@@ -42,10 +42,10 @@ final class DeploymentApproval
         return $this->enqueue($server, $digest, $requestId, (int) auth()->id(), false);
     }
 
-    public function queueAutomatic(ManagedServer $server): Operation
+    public function queueAutomatic(ManagedServer $server, ?string $requestId = null): Operation
     {
         app(ScheduledMaintenance::class)->requireEnabled($server);
-        return $this->enqueue($server, $server->preview_summary['plan_sha256'] ?? '', (string) \Illuminate\Support\Str::uuid(), (int) $server->automation_actor_id, true);
+        return $this->enqueue($server, $server->preview_summary['plan_sha256'] ?? '', $requestId ?? (string) \Illuminate\Support\Str::uuid(), (int) $server->automation_actor_id, true);
     }
 
     private function enqueue(ManagedServer $server, string $digest, string $requestId, int $actorId, bool $automatic): Operation

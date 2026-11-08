@@ -426,18 +426,119 @@ $app->instance(\Arcturus\ModpackManager\Modpacks\JsonClient::class, new class ex
         return ['schema' => 2, 'version' => '0.13.15', 'downloads' => [['artifact_id' => 'fixture', 'path' => 'config/upstream.cfg', 'hashes' => ['sha256' => str_repeat('a', 64)]]]];
     }
 });
+// Use the actual native schedule bus path, not a second plugin timer.
+Schema::create('schedules', function (Blueprint $t) {
+    $t->id(); $t->unsignedBigInteger('server_id'); $t->string('name'); $t->boolean('is_active')->default(true);
+    $t->boolean('is_processing')->default(true); $t->boolean('only_when_online')->default(true);
+    $t->string('cron_minute')->default('0'); $t->string('cron_hour')->default('7'); $t->string('cron_day_of_month')->default('*');
+    $t->string('cron_day_of_week')->default('*'); $t->string('cron_month')->default('*');
+    $t->timestamp('last_run_at')->nullable(); $t->timestamp('next_run_at')->nullable(); $t->timestamps();
+});
+Schema::create('tasks', function (Blueprint $t) {
+    $t->id(); $t->unsignedBigInteger('schedule_id'); $t->unsignedInteger('sequence_id'); $t->string('action');
+    $t->text('payload'); $t->unsignedInteger('time_offset')->default(0); $t->boolean('is_queued')->default(false);
+    $t->boolean('continue_on_failure')->default(false); $t->timestamps();
+});
+$scheduleId = DB::table('schedules')->insertGetId(['server_id' => $restart->pelicanServer->id, 'name' => 'Native modpack maintenance']);
+$taskId = DB::table('tasks')->insertGetId(['schedule_id' => $scheduleId, 'sequence_id' => 1,
+    'action' => \Arcturus\ModpackManager\Schedules\UpdateModpackTask::ID, 'payload' => 'update_restart', 'is_queued' => true]);
+$nextId = DB::table('tasks')->insertGetId(['schedule_id' => $scheduleId, 'sequence_id' => 2,
+    'action' => 'command', 'payload' => 'say maintenance finished', 'time_offset' => 15]);
 $before = count($requests);
-$day = now('Europe/Prague')->toDateString();
-app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->run($restart->id, $day);
-check($starts[$restartUuid] === 1 && $states[$restartUuid] === 'running' && ! $restart->refresh()->active_operation_id, 'Current-version maintenance did not restart the server');
+$nativeTask = \App\Models\Task::findOrFail($taskId);
+check(app(\App\Extensions\Tasks\TaskService::class)->get($nativeTask->action) instanceof \Arcturus\ModpackManager\Schedules\UpdateModpackTask, 'Update Modpack was not registered in native task options');
+\Illuminate\Support\Facades\Bus::dispatchNow(new \App\Jobs\Schedule\RunTaskJob($nativeTask, true));
+$nativeRun = \Arcturus\ModpackManager\Models\NativeScheduleRun::latest('created_at')->firstOrFail();
+\Illuminate\Support\Facades\Bus::dispatchNow(new \App\Jobs\Schedule\RunTaskJob($nativeTask->fresh(), true));
+check(\Arcturus\ModpackManager\Models\NativeScheduleRun::count() === 1, 'Overlapping manual execution created another active run');
+check(\App\Models\Schedule::find($scheduleId)->is_processing && \App\Models\Task::find($taskId)->is_queued && ! \App\Models\Task::find($nextId)->is_queued,
+    'Native schedule advanced before its update job ran');
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($nativeRun->id);
+check($starts[$restartUuid] === 1 && $states[$restartUuid] === 'running' && ! $restart->refresh()->active_operation_id, 'Native current-version task did not restart the server');
 check(! collect(array_slice($requests, $before))->contains(fn ($row) => str_contains($row[2], '/backup')), 'Current-version restart requested an update backup');
+check(! \App\Models\Task::find($nextId)->is_queued, 'Following task ran before terminal operation was observed');
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($nativeRun->id);
+check($nativeRun->refresh()->state === 'completed' && \App\Models\Task::find($nextId)->is_queued && ! \App\Models\Task::find($taskId)->is_queued,
+    'Successful update/restart did not release the next native task');
 $before = count($requests);
-app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->run($restart->id, $day);
-check(count($requests) === $before && $starts[$restartUuid] === 1, 'Duplicate schedule restarted the server twice');
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($nativeRun->id);
+check(count($requests) === $before && $starts[$restartUuid] === 1, 'Duplicate schedule receipt restarted the server twice');
+// Ordinary following tasks still run through Pelican's original handler and close the schedule.
+\Illuminate\Support\Facades\Bus::dispatchNow(new \App\Jobs\Schedule\RunTaskJob(\App\Models\Task::findOrFail($nextId), true));
+check(! \App\Models\Schedule::find($scheduleId)->is_processing && collect($requests)->contains(fn ($row) => str_ends_with($row[2], '/commands')),
+    'Native command handler was replaced or schedule did not finish');
+// Permission revocation after dispatch prevents a restart and ends the native schedule.
+DB::table('tasks')->where('id', $taskId)->update(['is_queued' => true]);
+DB::table('tasks')->where('id', $nextId)->update(['is_queued' => false]);
+DB::table('schedules')->where('id', $scheduleId)->update(['is_processing' => true]);
+\Illuminate\Support\Facades\Bus::dispatchNow(new \App\Jobs\Schedule\RunTaskJob($nativeTask->fresh(), true));
+$revokedRun = \Arcturus\ModpackManager\Models\NativeScheduleRun::where('id', '!=', $nativeRun->id)->firstOrFail();
+$rootRoleGranted = false;
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($revokedRun->id);
+$rootRoleGranted = true;
+check($revokedRun->refresh()->state === 'failed' && ! \App\Models\Schedule::find($scheduleId)->is_processing && ! \App\Models\Task::find($nextId)->is_queued && $starts[$restartUuid] === 1,
+    'Revoked authority ran maintenance or advanced the native schedule');
+// A completed preparation hands over to the real backup/deployment job before releasing the next task.
+DB::table('jobs')->delete(); // Only terminal restart observers remain from the preceding fixture.
+$scenario = 'success';
+$nativeUpdate = $make('native schedule deployment bridge', true);
+$nativeUpdate->update(['policy' => 'auto', 'deploy_enabled' => true, 'automation_actor_id' => 1]);
+app(PreviewService::class)->generate($nativeUpdate);
+$updateScheduleId = DB::table('schedules')->insertGetId(['server_id' => $nativeUpdate->pelicanServer->id, 'name' => 'Native update bridge']);
+$updateTaskId = DB::table('tasks')->insertGetId(['schedule_id' => $updateScheduleId, 'sequence_id' => 1,
+    'action' => \Arcturus\ModpackManager\Schedules\UpdateModpackTask::ID, 'payload' => 'update', 'is_queued' => true]);
+$followingTaskId = DB::table('tasks')->insertGetId(['schedule_id' => $updateScheduleId, 'sequence_id' => 2, 'action' => 'command', 'payload' => 'say update finished']);
+$bridgeId = (string) \Illuminate\Support\Str::uuid();
+$preparedOperation = app(OperationTracker::class)->create($nativeUpdate, 'prepare', ['automatic' => true,
+    'native_schedule_run_id' => $bridgeId, 'policy_revision' => $nativeUpdate->policy_revision, 'actor_id' => 1], $bridgeId);
+app(OperationTracker::class)->transition($preparedOperation, 'completed');
+$bridge = \Arcturus\ModpackManager\Models\NativeScheduleRun::create([
+    'id' => $bridgeId, 'dispatch_key' => 'fixture:bridge', 'task_id' => $updateTaskId, 'managed_server_id' => $nativeUpdate->id,
+    'task_snapshot' => ['schedule_id' => $updateScheduleId, 'sequence_id' => 1, 'payload' => 'update', 'server_uuid' => $nativeUpdate->pelican_server_uuid],
+    'manual_run' => true, 'policy_revision' => $nativeUpdate->policy_revision, 'actor_id' => 1,
+    'state' => 'waiting', 'operation_id' => $preparedOperation->id,
+]);
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($bridgeId);
+$bridge->refresh();
+check($bridge->operation_id !== $preparedOperation->id && Operation::find($bridge->operation_id)->kind === 'deploy' &&
+    ! \App\Models\Task::find($followingTaskId)->is_queued && \App\Models\Schedule::find($updateScheduleId)->is_processing, 'Preparation completion advanced tasks before deployment');
+app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+check($nativeUpdate->refresh()->installed_version === '0.13.17', 'Native task did not execute the real backup/deployment workflow');
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($bridgeId);
+check($bridge->refresh()->state === 'completed' && \App\Models\Task::find($followingTaskId)->is_queued, 'Successful deployment did not release following task');
+// A restored failed update stops the chain even though the original Minecraft server is running again.
+DB::table('tasks')->where('id', $updateTaskId)->update(['is_queued' => true]);
+DB::table('tasks')->where('id', $followingTaskId)->update(['is_queued' => false]);
+DB::table('schedules')->where('id', $updateScheduleId)->update(['is_processing' => true]);
+$restoredOperation = app(OperationTracker::class)->create($nativeUpdate, 'deploy');
+app(OperationTracker::class)->transition($restoredOperation, 'restored');
+$restoredReceipt = $bridge->replicate(['id', 'dispatch_key', 'completed_at']);
+$restoredReceipt->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), 'dispatch_key' => 'fixture:restored',
+    'state' => 'waiting', 'operation_id' => $restoredOperation->id, 'completed_at' => null])->save();
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($restoredReceipt->id);
+check($restoredReceipt->refresh()->state === 'failed' && ! \App\Models\Schedule::find($updateScheduleId)->is_processing &&
+    ! \App\Models\Task::find($followingTaskId)->is_queued, 'Restored update failure incorrectly released following tasks');
+// A queued native task uses the same bridge. Re-delivery of its queue ID creates no second run.
+DB::table('jobs')->delete();
+DB::table('tasks')->where('id', $taskId)->update(['payload' => 'update', 'is_queued' => true]);
+DB::table('schedules')->where('id', $scheduleId)->update(['is_processing' => true]);
+$receiptCount = \Arcturus\ModpackManager\Models\NativeScheduleRun::count();
+\Illuminate\Support\Facades\Bus::dispatch(new \App\Jobs\Schedule\RunTaskJob(\App\Models\Task::findOrFail($taskId)));
+$queuedNative = DB::table('jobs')->orderBy('id')->first();
+app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+check(\Arcturus\ModpackManager\Models\NativeScheduleRun::count() === $receiptCount + 1, 'Queued native task bypassed the update bridge');
+DB::table('jobs')->insert((array) $queuedNative);
+app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+check(\Arcturus\ModpackManager\Models\NativeScheduleRun::count() === $receiptCount + 1, 'Duplicate queued delivery created a second maintenance run');
+$queuedReceipt = \Arcturus\ModpackManager\Models\NativeScheduleRun::where('dispatch_key', $taskId.':deployment-fixture:'.$queuedNative->id)->firstOrFail();
+app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($queuedReceipt->id);
+check($queuedReceipt->refresh()->state === 'completed' && $starts[$restartUuid] === 1, 'Update-only task restarted a current server');
+rejects(function () use ($taskId): void { $task = \App\Models\Task::findOrFail($taskId); $task->payload = 'update_restart'; $task->save(); },
+    'Unauthenticated background context could change the update task payload');
 // A preparation completion cannot authorize an update after its settings or authority changed.
 $restart->refresh();
 $stalePreparation = new Operation; $stalePreparation->context = ['policy_revision' => $restart->policy_revision - 1, 'actor_id' => 1];
 rejects(fn () => app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->deployPrepared($restart, $stalePreparation), 'Stale automatic preparation was deployed');
 
-echo "Manual Filament approval, real database worker, offline locked native backups, full restore callbacks, world/custom preservation and failed/corrupt recovery passed\n";
+echo "Manual Filament approval, real database worker, offline locked native backups, full restore callbacks, world/custom preservation, failed/corrupt recovery and native schedule sequencing/replay/authority passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

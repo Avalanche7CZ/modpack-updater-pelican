@@ -27,8 +27,7 @@ class JsonClient
                 'User-Agent' => config('arcturus-modpack-manager.user_agent')])
                 ->withOptions(['sink' => $sink, 'proxy' => '', 'curl' => [CURLOPT_RESOLVE => [$host.':443:'.$pinned]]])->withoutRedirecting()->connectTimeout(5)->timeout(30)->get($url);
             if (! $response->successful()) {
-                throw new RuntimeException('Provider HTTP '.$response->status().
-                    ($response->status() === 429 ? '; rate limited, retry after '.$response->header('Retry-After') : ''));
+                throw new ProviderHttpException($response->status());
             }
             $stream = $response->toPsrResponse()->getBody();
             $stream->rewind();
@@ -49,10 +48,12 @@ class JsonClient
             }
 
             return $data;
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            throw $e;
         } catch (RuntimeException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            throw new RuntimeException('Provider request failed; check credentials, connectivity and JSON format');
+            throw new RuntimeException('Provider request failed; check credentials, connectivity and JSON format', 0, $e);
         } finally {
             $sink->close();
         }

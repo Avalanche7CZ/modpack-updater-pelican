@@ -13,7 +13,7 @@ final class RunScheduledMaintenance implements ShouldQueue
     public int $tries = 1;
     public int $timeout = 1800;
     public function __construct(public readonly int $managedServerId, public readonly string $day) {}
-    public function handle(ScheduledMaintenance $maintenance): void { $maintenance->run($this->managedServerId, $this->day); }
+    public function handle(ScheduledMaintenance $maintenance): void { \Illuminate\Support\Facades\Log::notice('Skipped deprecated plugin timer job; configure a native Pelican Update Modpack task.', ['managed_server_id' => $this->managedServerId]); }
     public function failed(?\Throwable $error): void
     {
         $server = \Arcturus\ModpackManager\Models\ManagedServer::find($this->managedServerId);

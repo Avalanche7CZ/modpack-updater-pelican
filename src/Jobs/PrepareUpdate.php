@@ -82,7 +82,7 @@ final class PrepareUpdate implements ShouldQueue
             }
             if (! $preparer->tick($server, $operation)) {
                 self::dispatch($server->id, $this->baseline, $operation->id)->delay(now()->addSeconds(10));
-            } elseif (($operation->context['automatic'] ?? false) && $operation->phase === 'completed') {
+            } elseif (($operation->context['automatic'] ?? false) && ! isset($operation->context['native_schedule_run_id']) && $operation->phase === 'completed') {
                 app(\Arcturus\ModpackManager\Services\ScheduledMaintenance::class)->deployPrepared($server, $operation);
             }
         } catch (Throwable $error) {
