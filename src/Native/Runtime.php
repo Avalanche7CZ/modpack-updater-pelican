@@ -56,11 +56,7 @@ final class Runtime
             }
             $actual = (new DirectoryInventory)->hashPaths($stage, array_keys($proof)); $expected = $proof; ksort($expected);
             if ($actual !== $expected) { throw new RuntimeException('Target runtime dependencies do not match their verified manifest.'); }
-            if (! preg_match('~^java\s+.*@libraries/net/(?:minecraftforge/forge|neoforged/neoforge)/[^\s]+/unix_args\.txt~', $startup)) {
-                throw new RuntimeException('A published runtime migration requires an existing direct Java @libraries launcher. Custom script migrations need separate qualification.');
-            }
-            $startup = preg_replace('~@libraries/net/(?:minecraftforge/forge|neoforged/neoforge)/[A-Za-z0-9_.+-]+/unix_args\.txt~', '@'.$args, $startup, -1, $count);
-            if ($count !== 1) { throw new RuntimeException('The active launcher has ambiguous runtime argument references.'); }
+            $startup = self::switchArguments($startup, $args);
         }
         if ($buildEvidence !== null) {
             if (($buildEvidence['builder'] ?? '') !== \Arcturus\ModpackManager\Runtime\RuntimeBuild::SCHEMA || ! is_array($buildEvidence['files'] ?? null)) { throw new RuntimeException('Runtime build evidence is invalid.'); }
@@ -71,6 +67,22 @@ final class Runtime
         }
         return ['strategy' => $same ? 'verified_installed_runtime_reuse' : ($buildEvidence ? 'verified_installer_runtime_migration' : 'verified_published_runtime_migration'),
             'target' => [...$target, 'java' => $java, 'runtime_prepared' => true], 'startup' => $startup, 'image' => $image, 'dependency_hashes' => $proof];
+    }
+
+    /** Called only after exact target identity and all runtime dependency hashes are verified. */
+    public static function switchArguments(string $startup, string $args): string
+    {
+        \Arcturus\ModpackManager\Services\UpdatePlanner::assertPath($args);
+        if (! preg_match('~^libraries/net/(?:minecraftforge/forge|neoforged/neoforge)/[A-Za-z0-9_.+-]+/unix_args\.txt$~D', $args)) {
+            throw new RuntimeException('Target runtime argument coordinate is unsupported.');
+        }
+        if (! preg_match('/^java[ \t]+/', $startup) || preg_match('/[;&|<>`$\r\n]/', $startup)) {
+            throw new RuntimeException('Runtime migration requires a direct Java launcher without shell commands. Custom script migrations remain blocked.');
+        }
+        $pattern = '~(?<!\S)@(?:\./)?(?:unix_args\.txt|libraries/net/(?:minecraftforge/forge|neoforged/neoforge)/[A-Za-z0-9_.+-]+/unix_args\.txt)(?=\s|$)~';
+        $next = preg_replace($pattern, '@'.$args, $startup, -1, $count);
+        if ($count !== 1) { throw new RuntimeException('Runtime migration requires exactly one unquoted @unix_args.txt or @libraries launcher reference. Compare the active startup command.'); }
+        return $next;
     }
 
     public function syncAndRequire(Server $server, array $expected): void

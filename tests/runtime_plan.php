@@ -17,6 +17,14 @@ check(str_ends_with($upgrade['artifact']['url'], '/21.1.2/neoforge-21.1.2-instal
 check(RuntimePlan::minimumJava('26.1.2') === 25 && RuntimePlan::minimumJava('1.21.1') === 21 && RuntimePlan::minimumJava('1.20.1') === 17, 'Java floors are incorrect');
 rejects(fn () => $planner->make($current, ['minecraft' => '26.1.2', 'loader' => 'neoforge', 'loader_version' => '26.1.2.121'], $startup, 'java_21'), 'Missing approved Java image must block');
 rejects(fn () => $planner->make($current, [...$current, 'loader_version' => '21;curl bad'], $startup, 'java_21'), 'Shell metacharacters accepted as a loader version');
+$targetArgs = 'libraries/net/neoforged/neoforge/26.1.2.121/unix_args.txt';
+foreach (['@unix_args.txt', '@./unix_args.txt', '@libraries/net/neoforged/neoforge/21.1.1/unix_args.txt'] as $reference) {
+    check(\Arcturus\ModpackManager\Native\Runtime::switchArguments('java -Xms128M @user_jvm_args.txt '.$reference.' nogui', $targetArgs) ===
+        'java -Xms128M @user_jvm_args.txt @'.$targetArgs.' nogui', 'Runtime migration changed unrelated JVM flags');
+}
+foreach (['bash run.sh', 'java @unix_args.txt ; echo unsafe', 'java @unix_args.txt @unix_args.txt', 'java -jar minecraft_server.jar', 'java @libraries/net/neoforged/neoforge/21.1.1/unix_args.txt.extra'] as $command) {
+    rejects(fn () => \Arcturus\ModpackManager\Native\Runtime::switchArguments($command, $targetArgs), 'Unsupported or ambiguous launcher was rewritten');
+}
 $inspector = new RuntimeInspector;
 $boot = $inspector->fromStartupLog('Loading Minecraft 1.21.1 with Fabric Loader 0.16.14');
 check($boot['loader'] === 'fabric' && $boot['minecraft'] === '1.21.1' && $boot['loader_version'] === '0.16.14', 'Fabric boot not recognized');

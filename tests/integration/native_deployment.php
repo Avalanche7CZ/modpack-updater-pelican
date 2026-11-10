@@ -114,7 +114,7 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
     if (str_ends_with($path, '/power')) {
         if ($request['action'] === 'stop') { $sys['state'] = 'offline'; }
         else {
-            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot'], true) && $sys['starts'] === 1;
+            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot', 'root_args_failed_boot'], true) && $sys['starts'] === 1;
             $sys['state'] = $fail ? 'offline' : 'running';
             if ($fail) { $sys['data']['world/region/new-failed-boot.mca'] = 'must disappear on full recovery'; }
             else {
@@ -149,13 +149,20 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
     return Http::response(['state' => $sys['state'], 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => 60000]], 200, $headers);
 });
 try {
-    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'], ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'], ['disabled destination collision', false, 'disable_collision'], ['missing implicit runtime dependency', true, 'missing_core']] as [$label, $migration, $scenario]) {
+    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'], ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'], ['disabled destination collision', false, 'disable_collision'], ['missing implicit runtime dependency', true, 'missing_core'], ['root args migration', true, 'root_args_success'], ['root args migration rollback', true, 'root_args_failed_boot']] as [$label, $migration, $scenario]) {
         $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_')); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
         if (str_starts_with($scenario, 'disable_')) {
             $managed->update(['file_rules' => [...$managed->file_rules, ['scope' => 'exact', 'pattern' => 'mods/local-disable.jar', 'mode' => 'disable', 'priority' => 100, 'enabled' => true]]]);
             $systems[$uuid]['data']['mods/local-disable.jar'] = 'local mod bytes';
         }
         if ($scenario === 'disable_collision') { $systems[$uuid]['data']['mods/local-disable.jar.disabled'] = 'existing disabled mod'; }
+        if (str_starts_with($scenario, 'root_args_')) {
+            DB::table('servers')->where('uuid', $uuid)->update(['startup' => 'java -Xms128M @unix_args.txt nogui', 'updated_at' => now()->subMinutes(2)]);
+            $originalStartup = $managed->unsetRelation('pelicanServer')->pelicanServer->startup;
+            $systems[$uuid]['configuration']['invocation'] = $originalStartup;
+            $systems[$uuid]['data']['unix_args.txt'] = 'libraries/net/neoforged/neoforge/21.1.1/unix_args.txt';
+            $systems[$uuid]['links']['unix_args.txt'] = true;
+        }
         $originalData = $systems[$uuid]['data'];
         check((new Preparation($managed))->request('capabilities')['backend'] === 'native', 'Native preparation still requires host provisioning');
 
@@ -226,7 +233,7 @@ try {
             Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
             $operation->refresh(); $managed->refresh();
         }
-        if (in_array($scenario, ['success', 'installer_success', 'disable_success'], true)) {
+        if (in_array($scenario, ['success', 'installer_success', 'disable_success', 'root_args_success'], true)) {
             check($operation->phase === 'completed' && $managed->installed_version === '2', $label.' did not complete: '.$operation->error);
             if ($migration) { check(str_contains($managed->pelicanServer->startup, '/26.1.2.121/') && $managed->pelicanServer->image === 'fixture:java_25', 'Runtime startup/image migration was not committed'); }
         } else {
@@ -240,7 +247,7 @@ try {
             check(($systems[$uuid]['data'][$active] ?? null) === 'local mod bytes' && ! isset($systems[$uuid]['data'][$absent]), 'Disabled-mod success/rollback did not preserve exact bytes and absence');
         }
         foreach (['mods/Paradigm.jar', 'mods/ArcturusTokens.jar', 'mods/disabled.jar.disabled', 'kubejs/server_scripts/local.js', 'world/level.dat', 'backups/previous.zip'] as $path) { check($systems[$uuid]['data'][$path] === $originalData[$path], 'Custom/excluded content changed: '.$path); }
-        if (! $migration) { check(isset($systems[$uuid]['links']['unix_args.txt']) && $systems[$uuid]['data']['unix_args.txt'] === $originalData['unix_args.txt'], 'Existing root launcher symlink was not preserved'); }
+        if (! $migration || str_starts_with($scenario, 'root_args_')) { check(isset($systems[$uuid]['links']['unix_args.txt']) && $systems[$uuid]['data']['unix_args.txt'] === $originalData['unix_args.txt'], 'Existing root launcher symlink was not preserved'); }
         $count = count($requests); app()->call([new DeployManagedServer($managed->id, false, $preview['plan_sha256'], $operation->id), 'handle']);
         check(count($requests) === $count, 'Duplicate delivery replayed a native transaction');
         echo $label." native transaction passed\n";
