@@ -78,3 +78,10 @@ Audited Panel tag `v1.0.0-rc.2` and Wings commit `1c2070eef5888911a8a7e378fcb9e3
 6. Keep automatic schedules disabled until those manual passes work. Then add **Schedules → Create Task → Update Modpack** on the disposable instance. Check both update and no-update restart behavior. Do not delete locked recovery backups. For a failed update, verify **Rolled back** and original startup/image/files; if recovery is unverified, leave the server stopped and use **Recover original installation** with the retained operation and backup.
 
 The automated fixtures inject write, startup, callback and interrupted-worker failures. Live restore and Minecraft startup still need operator validation on the disposable instance before enabling production automation.
+
+
+## If the disposable test fails
+
+Use **Updates → Copy diagnostics** and include the plugin version, operation/worker IDs, provider, current backend, phase, HTTP status and sanitized `host`/`reason` when present. This export omits recipes, signed URL queries and credentials. Old failures will not acquire a hostname retrospectively; retry preparation once after upgrading to obtain the new diagnostic. Do not repeatedly switch a backend that is already saved as Native.
+
+For an unclassified Panel failure, include only the Laravel stack trace matching that operation ID, with tokens and signed query strings removed. For a queue that stays waiting, verify the ordinary Pelican supervisor has a running worker after the graceful reload. For an uncertain deployment/recovery outcome, leave the instance stopped and retain its exact locked backup and journal; do not replay deployment or manually truncate the volume.

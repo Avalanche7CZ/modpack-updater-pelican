@@ -174,6 +174,11 @@ $statusComponent->mount($record->id);
 $export = $statusComponent->exportDiagnostics();
 check(str_contains($export, $diagnosticOperation->id) && str_contains($export, '504') &&
     ! str_contains($export, 'never-export-this') && ! str_contains($export, 'private.example'), 'Diagnostic export exposed private recipe or lost correlation/status');
+$diagnosticOperation->update(['context' => ['recipe' => ['url' => 'https://private.example/?token=never-export-this'],
+    'diagnostic' => ['code' => 'DOWNLOAD_POLICY', 'phase' => 'downloading', 'context' => ['reason' => 'REDIRECT_HOST_NOT_ALLOWED', 'host' => 'cdn.example.test', 'url' => 'https://cdn.example.test/file?token=never-export-this']]]]);
+$policyExport = $statusComponent->exportDiagnostics();
+check(str_contains($policyExport, 'REDIRECT_HOST_NOT_ALLOWED') && str_contains($policyExport, 'cdn.example.test') && str_contains($policyExport, 'current_backend') &&
+    ! str_contains($policyExport, 'never-export-this') && ! str_contains($policyExport, 'https://'), 'Policy export dropped its safe host/reason or exposed signed URLs');
 // A completed adoption comparison must not masquerade as a ready target update.
 $diagnosticOperation->update(['kind' => 'comparison', 'phase' => 'completed', 'completed_at' => now()]);
 $record->events()->create(['kind' => 'comparison', 'status' => 'completed', 'message' => 'Historical installation comparison', 'details' => ['operation_id' => $diagnosticOperation->id]]);

@@ -31,7 +31,7 @@ final class PreparationStatus extends Component
     public function exportDiagnostics(): string
     {
         Access::requireAdmin();
-        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id', 'target_manifest_path']);
+        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id', 'target_manifest_path', 'provider', 'transport']);
         $event = $server->events()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->latest('id')->first(['details']);
         $id = $server->active_operation_id ?: ($event?->details['operation_id'] ?? null);
         $operation = $id ? $server->operations()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->find($id) : null;
@@ -40,9 +40,11 @@ final class PreparationStatus extends Component
         $detail = $detail ? PreparationDiagnostic::normalize($detail) : null;
         // An explicit allowlist: never export encrypted context, recipes, URLs, credentials or raw logs.
         return json_encode(['schema' => 1, 'operation_id' => $operation->id, 'worker_operation_id' => $operation->node_operation_id,
+            'provider' => array_key_exists($server->provider, \Arcturus\ModpackManager\Modpacks\ProviderRegistry::PROVIDERS) ? $server->provider : 'unknown',
+            'current_backend' => in_array($server->transport, ['native', 'local', 'wings'], true) ? $server->transport : 'unknown',
             'kind' => $operation->kind, 'state' => $operation->phase, 'diagnostic' => $detail ? [
                 'code' => $detail['code'], 'phase' => $detail['phase'], 'description' => $detail['description'],
-                'context' => array_intersect_key($detail['context'], array_flip(['http_status', 'errno', 'artifact_index', 'entry_index', 'file_index', 'file_id'])),
+                'context' => array_intersect_key($detail['context'], array_flip(['http_status', 'errno', 'artifact_index', 'entry_index', 'file_index', 'file_id', 'host', 'reason'])),
             ] : null], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
