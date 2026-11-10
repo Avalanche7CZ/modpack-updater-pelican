@@ -71,6 +71,18 @@ check($managed->refresh()->active_operation_id === $recovery->id, 'Uncertain des
 rejects(fn () => $tracker->create($managed, 'prepare'), 'New work began over an uncertain deployment');
 echo "Installation/upgrade migrations, coexistence, durable progress and duplicate-job guards passed\n";
 
+// Pelican's supported install/upgrade seeder hook requests a graceful worker exit.
+require_once dirname(__DIR__, 2).'/database/Seeders/ArcturusModpackManagerSeeder.php';
+$pluginHook = (new \App\Models\Plugin)->forceFill(['name' => 'Arcturus Modpack Manager']);
+check(ltrim($pluginHook->getSeeder() ?? '', chr(92)) === \Database\Seeders\ArcturusModpackManagerSeeder::class, 'Pelican did not discover the upgrade hook');
+\Illuminate\Support\Facades\Cache::forever('illuminate:queue:restart', time() - 10);
+$oldRestart = \Illuminate\Support\Facades\Cache::get('illuminate:queue:restart');
+app(\App\Services\Helpers\PluginService::class)->runPluginSeeder($pluginHook);
+check(\Illuminate\Support\Facades\Cache::get('illuminate:queue:restart') > $oldRestart, 'Upgrade did not request a graceful queue reload');
+$shouldRestart = new ReflectionMethod(app('queue.worker'), 'queueShouldRestart');
+check($shouldRestart->invoke(app('queue.worker'), $oldRestart), 'Core queue worker did not observe the reload request');
+check($recovery->fresh()->phase === 'manual_intervention' && $managed->fresh()->active_operation_id === $recovery->id, 'Graceful reload changed an active recovery receipt');
+
 // Native model/repository objects, fake HTTP boundary. No node is contacted.
 $node = new Node;
 $node->forceFill(['fqdn' => 'wings.fixture.test', 'scheme' => 'https', 'daemon_connect' => 8080,

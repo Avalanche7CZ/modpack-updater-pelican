@@ -1,10 +1,10 @@
 # Native Pelican/Wings updates
 
-Target: **Pelican Panel 1.0.0-rc.2**, PHP 8.4/8.5, existing Panel scheduler and asynchronous database/Redis queue. Python 3.11+ performs fixed, unprivileged upstream archive preparation inside Panel-private storage. It has no live-volume mapping, shell execution capability, listening service or node token. The plugin sets the queue visibility window to at least 14,520 seconds; restart existing queue workers after upgrading code.
+Target: **Pelican Panel 1.0.0-rc.2**, PHP 8.4/8.5, existing Panel scheduler and asynchronous database/Redis queue. Python 3.11+ performs fixed, unprivileged upstream archive preparation inside Panel-private storage. It has no live-volume mapping, shell execution capability, listening service or node token. The plugin sets the queue visibility window to at least 14,520 seconds; the Pelican install/upgrade hook requests Laravel’s graceful queue restart. Active jobs finish before workers exit; the ordinary Pelican worker supervisor must restart them. For a manual file-copy upgrade, request `php artisan queue:restart` through your usual deployment procedure. No server backend reselection is needed.
 
 ## Setup and first isolated test
 
-1. Install/update the plugin through Pelican, run its normal plugin migrations and restart `pelican-queue` using your ordinary deployment procedure.
+1. Install/update the plugin through Pelican, run its normal plugin migrations and let the graceful reload finish through the ordinary Pelican queue supervisor. Verify that workers are running afterward.
 2. Use a **disposable clone**, not a production Minecraft server. Configure a working native Wings backup host with a free backup slot. Keep its existing startup and image and boot the original installation successfully.
 3. Adopt it with **Native Pelican / Wings**. For an existing adopted record, Overview → Filesystem backend → Native Pelican / Wings retains the verified upstream baseline and protection policies. Prepare the target again. No Linux volume permissions, per-server SSH commands or extra API token are needed.
 4. Prepare the exact installed upstream baseline if it is not already verified. Finish adoption, select the exact target and prepare it. Review newly discovered directories, protected custom files, unresolved conflicts and runtime blockers. The comparison reads only manifest-delta candidates and necessary launcher/world-path metadata.
@@ -68,7 +68,7 @@ Audited Panel tag `v1.0.0-rc.2` and Wings commit `1c2070eef5888911a8a7e378fcb9e3
 
 ## First isolated end-to-end test
 
-1. Update the plugin on Panel rc.2 and restart its queue worker so the new native guard bindings are loaded. Use a disposable Minecraft server with its own volume and port; clone the pack and representative custom files there, never use the production server for failure injection.
+1. Update the plugin on Panel rc.2 and let its queue workers finish active jobs and reload so the new native guard bindings are loaded. Use a disposable Minecraft server with its own volume and port; clone the pack and representative custom files there, never use the production server for failure injection.
 2. Boot the original version successfully. Its current log must identify Minecraft, loader and actual Java; keep the original startup and approved egg image. Use the Wings backup adapter, available backup quota, no extra mounts and no egg filesystem denylist entries.
 3. Adopt that test server with **Native Pelican / Wings**, select the exact installed provider/version and prepare its baseline. Review custom mods/scripts, world location and protection rules. No volume ACL setup or API token is required.
 4. Select a target with an unchanged runtime for the first pass, choose **Prepare update**, resolve conflicts and directory review, then approve **Update with backup**. Wait for **Completed**, inspect Minecraft's new boot log, the exact locked backup UUID and your custom/disabled files. Preparation completion alone is not a deployment result.

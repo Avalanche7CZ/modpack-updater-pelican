@@ -53,5 +53,6 @@ final class FilesystemBackendSettings
             $fresh->events()->create(['kind' => 'filesystem', 'status' => 'success',
                 'message' => 'Filesystem backend selected: '.$transport.'. Prepare a new verified baseline. No server files or policies changed.']);
         });
+        $server->refresh();
     }
 }

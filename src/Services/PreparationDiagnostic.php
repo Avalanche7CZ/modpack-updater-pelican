@@ -8,6 +8,7 @@ namespace Arcturus\ModpackManager\Services;
 final class PreparationDiagnostic
 {
     public const DEFINITIONS = [
+        'BACKEND_UNAVAILABLE' => ['The saved filesystem backend is unavailable or the server record no longer exists.', 'Inspect the saved Native Pelican/Wings setting. After an upgrade, let current jobs finish and verify the normal queue supervisor reloads workers; do not repeatedly reselect the backend or change volume permissions.'],
         'SYMLINK_PATH' => ['A symbolic link was found in the selected managed scope.', 'Review the logical file ID and replace the link with reviewed regular content, or Keep local/Exclude its directory. Links are never followed.'],
         'FILE_TYPE' => ['A selected managed entry is not a regular file or directory.', 'Inspect the logical file ID for a socket, FIFO or changed directory. No partial inventory is accepted.'],
         'INVENTORY_FAILED' => ['Installation inventory failed with an unclassified filesystem validation error.', 'Inspect the retained comparison checkpoint and file ID. Retry installation comparison after correcting the entry; the verified upstream baseline is retained.'],

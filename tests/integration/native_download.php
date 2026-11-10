@@ -14,7 +14,11 @@ $fixture = new Process(['/usr/bin/python3', '-B', __DIR__.'/fixtures/native_tls/
 $fixture->start();
 $environment = [];
 $managed = ManagedServer::create(['label' => 'Native download wiring', 'pelican_server_uuid' => (string) \Illuminate\Support\Str::uuid(),
-    'provider' => 'custom', 'source' => 'native-download-fixture', 'installed_version' => '1', 'transport' => 'native']);
+    'provider' => 'custom', 'source' => 'native-download-fixture', 'installed_version' => '1', 'transport' => 'wings']);
+$stale = ManagedServer::findOrFail($managed->id);
+app(\Arcturus\ModpackManager\Services\FilesystemBackendSettings::class)->save($managed, 'native');
+check($managed->transport === 'native', 'Backend selection left its caller stale');
+check(app(ServerFilesFactory::class)->worker($stale) instanceof Preparation, 'A stale model routed a persisted native record to the old worker');
 try {
     $deadline = microtime(true) + 10;
     while (! is_file($root.'/routing.json') && microtime(true) < $deadline && $fixture->isRunning()) { usleep(10000); }
@@ -72,6 +76,29 @@ try {
     }
     $badHash = $prepare('https://github.com/archive', str_repeat('0', 64));
     check($badHash['state'] === 'failed' && $badHash['diagnostic']['code'] === 'CHECKSUM_MISMATCH', 'Checksum verification was bypassed');
+    $managed->update(['source' => 'https://custom.example.test/recipe']);
+    \Illuminate\Support\Facades\DB::table('servers')->insert(['uuid' => $managed->pelican_server_uuid, 'name' => 'Native pipeline fixture', 'node_id' => 1, 'owner_id' => 1,
+        'startup' => 'java @unix_args.txt nogui', 'image' => 'fixture:java_21', 'created_at' => now()->subMinutes(2), 'updated_at' => now()->subMinutes(2)]);
+    $app->instance(\Arcturus\ModpackManager\Modpacks\JsonClient::class, new class($route['sha256']) extends \Arcturus\ModpackManager\Modpacks\JsonClient {
+        public function __construct(private string $hash) {}
+        public function get(string $url, array $headers = []): array { return ['schema' => 2, 'version' => '1', 'format' => 'zip', 'downloads' => [['url' => 'https://github.com/redirect', 'archive' => true, 'hashes' => ['sha256' => $this->hash]]]]; }
+    });
+    \Illuminate\Support\Facades\Http::fake(function ($request) {
+        $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
+        parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $q);
+        $path = parse_url($request->url(), PHP_URL_PATH);
+        if (str_ends_with($path, '/files/list-directory')) {
+            $rows = ($q['directory'] ?? '/') === '/' ? [['name' => 'server.properties', 'file' => true, 'directory' => false, 'symlink' => false, 'size' => 17]] : [];
+            return \Illuminate\Support\Facades\Http::response($rows, 200, $headers);
+        }
+        if (str_ends_with($path, '/files/contents')) { check(($q['file'] ?? '') === '/server.properties', 'Preparation read an unrelated server file'); return \Illuminate\Support\Facades\Http::response("level-name=world\n", 200, $headers); }
+        return \Illuminate\Support\Facades\Http::response(['state' => 'running'], 200, $headers);
+    });
+    $operation = app(\Arcturus\ModpackManager\Services\OperationTracker::class)->create($managed, 'baseline', ['provider' => 'custom', 'source' => $managed->source, 'version' => '1']);
+    \Arcturus\ModpackManager\Jobs\PrepareUpdate::dispatch($managed->id, true, $operation->id);
+    app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+    check($operation->fresh()->phase === 'completed' && $managed->fresh()->baseline_status === 'verified', 'Persisted native preparation did not complete through the real queue: '.$operation->fresh()->error);
+    check($managed->fresh()->baseline_provenance['transport'] === 'native', 'Queue preparation used a different backend');
     echo "Native PHP configuration -> fixed LocalWorker -> pinned HTTPS/TLS Python download, redirects, SSRF denials, checksums, ZIP extraction, manifest and verified cache reuse passed\n";
     $GLOBALS['arcturus_integration_passed'] = true;
 } finally {

@@ -9,7 +9,6 @@ use App\Repositories\Daemon\DaemonFileRepository;
 use Arcturus\ModpackManager\Contracts\IntegrityWorker;
 use Arcturus\ModpackManager\Local\LocalWorker;
 use Arcturus\ModpackManager\Models\ManagedServer;
-use RuntimeException;
 use Arcturus\ModpackManager\Models\Operation;
 use Arcturus\ModpackManager\Services\PreparationProgress;
 
@@ -17,11 +16,15 @@ final class ServerFilesFactory
 {
     public function worker(ManagedServer $server): IntegrityWorker
     {
-        return match ($server->transport ?? 'wings') {
+        // UI records can outlive a backend selection. Jobs carry IDs, not this snapshot;
+        // always route persisted records using the authoritative current setting.
+        $transport = $server->exists ? ManagedServer::whereKey($server->getKey())->value('transport') : ($server->transport ?? 'wings');
+        if ($transport !== $server->transport) { $server = clone $server; $server->transport = $transport; }
+        return match ($transport) {
             'native' => new \Arcturus\ModpackManager\Native\Preparation($server),
             'local' => new LocalWorker($server),
             'wings' => new NodeWorker($server->pelican_server_uuid, (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->scope($server)),
-            default => throw new RuntimeException('Unknown server filesystem backend; select an explicit backend in server settings'),
+            default => throw new \Arcturus\ModpackManager\Services\PreparationException(['code' => 'BACKEND_UNAVAILABLE', 'phase' => 'queued']),
         };
     }
 
