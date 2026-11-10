@@ -134,6 +134,7 @@ class TfgManagedPaths(unittest.TestCase):
     def test_retained_archive_reused_and_reverified(self):
         self.assertEqual(self.prepare()['state'], 'completed')
         recipe = self.recipe(self.root / 'pack.zip')
+        original_archive = (self.root / 'pack.zip').read_bytes()
         # Removing the source proves reuse of retained bytes, including local artifact recipes.
         (self.root / 'pack.zip').unlink()
         with patch.object(w, 'fetch', side_effect=AssertionError('Unexpected network download')):
@@ -144,7 +145,16 @@ class TfgManagedPaths(unittest.TestCase):
         (self.stage / ('d' * 32) / 'download-0').write_bytes(b'corrupted')
         self.worker.prepare(self.server, recipe, 'e' * 32)
         self.worker.threads[(self.server, 'e' * 32)].join(10)
-        self.assertEqual(self.worker.status(self.server, 'e' * 32)['diagnostic']['code'], 'CHECKSUM_MISMATCH')
+        # Corrupt bytes are quarantined; the missing original is still rejected.
+        self.assertEqual(self.worker.status(self.server, 'e' * 32)['state'], 'failed')
+        self.assertEqual(self.worker.status(self.server, 'e' * 32)['diagnostic']['code'], 'DOWNLOAD_POLICY')
+        self.assertTrue(list(self.stage.glob('*/download-0.unverified-*')))
+        # Restoring the exact upstream bytes allows a fresh checksummed copy.
+        (self.root / 'pack.zip').write_bytes(original_archive)
+        self.worker.prepare(self.server, recipe, 'f' * 32)
+        self.worker.threads[(self.server, 'f' * 32)].join(10)
+        self.assertEqual(self.worker.status(self.server, 'f' * 32)['state'], 'completed')
+        self.assertEqual((self.stage / ('f' * 32) / 'download-0').read_bytes(), original_archive)
 
     def test_scope_diagnostic_never_discloses_raw_urls_or_host_paths(self):
         error = w.ManagedPathFailure(['https://user:password@host/private?token=secret', '/etc/private', 'secret-token-directory/value'])
