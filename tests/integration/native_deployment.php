@@ -321,6 +321,32 @@ Schema::create('tasks', function (Blueprint $t) {
     check($run->refresh()->state === 'completed' && \App\Models\Task::find($nextId)->is_queued, 'Scheduled native update did not release following task');
     $count = count($requests); app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($runId);
     check(count($requests) === $count, 'Completed schedule replayed native deployment');
+    foreach ([false, true] as $alreadyReported) {
+        DB::table('jobs')->delete();
+        $failed = $make(false); $failed->update(['policy' => 'auto', 'deploy_enabled' => true, 'automation_actor_id' => 1]);
+        $sid = DB::table('schedules')->insertGetId(['server_id' => $failed->pelicanServer->id, 'name' => 'Failed native update']);
+        $tid = DB::table('tasks')->insertGetId(['schedule_id' => $sid, 'sequence_id' => 1, 'action' => \Arcturus\ModpackManager\Schedules\UpdateModpackTask::ID,
+            'payload' => 'update', 'is_queued' => true, 'continue_on_failure' => true]);
+        $following = DB::table('tasks')->insertGetId(['schedule_id' => $sid, 'sequence_id' => 2, 'action' => 'power', 'payload' => 'start']);
+        $rid = (string) Str::uuid();
+        $failedOp = app(\Arcturus\ModpackManager\Services\OperationTracker::class)->create($failed, $alreadyReported ? 'deploy' : 'prepare', ['version' => '2'], $rid);
+        app(\Arcturus\ModpackManager\Services\OperationTracker::class)->fail($failedOp, 'Isolated scheduled failure');
+        if ($alreadyReported) {
+            $reportedEvent = $failed->events()->create(['kind' => 'deploy', 'status' => 'failed', 'details' => ['operation_id' => $failedOp->id, 'discord_notification_pending' => true]]);
+            app(\Arcturus\ModpackManager\Services\DiscordNotifier::class)->forEvent($reportedEvent);
+        }
+        $failureRun = \Arcturus\ModpackManager\Models\NativeScheduleRun::create(['id' => $rid, 'dispatch_key' => 'fixture:failed:'.$rid, 'task_id' => $tid,
+            'managed_server_id' => $failed->id, 'task_snapshot' => ['schedule_id' => $sid, 'sequence_id' => 1, 'payload' => 'update', 'server_uuid' => $failed->pelican_server_uuid],
+            'manual_run' => true, 'policy_revision' => $failed->policy_revision, 'actor_id' => 1, 'state' => 'waiting', 'operation_id' => $failedOp->id]);
+        app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($rid);
+        check($failureRun->refresh()->state === 'failed' && ! \App\Models\Task::find($following)->is_queued && ! \App\Models\Schedule::find($sid)->is_processing, 'Failed update advanced its task chain');
+        $failureEvent = $failed->events()->where('kind', 'schedule')->where('status', 'failed')->firstOrFail();
+        check(($failureEvent->details['discord_notification_pending'] ?? false) === ! $alreadyReported, 'Schedule alert duplicated a deployment failure or lost a preparation failure');
+        $count = \Arcturus\ModpackManager\Models\DiscordDelivery::where('source_event_id', $failureEvent->id)->count();
+        check($count === ($alreadyReported ? 0 : 1), 'Scheduled failure was not handed off to the notification outbox');
+        app(\Arcturus\ModpackManager\Schedules\NativeSchedules::class)->tick($rid);
+        check($failed->events()->where('kind', 'schedule')->count() === 1, 'Duplicate failed schedule produced another event');
+    }
     echo "Native Wings schedules: no-update restart without backup, prepared automatic deployment, sequencing and duplicate receipt passed\n";
 } finally {
     foreach ($stages as $stage) {

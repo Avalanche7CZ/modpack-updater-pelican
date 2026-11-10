@@ -322,4 +322,14 @@ $notifier->criticalRecovery($server, 'Keep server stopped', $criticalOperation);
 $notifier->criticalRecovery($server, 'Worker failure hook repeated', $criticalOperation);
 check($server->events()->where('details->operation_id', $criticalOperation)->where('details->critical', true)->count() === 1, 'Repeated failure hooks duplicated a critical recovery notification');
 echo "Native unsaved webhook tests, delivery polling, real queue worker/recovery, release subscriptions, encryption, mention isolation and HTTP diagnostics passed\n";
+// Schedule failures before deployment enter the same deduplicated failure outbox.
+$server->update(['discord_notify_events' => ['failed'], 'discord_enabled' => true]);
+$scheduleFailure = $event('failed', false, 'schedule');
+$scheduleAlert = $notifier->forEvent($scheduleFailure);
+check($scheduleAlert && $scheduleAlert->kind === 'failed' && str_contains($scheduleAlert->payload['embeds'][0]['title'], 'Scheduled maintenance failed'), 'Scheduled failure was not announced accurately');
+check(! str_contains($scheduleAlert->payload['embeds'][0]['description'], 'was restored'), 'Schedule failure invented a rollback');
+check($notifier->forEvent($scheduleFailure)->id === $scheduleAlert->id, 'Duplicate schedule alert was queued');
+$unhanded = $event('failed', false, 'schedule'); $notifier->recover();
+check(DiscordDelivery::where('source_event_id', $unhanded->id)->count() === 1, 'Recovery lost the scheduled failure handoff');
+check($notifier->forEvent($event('success', true, 'schedule')) === null, 'Normal scheduled restart announced a modpack upgrade');
 $GLOBALS['arcturus_integration_passed'] = true;

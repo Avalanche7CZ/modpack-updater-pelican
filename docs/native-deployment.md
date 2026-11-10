@@ -10,7 +10,7 @@ Target: **Pelican Panel 1.0.0-rc.2**, PHP 8.4/8.5, existing Panel scheduler and 
 4. Prepare the exact installed upstream baseline if it is not already verified. Finish adoption, select the exact target and prepare it. Review newly discovered directories, protected custom files, unresolved conflicts and runtime blockers. The comparison reads only manifest-delta candidates and necessary launcher/world-path metadata.
 5. Review the runtime transition, startup/image changes and backup exclusions. The original installation must be running with matching Panel/Wings settings so its boot log can prove Minecraft, loader and actual Java. Click **Update with backup** only when this exact plan is ready.
 6. Check History for the exact backup UUID and terminal operation outcome. Independently inspect the disposable server's real console, worlds/dimensions, custom mods and networking. A successful fixture test does not replace this rehearsal.
-7. After successful rehearsals, explicitly enable per-server automatic deployment and create **Schedules → Create Task → Update Modpack**. Use the optional normal restart when no new release exists. Following tasks wait for the update result.
+7. After successful rehearsals, explicitly enable per-server automatic deployment and create **Schedules → Create Task → Update Modpack**. Use the optional normal restart when no new release exists. Following tasks wait for the update result. A failed update stops the chain even if its task has Continue on failure selected. Failures before deployment use the existing Discord failure outbox and its configured opt-in; deployment failures retain their own alert without an extra duplicate schedule alert.
 
 ## What is supported
 

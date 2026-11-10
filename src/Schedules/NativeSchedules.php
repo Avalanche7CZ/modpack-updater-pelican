@@ -160,9 +160,18 @@ final class NativeSchedules
             if ($fresh->completed_at) { return; }
             $task = Task::lockForUpdate()->find($fresh->task_id);
             $fresh->update(['state' => $success ? 'completed' : 'failed', 'error' => $error, 'completed_at' => now()]);
-            ManagedServer::find($fresh->managed_server_id)?->events()->create(['kind' => 'schedule', 'status' => $success ? 'success' : 'failed',
+            $managed = ManagedServer::find($fresh->managed_server_id);
+            $operation = $fresh->operation_id ? Operation::find($fresh->operation_id) : null;
+            // Deployment has its own durable failure/rollback outbox. Report failures that
+            // happened before it as well, without sending a second alert for the same deploy.
+            $reported = ! $success && $managed && $operation?->kind === 'deploy' && $managed->events()
+                ->where('kind', 'deploy')->where('status', 'failed')->where('details->operation_id', $operation->id)->exists();
+            $notify = ! $success && ! $reported;
+            $event = $managed?->events()->create(['kind' => 'schedule', 'status' => $success ? 'success' : 'failed',
+                'from_version' => $managed->installed_version, 'to_version' => $operation->context['version'] ?? $managed->available_version ?? $managed->installed_version,
                 'message' => $success ? 'Native Update Modpack task completed.' : ($error ?? 'Native Update Modpack task failed.'),
-                'details' => ['schedule_run_id' => $fresh->id, 'task_id' => $fresh->task_id, 'operation_id' => $fresh->operation_id]]);
+                'details' => ['schedule_run_id' => $fresh->id, 'task_id' => $fresh->task_id, 'operation_id' => $fresh->operation_id, 'discord_notification_pending' => $notify]]);
+            if ($notify && $event) { DB::afterCommit(fn () => app(\Arcturus\ModpackManager\Services\DiscordNotifier::class)->forEvent($event)); }
             $schedule = \App\Models\Schedule::lockForUpdate()->find($fresh->task_snapshot['schedule_id']);
             if (! $schedule) { return; }
             if ($task && $task->schedule_id === $schedule->id) { $task->update(['is_queued' => false]); }

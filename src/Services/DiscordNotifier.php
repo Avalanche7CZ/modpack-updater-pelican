@@ -80,6 +80,10 @@ final class DiscordNotifier
             'update_available' => ['Nová verze · New release', "Pro **{$name}** je dostupná verze `{$new}` (nainstalováno `{$old}`).\n\nVersion `{$new}` is available for **{$name}** (installed: `{$old}`).", 3447003],
             default => ['Test oznámení · Test notification', "Discord oznámení pro **{$name}** jsou připojena. Toto je pouze test, server nebyl aktualizován.\n\nDiscord notifications for **{$name}** are connected. This is only a test; the server was not updated.", 9807270],
         };
+        if ($kind === 'failed' && $event->kind === 'schedule') {
+            $title = 'Naplánovaná údržba selhala · Scheduled maintenance failed';
+            $description = "Naplánovaná úloha pro **{$name}** nebyla úspěšně dokončena. Další úlohy této sekvence byly zastaveny. Podrobnosti jsou v historii panelu.\n\nScheduled maintenance for **{$name}** did not complete successfully. Following tasks were stopped. See the panel history for details.";
+        }
         if ($kind === 'failed' && ($event->details['critical'] ?? false) === true) {
             $title = 'Critical · Recovery requires administrator intervention';
             $description = "**{$name}**: recovery is failed or uncertain. Keep Minecraft stopped. Check the locked Pelican backup, native restore callback and retained deployment journal. Restore the original launcher settings, then use Verify restored original snapshot in the panel.";
@@ -114,6 +118,7 @@ final class DiscordNotifier
         return match (true) {
             $event->kind === 'deploy' && $event->status === 'success' && ($event->details['startup_verified'] ?? false) === true => 'updated',
             $event->kind === 'deploy' && $event->status === 'failed' => 'failed',
+            $event->kind === 'schedule' && $event->status === 'failed' && ($event->details['discord_notification_pending'] ?? false) === true => 'failed',
             $event->kind === 'rollback' && $event->status === 'success' && ($event->details['restore_verified'] ?? false) === true => 'rollback',
             $event->kind === 'release' && $event->status === 'success' && $event->to_version !== $event->from_version => 'update_available',
             default => null,
@@ -414,7 +419,7 @@ final class DiscordNotifier
             $this->dispatch($row);
         }
         // Complete the outbox hand-off if a worker died after committing verified success.
-        foreach (UpdateEvent::where('created_at', '>=', now()->subDay())->where('details->discord_notification_pending', true)->whereIn('kind', ['deploy', 'rollback', 'release'])
+        foreach (UpdateEvent::where('created_at', '>=', now()->subDay())->where('details->discord_notification_pending', true)->whereIn('kind', ['deploy', 'rollback', 'release', 'schedule'])
             ->whereNotIn('id', DiscordDelivery::select('source_event_id'))->orderBy('id')->limit(100)->get() as $event) {
             $this->forEvent($event);
         }
