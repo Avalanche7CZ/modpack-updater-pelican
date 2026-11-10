@@ -12,6 +12,8 @@ Target: **Pelican Panel 1.0.0-rc.2**, PHP 8.4/8.5, existing Panel scheduler and 
 6. Check History for the exact backup UUID and terminal operation outcome. Independently inspect the disposable server's real console, worlds/dimensions, custom mods and networking. A successful fixture test does not replace this rehearsal.
 7. After successful rehearsals, explicitly enable per-server automatic deployment and create **Schedules → Create Task → Update Modpack**. Use the optional normal restart when no new release exists. Following tasks wait for the update result. A failed update stops the chain even if its task has Continue on failure selected. Failures before deployment use the existing Discord failure outbox and its configured opt-in; deployment failures retain their own alert without an extra duplicate schedule alert.
 
+Official artifact hosts and approved CDN redirects are built in. Custom allowed hosts extend that list; native preparation does not require a manual whitelist for official downloads.
+
 ## What is supported
 
 * File-only updates which reuse a runtime independently proven by the current boot log. This is not tied to Forge 1.20.1 or Java 17.

@@ -39,7 +39,7 @@ final class Preparation implements IntegrityWorker
         foreach ([$root, $root.'/inspection', $root.'/staging'] as $path) {
             if (realpath($path) !== $path || fileperms($path) & 0077 || fileowner($path) !== posix_geteuid()) { throw new RuntimeException('Private preparation directories must be owned by the unprivileged Panel queue account with mode 0700.'); }
         }
-        return [$uuid => ['root' => $root.'/inspection', 'staging' => $root.'/staging', 'allowed_hosts' => config('arcturus-modpack-manager.allowed_custom_hosts', [])]];
+        return [$uuid => ['root' => $root.'/inspection', 'staging' => $root.'/staging', 'allowed_hosts' => array_values(array_unique(array_merge(\Arcturus\ModpackManager\Security\DownloadPolicy::HOSTS, config('arcturus-modpack-manager.allowed_custom_hosts', []))))]];
     }
 
     public function stage(string $id, string $manifestSha256): string
