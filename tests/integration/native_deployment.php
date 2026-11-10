@@ -166,6 +166,13 @@ try {
         $originalData = $systems[$uuid]['data'];
         check((new Preparation($managed))->request('capabilities')['backend'] === 'native', 'Native preparation still requires host provisioning');
 
+        if ($scenario === 'success' && ! $migration) {
+            $from = count($requests);
+            $inspection = (new Preparation($managed))->request('inventory', ['paths' => ['unix_args.txt', 'config/options.cfg']]);
+            check($inspection['files'] === ['config/options.cfg' => $hash('old')] && $inspection['skipped_symlinks'] === ['unix_args.txt'] && in_array('unix_args.txt', $inspection['excluded_roots'], true), 'Native candidate link was not protected during comparison');
+            check(! array_filter(array_slice($requests, $from), fn ($r) => str_ends_with($r[1], '/files/contents') && ($r[2]['file'] ?? '') === '/unix_args.txt'), 'Native inventory dereferenced a preserved launcher link');
+        }
+
         if (str_starts_with($scenario, 'installer_')) {
             $input = tempnam(sys_get_temp_dir(), 'arcturus-installer-input-');
             $argsText = '-p libraries/fixture/runtime.jar --fml.neoForgeVersion 26.1.2.121 --fml.mcVersion 26.1.2';

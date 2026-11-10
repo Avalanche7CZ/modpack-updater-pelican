@@ -76,17 +76,23 @@ final class Preparation implements IntegrityWorker
         $scope = (new DirectoryPolicy)->scope($this->server);
         $properties = $files->read('server.properties', 1048576);
         $excluded = array_values(array_unique([...SafetyPaths::roots($properties), ...$scope['exclude']]));
-        $result = []; $missing = [];
+        $result = []; $missing = []; $links = [];
         foreach ($paths as $path) {
             UpdatePlanner::assertPath($path);
             if (SafetyPaths::reason($path, $excluded) !== null || ! ManagedPaths::allowed($path, $scope['manage'])) { $excluded[] = $path; continue; }
-            $hash = $files->hash($path); $this->heartbeat?->__invoke();
+            try { $hash = $files->hash($path); }
+            catch (SymlinkPath $link) {
+                // A linked file or ancestor is protected, not an absent upstream file.
+                // Never turn this into a deletion or follow its target to build inventory.
+                $links[] = $link->path; $excluded[] = $link->path; $this->heartbeat?->__invoke(); continue;
+            }
+            $this->heartbeat?->__invoke();
             if ($hash === null) { $missing[] = $path; } else { $result[$path] = $hash; }
         }
         ksort($result);
         return ['complete' => true, 'files' => $result, 'missing' => $missing, 'identities' => [], 'metadata' => [],
             'scope' => 'manifest-delta-v1', 'requested_paths' => $paths, 'excluded_roots' => array_values(array_unique($excluded)),
-            'skipped_symlinks' => [], 'unreadable_paths' => [], 'world_path_unreadable' => false,
+            'skipped_symlinks' => array_values(array_unique($links)), 'unreadable_paths' => [], 'world_path_unreadable' => false,
             'properties_sha256' => hash('sha256', $properties),
             'inventory_summary' => ['files_hashed' => count($result), 'unreadable_files_skipped' => 0, 'unreadable_directories' => 0, 'unreadable_entries_unknown' => 0]];
     }

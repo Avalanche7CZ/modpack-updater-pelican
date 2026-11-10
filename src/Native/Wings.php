@@ -49,7 +49,7 @@ final class Wings implements Files
             $found = null;
             foreach ($this->listing($parent) as $row) { if ($row['name'] === $part) { $found = $row; break; } }
             if ($found === null) { return null; }
-            if ($found['symlink'] && ! ($allowLeafSymlink && $index === count($parts) - 1)) { throw new RuntimeException('Native operation blocked by a symlink at '.$parent.($parent === '' ? '' : '/').$part); }
+            if ($found['symlink'] && ! ($allowLeafSymlink && $index === count($parts) - 1)) { throw new SymlinkPath($parent.($parent === '' ? '' : '/').$part); }
             if ($index === count($parts) - 1) { return $found; }
             if (! $found['directory'] || $found['file']) { throw new RuntimeException('Native operation parent is not a regular directory.'); }
             $parent = $parent === '' ? $part : $parent.'/'.$part;

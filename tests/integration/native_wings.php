@@ -52,8 +52,20 @@ try {
     rejects(fn () => $files->hash('candidate.jar'), 'Truncated response was accepted');
     $truncated = false; $symlink = true;
     rejects(fn () => $files->hash('candidate.jar'), 'Symlink file was read');
+    try { $files->hash('candidate.jar'); throw new RuntimeException('Missing link diagnostic'); }
+    catch (\Arcturus\ModpackManager\Native\SymlinkPath $link) { check($link->path === 'candidate.jar', 'Protected link path is ambiguous'); }
     $files->delete('candidate.jar'); // Safe leaf symlink removal during root recovery.
     check(! isset($data['candidate.jar']), 'Leaf link could not be removed for recovery');
 } finally { unlink($temp); }
+// A linked ancestor is reported before opening any descendant or target.
+Http::swap(new \Illuminate\Http\Client\Factory); Http::preventStrayRequests();
+Http::fake(function ($request) use ($headers) {
+    check(str_ends_with(parse_url($request->url(), PHP_URL_PATH), '/files/list-directory'), 'Linked ancestor target was accessed');
+    parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+    check(($query['directory'] ?? '') === '/', 'Linked ancestor was traversed');
+    return Http::response([['name' => 'linked', 'file' => false, 'directory' => true, 'symlink' => true, 'size' => 0]], 200, $headers);
+});
+try { (new Wings($server, app(DaemonFileRepository::class)))->hash('linked/secret.txt'); throw new RuntimeException('Linked ancestor was accepted'); }
+catch (\Arcturus\ModpackManager\Native\SymlinkPath $link) { check($link->path === 'linked', 'Wrong protected ancestor'); }
 echo "Pelican rc.2 native Wings binary transfer, truncation, symlink and no-op rename integration passed (HTTP fixtures)\n";
 $GLOBALS['arcturus_integration_passed'] = true;
