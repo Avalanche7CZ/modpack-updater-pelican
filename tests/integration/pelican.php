@@ -83,6 +83,20 @@ $shouldRestart = new ReflectionMethod(app('queue.worker'), 'queueShouldRestart')
 check($shouldRestart->invoke(app('queue.worker'), $oldRestart), 'Core queue worker did not observe the reload request');
 check($recovery->fresh()->phase === 'manual_intervention' && $managed->fresh()->active_operation_id === $recovery->id, 'Graceful reload changed an active recovery receipt');
 
+// File-cache permission errors must not turn a successful install into NotInstalled.
+$artisanKernel = \Illuminate\Support\Facades\Artisan::getFacadeRoot();
+try {
+    \Illuminate\Support\Facades\Artisan::swap(new class {
+        public function call($command): int { throw new RuntimeException('file_put_contents(/private/cache): Permission denied'); }
+    });
+    app(\App\Services\Helpers\PluginService::class)->runPluginSeeder($pluginHook);
+    \Illuminate\Support\Facades\Artisan::swap(new class {
+        public function call($command): int { return 1; }
+    });
+    app(\App\Services\Helpers\PluginService::class)->runPluginSeeder($pluginHook);
+    check($recovery->fresh()->phase === 'manual_intervention', 'Failed optional queue reload altered recovery');
+} finally { \Illuminate\Support\Facades\Artisan::swap($artisanKernel); }
+
 // Native model/repository objects, fake HTTP boundary. No node is contacted.
 $node = new Node;
 $node->forceFill(['fqdn' => 'wings.fixture.test', 'scheme' => 'https', 'daemon_connect' => 8080,
