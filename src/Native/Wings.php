@@ -128,7 +128,7 @@ final class Wings implements Files
             $this->repo()->getHttpClient()->connectTimeout(5)->timeout(600)->withOptions(['progress' => $progress])->withQueryParameters(['file' => '/'.$path])
                 ->withHeaders(['Content-Length' => (string) filesize($localFile)])
                 ->withBody($stream, 'application/octet-stream')->post('/api/servers/'.$this->server->uuid.'/files/write')->throw();
-        } finally { fclose($stream); }
+        } finally { if (is_resource($stream)) { fclose($stream); } }
         if ($this->hash($path) !== $sha256) { throw new RuntimeException('Wings upload verification failed.'); }
     }
 

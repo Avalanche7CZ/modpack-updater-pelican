@@ -28,6 +28,12 @@ Http::fake(function ($request, array $options) use (&$data, &$noopRename, &$trun
     if (str_ends_with($path, '/files/write')) {
         check($request->method() === 'POST', 'Wrong native upload method');
         check(is_callable($options['progress'] ?? null), 'Long transfer has no operation heartbeat');
+        if (ltrim($query['file'], '/') === 'fenced.jar') {
+            // Guzzle may own and close the upload stream when an abort unwinds.
+            $body = $options['body'] ?? null;
+            if ($body instanceof \Psr\Http\Message\StreamInterface) { $body->close(); }
+            elseif (is_resource($body)) { fclose($body); }
+        }
         $options['progress'](0, 0, 131072, 0);
         check((int) $request->header('Content-Length')[0] === strlen($request->body()), 'Binary upload Content-Length differs from body');
         $data[ltrim($query['file'], '/')] = $request->body(); $writes++;
@@ -49,7 +55,8 @@ try {
     check($writes === 1 && $data['uploaded.jar'] === file_get_contents($temp), 'Authenticated native binary upload failed');
     $writesBeforeFence = $writes;
     $fenced = new Wings($server, app(DaemonFileRepository::class), fn () => throw new RuntimeException('Fixture execution fenced'));
-    rejects(fn () => $fenced->upload($temp, 'fenced.jar', hash_file('sha256', $temp)), 'A fenced upload continued writing');
+    try { $fenced->upload($temp, 'fenced.jar', hash_file('sha256', $temp)); throw new RuntimeException('A fenced upload continued writing'); }
+    catch (RuntimeException $error) { check($error->getMessage() === 'Fixture execution fenced', 'Stream cleanup hid the actual transfer fence'); }
     check($writes === $writesBeforeFence && ! isset($data['fenced.jar']), 'Progress fencing did not abort the transfer');
     $files->rename('uploaded.jar', 'installed.jar');
     $noopRename = true;

@@ -11,7 +11,7 @@ foreach ($iterator as $file) {
     $class = 'Arcturus\\ModpackManager\\'.str_replace('/', '\\', substr($relative, 0, -4));
     check(class_exists($class) || interface_exists($class) || trait_exists($class), 'Failed loading '.$class);
 }
-echo "All plugin classes load against Pelican rc.1 and its locked Filament version\n";
+echo "All plugin classes load against Pelican rc.2 and its locked Filament version\n";
 use App\Models\Node;
 use App\Models\Server;
 use App\Models\User;
