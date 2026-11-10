@@ -1,7 +1,7 @@
 {
     "*": {
-        "version": "0.5.59",
-        "download_url": "https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/download/v0.5.59/arcturus-modpack-manager.zip",
-        "sha256": "9e79b4e2ed62d8d03ce4749c33b6fed72bbe273f11ffed050ab5bb55fac165e8"
+        "version": "0.5.60",
+        "download_url": "https://github.com/Avalanche7CZ/modpack-updater-pelican/releases/download/v0.5.60/arcturus-modpack-manager.zip",
+        "sha256": "4e0789a5c0a883fce45241dd3394568a115c5531c3666dde2bcf9135671e5522"
     }
 }
