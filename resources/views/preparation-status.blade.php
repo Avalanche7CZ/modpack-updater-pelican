@@ -40,7 +40,7 @@
                                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ implode(' · ', $row['metrics']) }}</p>
                             @endif
                             @if($row['download'])
-                                <dl class="mt-2 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+                                <dl class="mt-2 text-sm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,10rem),1fr));gap:0.75rem 1.5rem">
                                     <div><dt class="text-gray-500 dark:text-gray-400">{{ $row['download']['live'] ? 'Download speed' : 'Last recorded speed' }}</dt><dd class="font-medium">{{ $row['download']['speed'] ?? 'Not recorded' }}</dd></div>
                                     <div><dt class="text-gray-500 dark:text-gray-400">{{ $row['download']['live'] ? 'ETA' : 'Last recorded ETA' }}</dt><dd class="font-medium">{{ $row['download']['eta'] ?? 'Not available' }}</dd></div>
                                     @if($row['download']['downloaded'] !== null)

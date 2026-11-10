@@ -13,3 +13,6 @@ check($providerFailure['code'] === 'HTTP_STATUS' && $providerFailure['context'][
 $detail = PreparationDiagnostic::fromException(new RuntimeException('private?token=fixture-secret'));
 check($detail['code'] === 'PANEL_ERROR' && ! str_contains(json_encode($detail), 'fixture-secret'), 'Unexpected exception leaked through public diagnostic');
 echo "Preparation diagnostics distinguish gateway failures and keep private exception text out of UI\n";
+
+$policy = PreparationDiagnostic::normalize(['code' => 'DOWNLOAD_POLICY', 'phase' => 'downloading', 'context' => ['reason' => 'REDIRECT_HOST_NOT_ALLOWED', 'host' => 'cdn.example.test', 'url' => 'https://cdn.example.test/file?secret=hidden']]);
+check($policy['context'] === ['reason' => 'REDIRECT_HOST_NOT_ALLOWED', 'host' => 'cdn.example.test'] && str_contains($policy['description'], 'cdn.example.test') && ! str_contains(json_encode($policy), 'hidden'), 'Download diagnostic lost a safe hostname or leaked a URL');

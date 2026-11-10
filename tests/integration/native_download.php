@@ -42,14 +42,32 @@ try {
     $before = file_get_contents($root.'/requests.json');
     check($prepare('https://github.com/redirect')['state'] === 'completed', 'Verified artifact could not be reused');
     check(file_get_contents($root.'/requests.json') === $before, 'Identical verified artifact was re-downloaded');
+    // Required-file resolution uses the same production Native configuration and HTTPS policy.
+    foreach (['https://edge.forgecdn.net/dependency' => true, 'https://github.com/bad' => false] as $dependency => $allowed) {
+        $id = bin2hex(random_bytes(16));
+        $pending = $worker->request('prepare', ['operation_id' => $id, 'recipe' => ['schema' => 2, 'provider' => 'curseforge', 'project' => '1', 'version' => '2', 'format' => 'curseforge',
+            'downloads' => [['url' => 'https://edge.forgecdn.net/client', 'archive' => true, 'hashes' => ['sha256' => $route['client_sha256']]]]]]);
+        check($pending['state'] === 'awaiting_resolution', 'Native client manifest did not request dependency resolution');
+        $result = $worker->request('resolve', ['operation_id' => $id, 'requirements_sha256' => $pending['requirements_sha256'], 'files' => [
+            ['project_id' => '1', 'file_id' => '2', 'path' => 'mods/resolved.jar', 'url' => $dependency, 'hashes' => ['sha256' => $route['jar_sha256']]],
+        ]]);
+        check($result['state'] === ($allowed ? 'completed' : 'failed'), 'Resolved dependency bypassed or lost native download policy: '.json_encode($result));
+        if ($allowed) {
+            $resolved = $worker->request('manifest', ['operation_id' => $id]);
+            check($resolved['files']['mods/resolved.jar'] === $route['jar_sha256'], 'Resolved dependency is missing from the verified manifest');
+        } else { check(($result['diagnostic']['context']['reason'] ?? '') === 'REDIRECT_HOST_NOT_ALLOWED', 'Resolved dependency lost its policy reason'); }
+    }
     config(['arcturus-modpack-manager.allowed_custom_hosts' => ['custom.example.test', 'private.example.test']]);
     $hosts = $worker->configuration()[$managed->pelican_server_uuid]['allowed_hosts'];
     check(! array_diff(DownloadPolicy::HOSTS, $hosts) && in_array('custom.example.test', $hosts, true), 'Custom hosts replaced official policy');
     check($prepare('https://custom.example.test/archive')['state'] === 'completed', 'Approved custom host failed');
     check($prepare('https://github.com/retry')['state'] === 'completed', 'Gateway retry lost official redirect policy');
-    foreach (['bad', 'private', 'downgrade', 'loop', 'retry-bad'] as $path) {
+    foreach (['bad' => 'REDIRECT_HOST_NOT_ALLOWED', 'private' => 'NON_PUBLIC_ADDRESS', 'downgrade' => 'HTTPS_REQUIRED', 'loop' => 'REDIRECT_LIMIT', 'retry-bad' => 'REDIRECT_HOST_NOT_ALLOWED'] as $path => $reason) {
         $result = $prepare('https://github.com/'.$path);
         check($result['state'] === 'failed' && $result['diagnostic']['code'] === 'DOWNLOAD_POLICY', 'Unsafe download was not denied: '.$path.' '.json_encode($result));
+        check(($result['diagnostic']['context']['reason'] ?? '') === $reason, 'Specific policy reason was lost');
+        $display = \Arcturus\ModpackManager\Services\PreparationDiagnostic::normalize($result['diagnostic']);
+        check(($display['context']['reason'] ?? '') === $reason && isset($display['context']['host']), 'PHP dropped sanitized worker policy evidence');
         check(! str_contains(json_encode($result['diagnostic']), 'fixture-secret'), 'Signed URL leaked into public diagnostics');
     }
     $badHash = $prepare('https://github.com/archive', str_repeat('0', 64));

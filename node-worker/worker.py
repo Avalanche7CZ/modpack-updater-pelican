@@ -188,6 +188,12 @@ def diagnostic(error, phase, context=None):
         value = supplied.get(key)
         if type(value) is int and 0 <= value <= 1000000:
             safe[key] = value
+    reason = supplied.get('reason')
+    if reason in ('HOST_NOT_ALLOWED', 'REDIRECT_HOST_NOT_ALLOWED', 'NON_PUBLIC_ADDRESS', 'HTTPS_REQUIRED', 'REDIRECT_LIMIT', 'URL_CREDENTIALS', 'URL_INVALID'):
+        safe['reason'] = reason
+    host = supplied.get('host')
+    if isinstance(host, str) and len(host) <= 253 and re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?', host) and not any(len(label) > 63 for label in host.split('.')):
+        safe['host'] = host
     safe.update(safe_file(supplied.get('file')))
     if isinstance(supplied.get('file_id'), str) and re.fullmatch('[a-f0-9]{12}', supplied['file_id']):
         safe['file_id'] = supplied['file_id']
@@ -381,7 +387,7 @@ def public_address(host):
     for item in addresses:
         address = ipaddress.ip_address(item[4][0])
         if not address.is_global or (address.version == 6 and address.ipv4_mapped and not address.ipv4_mapped.is_global):
-            raise ValueError('Download hostname resolves to a non-public address')
+            raise PreparationFailure('DOWNLOAD_POLICY', reason='NON_PUBLIC_ADDRESS', host=host)
     return addresses[0][4][0]
 
 
@@ -411,18 +417,21 @@ def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress
             # Start at the publisher URL again: a CDN URL may contain an expired signature.
             url = origin_url
             retry = False
-            for _ in range(4):
+            for hop in range(4):
                 if cancelled():
                     raise InterruptedError('Operation cancelled')
+                host = None
                 try:
                     p = urlsplit(url)
-                    allowed = (len(url) <= 4096 and p.scheme == 'https' and p.hostname in hosts
-                               and p.port in (None, 443) and not p.username and not p.password
-                               and not p.fragment and not any(ord(c) <= 32 for c in url))
+                    host = p.hostname
+                    reason = ('HTTPS_REQUIRED' if p.scheme != 'https' else
+                              'URL_CREDENTIALS' if p.username or p.password else
+                              ('REDIRECT_HOST_NOT_ALLOWED' if hop else 'HOST_NOT_ALLOWED') if host not in hosts else
+                              'URL_INVALID' if len(url) > 4096 or p.port not in (None, 443) or p.fragment or any(ord(c) <= 32 or ord(c) == 127 for c in url) else None)
                 except ValueError:
-                    allowed = False
-                if not allowed:
-                    raise PreparationFailure('DOWNLOAD_POLICY')
+                    reason = 'URL_INVALID'
+                if reason:
+                    raise PreparationFailure('DOWNLOAD_POLICY', reason=reason, host=host)
                 connection = PinnedHTTPS(p.hostname, public_address(p.hostname))
                 headers = {'User-Agent': 'Arcturus-Modpack-Manager/0.5'}
                 if attempt:
@@ -449,7 +458,7 @@ def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress
                     raise PreparationFailure('HTTP_STATUS', http_status=response.status)
                 break
             else:
-                raise PreparationFailure('DOWNLOAD_POLICY')
+                raise PreparationFailure('DOWNLOAD_POLICY', reason='REDIRECT_LIMIT', host=host)
             if not retry:
                 break
         length = response.getheader('Content-Length')

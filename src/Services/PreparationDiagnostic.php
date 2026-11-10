@@ -77,6 +77,10 @@ final class PreparationDiagnostic
                 $context[$key] = $number;
             }
         }
+        $reason = $value['context']['reason'] ?? null;
+        if (in_array($reason, ['HOST_NOT_ALLOWED', 'REDIRECT_HOST_NOT_ALLOWED', 'NON_PUBLIC_ADDRESS', 'HTTPS_REQUIRED', 'REDIRECT_LIMIT', 'URL_CREDENTIALS', 'URL_INVALID'], true)) { $context['reason'] = $reason; }
+        $host = $value['context']['host'] ?? null;
+        if (is_string($host) && strlen($host) <= 253 && preg_match('/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/D', $host) && ! array_filter(explode('.', $host), fn ($label) => strlen($label) > 63)) { $context['host'] = $host; }
         $file = $value['context']['file'] ?? null;
         if (is_string($file) && strlen($file) <= 240 && preg_match('~^[A-Za-z0-9][A-Za-z0-9_. /+-]*$~D', $file) &&
             ! preg_match('~(?:^|/)(?:\.{1,2}|)(?:/|$)|[A-Za-z0-9_-]{40,}|token|secret|password|credential|bearer~i', $file)) {
@@ -85,6 +89,12 @@ final class PreparationDiagnostic
         $id = $value['context']['file_id'] ?? null;
         if (is_string($id) && preg_match('/^[a-f0-9]{12}$/D', $id)) {
             $context['file_id'] = $id;
+        }
+        if ($code === 'DOWNLOAD_POLICY' && isset($context['reason'])) {
+            $description .= ' Reason: '.$context['reason'].(isset($context['host']) ? ' · host: '.$context['host'] : '').'.';
+            $action = in_array($context['reason'], ['HOST_NOT_ALLOWED', 'REDIRECT_HOST_NOT_ALLOWED'], true)
+                ? 'Update the plugin and inspect the provider/CDN host in these diagnostics. Official hosts are built in; approve a custom host only after verifying it. No filesystem permission change is needed.'
+                : 'Review the exact release download and redirect chain. HTTPS, public addresses and redirect limits cannot be bypassed.';
         }
         if ($code === 'HTTP_STATUS' && in_array($context['http_status'] ?? null, [502, 503, 504], true)) {
             $description = 'The upstream service is temporarily unavailable (HTTP '.$context['http_status'].').';
