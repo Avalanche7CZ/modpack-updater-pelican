@@ -15,7 +15,7 @@ $data = ['candidate.jar' => "PK\x00\x01binary\xff"];
 $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
 $noopRename = false; $truncated = false; $symlink = false; $writes = 0;
 Http::preventStrayRequests();
-Http::fake(function ($request) use (&$data, &$noopRename, &$truncated, &$symlink, &$writes, $headers) {
+Http::fake(function ($request, array $options) use (&$data, &$noopRename, &$truncated, &$symlink, &$writes, $headers) {
     parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
     $path = parse_url($request->url(), PHP_URL_PATH);
     if (str_ends_with($path, '/files/list-directory')) {
@@ -27,6 +27,8 @@ Http::fake(function ($request) use (&$data, &$noopRename, &$truncated, &$symlink
     }
     if (str_ends_with($path, '/files/write')) {
         check($request->method() === 'POST', 'Wrong native upload method');
+        check(is_callable($options['progress'] ?? null), 'Long transfer has no operation heartbeat');
+        $options['progress'](0, 0, 131072, 0);
         check((int) $request->header('Content-Length')[0] === strlen($request->body()), 'Binary upload Content-Length differs from body');
         $data[ltrim($query['file'], '/')] = $request->body(); $writes++;
         return Http::response('', 204, $headers);
@@ -45,6 +47,10 @@ $temp = tempnam(sys_get_temp_dir(), 'arcturus-binary-'); file_put_contents($temp
 try {
     $files->upload($temp, 'uploaded.jar', hash_file('sha256', $temp));
     check($writes === 1 && $data['uploaded.jar'] === file_get_contents($temp), 'Authenticated native binary upload failed');
+    $writesBeforeFence = $writes;
+    $fenced = new Wings($server, app(DaemonFileRepository::class), fn () => throw new RuntimeException('Fixture execution fenced'));
+    rejects(fn () => $fenced->upload($temp, 'fenced.jar', hash_file('sha256', $temp)), 'A fenced upload continued writing');
+    check($writes === $writesBeforeFence && ! isset($data['fenced.jar']), 'Progress fencing did not abort the transfer');
     $files->rename('uploaded.jar', 'installed.jar');
     $noopRename = true;
     rejects(fn () => $files->rename('installed.jar', 'not-installed.jar'), 'A no-op 204 rename was trusted');

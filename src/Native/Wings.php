@@ -118,8 +118,14 @@ final class Wings implements Files
         $stream = fopen($localFile, 'rb');
         if ($stream === false) { throw new RuntimeException('Cannot open private prepared artifact.'); }
         try {
+            // Keep a slow transfer live in the durable journal. A fenced operation
+            // aborts the transfer through Guzzle instead of continuing an orphaned write.
+            $lastPulse = 0.0;
+            $progress = function () use (&$lastPulse): void {
+                if (microtime(true) - $lastPulse >= 10) { $this->heartbeat?->__invoke(); $lastPulse = microtime(true); }
+            };
             // Wings requires Content-Length and streams the raw body into this exact file.
-            $this->repo()->getHttpClient()->connectTimeout(5)->timeout(600)->withQueryParameters(['file' => '/'.$path])
+            $this->repo()->getHttpClient()->connectTimeout(5)->timeout(600)->withOptions(['progress' => $progress])->withQueryParameters(['file' => '/'.$path])
                 ->withHeaders(['Content-Length' => (string) filesize($localFile)])
                 ->withBody($stream, 'application/octet-stream')->post('/api/servers/'.$this->server->uuid.'/files/write')->throw();
         } finally { fclose($stream); }

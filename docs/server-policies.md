@@ -1,6 +1,6 @@
 # Per-server protection policies
 
-Only root administrators can edit these policies. Owners and authorized subusers can view a server's rules in the isolated Arcturus server page. Saving a rule changes database policy, never Minecraft files, power, egg, image or startup settings. Automatic deployment remains disabled by default; remote apply/rollback is still unavailable pending transaction qualification.
+Only root administrators can edit these policies. Owners and authorized subusers can view a server's rules in the isolated Arcturus server page. Saving a rule changes database policy, never Minecraft files, power, egg, image or startup settings. Automatic deployment remains disabled by default. The native Pelican/Wings backend applies an approved plan with a completed locked backup and verified recovery. The legacy external worker remains restricted; its limitations do not describe the native backend.
 
 ## Choose files or edit rules
 
@@ -45,7 +45,7 @@ File Changes supports **Keep local**, **Accept upstream** and supported `.proper
 
 Policy changes are rejected during preparation/deployment and on stale editor revisions. A comparison cannot resurrect an approval invalidated by a concurrent policy edit. Preview and the retained local deployment engine use the same normalized policy context; mismatched decisions abort before mutation. Per-server JSON rules, disabled IDs and manual mappings persist through release selection, re-association and process restarts.
 
-The additive migration preserves existing rule JSON, disabled IDs and history; it invalidates old previews/approvals because precedence changed. Existing rules without a scope infer exact-path or glob semantics. No rule is copied to another server. Before enabling any future deployment capability, review the new plan and explicitly choose a template if the previous implicit protections are desired. No reference-plugin data is read or modified.
+The additive migration preserves existing rule JSON, disabled IDs and history; it invalidates old previews/approvals because precedence changed. Existing rules without a scope infer exact-path or glob semantics. No rule is copied to another server. Before enabling deployment, review the new plan and explicitly choose a template if the previous implicit protections are desired. No reference-plugin data is read or modified.
 
 Text merging remains strict single-line `.properties` review, with no automatic write-back. Mod dependency resolution is not a dependency solver: removal confirmation records human review, not proof that the remaining pack starts. Live Wings apply/rollback, real Minecraft startup/world migration and MariaDB remain separate unverified integration boundaries.
 
