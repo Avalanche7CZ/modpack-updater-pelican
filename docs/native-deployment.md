@@ -12,7 +12,7 @@ Target: **Pelican Panel 1.0.0-rc.2**, PHP 8.4/8.5, existing Panel scheduler and 
 6. Check History for the exact backup UUID and terminal operation outcome. Independently inspect the disposable server's real console, worlds/dimensions, custom mods and networking. A successful fixture test does not replace this rehearsal.
 7. After successful rehearsals, explicitly enable per-server automatic deployment and create **Schedules → Create Task → Update Modpack**. Use the optional normal restart when no new release exists. Following tasks wait for the update result. A failed update stops the chain even if its task has Continue on failure selected. Failures before deployment use the existing Discord failure outbox and its configured opt-in; deployment failures retain their own alert without an extra duplicate schedule alert.
 
-Official artifact hosts and approved CDN redirects are built in. Custom allowed hosts extend that list; native preparation does not require a manual whitelist for official downloads.
+Official artifact hosts and approved CDN redirects are built in. Retained artifacts are reused only for the exact recipe and after checksum validation. Corrupt cached bytes are quarantined without deleting their evidence, then downloaded and checked again; malformed unrelated cache receipts are ignored. Protection-policy comparisons reuse the prepared release. Custom allowed hosts extend that list; native preparation does not require a manual whitelist for official downloads.
 
 ## What is supported
 
@@ -51,6 +51,8 @@ Locked recovery backups and unrelated backups are never pruned by this workflow.
 ## Validation boundary
 
 A real checksummed NeoForge 21.1.172 installer was executed successfully under Java 21 in a disposable filesystem/PID sandbox, generating its patched server JAR and runtime libraries. The executor maps system-package ownership to UID 65534, so the scratch smoke harness adapts that identity only; production still requires root-owned tools. This exercised actual installer output, not a Minecraft boot.
+
+File-only updates and published NeoForge migrations, including partial-write and failed-boot recovery, now begin with provider metadata, the real database preparation job, the production Native configuration and actual pinned HTTPS/TLS archive transfer, extraction and manifest generation. Only DNS/socket routing and provider metadata are controlled by the test; transport verification is not disabled. The Wings control plane remains an HTTP fixture, not a live daemon. Policy-only comparisons make no further artifact requests.
 
 Small deterministic fixtures execute real rc.2 approval, database queue, daemon repositories, startup service and native backup callback controllers, with a disposable HTTP Wings model. They cover a complete file-only update, published and installer-produced NeoForge/Java/startup migrations, partial write, failed boot, image/startup rollback, failed restore callback, retained launcher symlink, excluded backups, custom/disabled mods, duplicate delivery and interrupted-worker recovery. Separate HTTP tests cover binary streams, truncated transfers, symlink rejection and no-op rename responses.
 

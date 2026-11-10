@@ -46,6 +46,17 @@ try {
     $before = file_get_contents($root.'/requests.json');
     check($prepare('https://github.com/redirect')['state'] === 'completed', 'Verified artifact could not be reused');
     check(file_get_contents($root.'/requests.json') === $before, 'Identical verified artifact was re-downloaded');
+    $cacheUrl = 'https://github.com/archive?cache=integrity-fixture';
+    $cached = $prepare($cacheUrl);
+    file_put_contents($entry['staging'].'/'.$cached['operation_id'].'/download-0', 'corrupt retained archive');
+    $beforeRepair = json_decode(file_get_contents($root.'/requests.json'), true)['/archive'];
+    check($prepare($cacheUrl)['state'] === 'completed', 'A corrupt retained artifact permanently blocked a fresh verified download');
+    check(json_decode(file_get_contents($root.'/requests.json'), true)['/archive'] === $beforeRepair + 1, 'Corrupt bytes were trusted instead of freshly downloaded');
+    check(count(glob($entry['staging'].'/'.$cached['operation_id'].'/download-0.unverified-*')) === 1, 'Corrupt artifact evidence was lost');
+    $brokenReceipt = $entry['staging'].'/'.str_repeat('b', 32);
+    mkdir($brokenReceipt, 0700); file_put_contents($brokenReceipt.'/operation.json', '{invalid receipt');
+    check($prepare('https://github.com/archive?cache=after-malformed-receipt')['state'] === 'completed', 'An unrelated malformed cache receipt blocked preparation');
+    check(file_get_contents($brokenReceipt.'/operation.json') === '{invalid receipt', 'Malformed receipt evidence was deleted');
     // Required-file resolution uses the same production Native configuration and HTTPS policy.
     foreach (['https://edge.forgecdn.net/dependency' => true, 'https://github.com/bad' => false] as $dependency => $allowed) {
         $id = bin2hex(random_bytes(16));

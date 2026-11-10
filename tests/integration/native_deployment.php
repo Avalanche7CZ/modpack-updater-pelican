@@ -173,6 +173,47 @@ try {
             check(! array_filter(array_slice($requests, $from), fn ($r) => str_ends_with($r[1], '/files/contents') && ($r[2]['file'] ?? '') === '/unix_args.txt'), 'Native inventory dereferenced a preserved launcher link');
         }
 
+        if (in_array($scenario, ['success', 'failed_boot', 'partial_write'], true)) {
+            // Real upstream TLS bytes and actual Native preparation precede this deployment.
+            $tlsRoot = sys_get_temp_dir().'/arcturus-pipeline-'.bin2hex(random_bytes(8)); mkdir($tlsRoot, 0700);
+            $prepared = $managed->target_metadata['prepared'];
+            $fixtureStage = (new Preparation($managed))->stage($prepared['node_operation_id'], $prepared['manifest_sha256']);
+            $targetRecipe = app(ReleaseStore::class)->load($managed->target_manifest_path);
+            $zip = new ZipArchive; $zip->open($tlsRoot.'/input.zip', ZipArchive::CREATE);
+            foreach ($targetRecipe['files'] as $path => $hashValue) { $zip->addFile($fixtureStage.'/'.$path, $path); } $zip->close();
+            $tls = new \Symfony\Component\Process\Process(['/usr/bin/python3', '-B', __DIR__.'/fixtures/native_tls/server.py', $tlsRoot]); $tls->start();
+            $envSaved = [];
+            try {
+                $deadline = microtime(true) + 10;
+                while (! is_file($tlsRoot.'/routing.json') && microtime(true) < $deadline && $tls->isRunning()) { usleep(10000); }
+                check(is_file($tlsRoot.'/routing.json'), 'Pipeline TLS fixture failed');
+                foreach (['SSL_CERT_FILE' => $tlsRoot.'/cert.pem', 'PYTHONPATH' => __DIR__.'/fixtures/native_tls', 'ARCTURUS_TEST_TLS_ROUTING' => $tlsRoot.'/routing.json'] as $key => $value) {
+                    $envSaved[$key] = [getenv($key), $_ENV[$key] ?? null, $_SERVER[$key] ?? null]; putenv($key.'='.$value); $_ENV[$key] = $_SERVER[$key] = $value;
+                }
+                $source = 'https://api.github.com/fixture/native-recipe';
+                $baseRecipe = app(ReleaseStore::class)->load($managed->base_manifest_path); $baseRecipe['project'] = $source;
+                $managed->update(['source' => $source, 'base_manifest_path' => app(ReleaseStore::class)->put($baseRecipe)]);
+                $app->instance(\Arcturus\ModpackManager\Modpacks\JsonClient::class, new class($targetRecipe['runtime'], hash_file('sha256', $tlsRoot.'/input.zip')) extends \Arcturus\ModpackManager\Modpacks\JsonClient {
+                    public function __construct(private array $runtime, private string $hash) {}
+                    public function get(string $url, array $headers = []): array { return ['schema' => 2, 'version' => '2', 'format' => 'zip', 'runtime' => $this->runtime,
+                        'downloads' => [['url' => 'https://github.com/redirect', 'archive' => true, 'hashes' => ['sha256' => $this->hash]]]]; }
+                });
+                $preparing = app(\Arcturus\ModpackManager\Services\OperationTracker::class)->create($managed, 'prepare', ['provider' => 'custom', 'source' => $source, 'version' => '2']);
+                \Arcturus\ModpackManager\Jobs\PrepareUpdate::dispatch($managed->id, false, $preparing->id);
+                app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+                check($preparing->fresh()->phase === 'completed', 'Actual native pipeline failed before deployment: '.$preparing->fresh()->error);
+                $managed->refresh();
+                $requestsBeforePolicy = file_get_contents($tlsRoot.'/requests.json');
+                $managed->update(['file_rules' => [...$managed->file_rules, ['scope' => 'exact', 'pattern' => 'config/local-only.cfg', 'mode' => 'protect', 'enabled' => true]], 'policy_revision' => $managed->policy_revision + 1]);
+                app(PreviewService::class)->generate($managed);
+                check(file_get_contents($tlsRoot.'/requests.json') === $requestsBeforePolicy, 'Policy-only comparison re-downloaded the verified server pack');
+                check($managed->target_metadata['prepared']['node_operation_id'] !== $prepared['node_operation_id'], 'Deployment reused a fabricated target stage');
+            } finally {
+                foreach ($envSaved as $key => [$value, $env, $serverEnv]) { putenv($value === false ? $key : $key.'='.$value); unset($_ENV[$key], $_SERVER[$key]); if ($env !== null) { $_ENV[$key] = $env; } if ($serverEnv !== null) { $_SERVER[$key] = $serverEnv; } }
+                $tls->stop(0); foreach (glob($tlsRoot.'/*') as $file) { unlink($file); } rmdir($tlsRoot);
+            }
+        }
+
         if (str_starts_with($scenario, 'installer_')) {
             $input = tempnam(sys_get_temp_dir(), 'arcturus-installer-input-');
             $argsText = '-p libraries/fixture/runtime.jar --fml.neoForgeVersion 26.1.2.121 --fml.mcVersion 26.1.2';

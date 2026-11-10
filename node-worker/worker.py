@@ -717,7 +717,14 @@ class Worker:
 
     def recover(self, server):
         for path in Path(self.entry(server)['staging']).glob('*/operation.json'):
-            data = json.loads(path.read_text())
+            if path.is_symlink() or path.parent.is_symlink():
+                continue
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue  # Retain corrupt upstream evidence; never label it complete or replay it.
+            if not isinstance(data, dict) or not isinstance(data.get('state'), str):
+                continue
             if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution'):
                 data.update(state='interrupted', error=FAILURES['INTERRUPTED'][0], diagnostic=diagnostic(PreparationFailure('INTERRUPTED'), data.get('progress', {}).get('phase', data.get('state'))))
                 atomic_json(path, data)
@@ -1035,9 +1042,14 @@ class Worker:
 
     def cached_artifact(self, server, fingerprint, index, current):
         for record in Path(self.entry(server)['staging']).glob('*/operation.json'):
-            if record.parent == current or record.is_symlink():
+            if record.parent == current or record.is_symlink() or record.parent.is_symlink():
                 continue
-            previous = json.loads(record.read_text())
+            try:
+                previous = json.loads(record.read_text())
+            except (OSError, ValueError):
+                continue  # A cache hint is optional; retain malformed receipts for inspection.
+            if not isinstance(previous, dict):
+                continue
             candidate = record.parent / ('download-%d' % index)
             if (previous.get('recipe_sha256') == fingerprint and previous.get('state') in ('completed', 'failed', 'cancelled', 'interrupted')
                     and previous.get('files_verified', 0) > index and candidate.is_file() and not candidate.is_symlink()):
@@ -1073,19 +1085,29 @@ class Worker:
                     dest = base / ('download-%d' % i)
                     cached = self.cached_artifact(server, data['recipe_sha256'], i, base)
                     if cached is not None:
-                        sha, size = local_artifact('retained', dest,
-                            {'root': entry['root'], 'artifacts': {'retained': str(cached)}}, item['hashes'], maximum - total,
-                            report=lambda **v: transfer_report(update, total, **v), cancelled=cancelled)
-                        if item.get('size') is not None and item['size'] != size:
-                            raise PreparationFailure('TRANSFER_SIZE')
-                    elif 'artifact_id' in item:
-                        sha, size = local_artifact(item['artifact_id'], dest, entry, item['hashes'], maximum - total, report=lambda **v: transfer_report(update, total, **v), cancelled=cancelled)
-                        if item.get('size') is not None and item['size'] != size:
-                            raise PreparationFailure('TRANSFER_SIZE')
-                    else:
-                        sha, size = fetch(item['url'], dest, entry.get('allowed_hosts', []), item['hashes'],
-                                          maximum - total, item.get('size'),
-                                          lambda n: update(bytes_downloaded=total + n), cancelled, report=lambda **v: transfer_report(update, total, **v))
+                        try:
+                            sha, size = local_artifact('retained', dest,
+                                {'root': entry['root'], 'artifacts': {'retained': str(cached)}}, item['hashes'], maximum - total,
+                                report=lambda **v: transfer_report(update, total, **v), cancelled=cancelled)
+                            if item.get('size') is not None and item['size'] != size:
+                                raise PreparationFailure('TRANSFER_SIZE')
+                        except PreparationFailure as error:
+                            if error.code not in ('CHECKSUM_MISMATCH', 'TRANSFER_SIZE'):
+                                raise
+                            # Retain corrupt evidence, but never reuse it on every retry.
+                            # A fresh transfer must pass the same host/address/hash policy.
+                            cached.rename(cached.with_name(cached.name + '.unverified-' + str(time.time_ns())))
+                            dest.unlink()
+                            cached = None
+                    if cached is None:
+                        if 'artifact_id' in item:
+                            sha, size = local_artifact(item['artifact_id'], dest, entry, item['hashes'], maximum - total, report=lambda **v: transfer_report(update, total, **v), cancelled=cancelled)
+                            if item.get('size') is not None and item['size'] != size:
+                                raise PreparationFailure('TRANSFER_SIZE')
+                        else:
+                            sha, size = fetch(item['url'], dest, entry.get('allowed_hosts', []), item['hashes'],
+                                              maximum - total, item.get('size'),
+                                              lambda n: update(bytes_downloaded=total + n), cancelled, report=lambda **v: transfer_report(update, total, **v))
                     total += size
                     artifacts.append({'sha256': sha, 'bytes': size, 'path': item.get('path'), 'hashes': item['hashes']})
                     if item.get('archive'):

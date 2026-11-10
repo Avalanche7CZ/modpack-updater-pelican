@@ -16,7 +16,7 @@ subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-da
 buffer = io.BytesIO()
 with zipfile.ZipFile(buffer, 'w') as archive:
     archive.writestr('config/options.cfg', 'verified upstream')
-body = buffer.getvalue()
+body = (root / 'input.zip').read_bytes() if (root / 'input.zip').is_file() else buffer.getvalue()
 client = io.BytesIO()
 with zipfile.ZipFile(client, 'w') as archive:
     archive.writestr('manifest.json', json.dumps({'manifestType': 'minecraftModpack', 'manifestVersion': 1, 'overrides': 'overrides',
