@@ -272,8 +272,25 @@ $app->register(\Arcturus\ModpackManager\Providers\ModpackManagerServiceProvider:
 $events = app(\Illuminate\Console\Scheduling\Schedule::class)->events();
 check(count(array_filter($events, fn ($event) => str_contains($event->command ?? '', 'arcturus-modpack:recover') && $event->expression === '*/5 * * * *')) === 1, 'Recovery scheduler was not registered every five minutes');
 $app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(new \Arcturus\ModpackManager\Console\Commands\RecoverOperations);
+$damaged = \Arcturus\ModpackManager\Models\Operation::create([
+    'id' => (string) \Illuminate\Support\Str::uuid(), 'managed_server_id' => $server->id,
+    'kind' => 'deploy', 'phase' => 'stopping', 'heartbeat_at' => now()->subMinutes(6),
+    'context' => ['fixture' => str_repeat('recovery-evidence-', 6000)]]);
+$damagedBytes = substr($damaged->getAttributes()['context'], 0, 65535);
+DB::table('arcturus_modpack_operations')->where('id', $damaged->id)->update(['context' => $damagedBytes]);
+$previousOperation = $server->active_operation_id;
+$server->update(['active_operation_id' => $damaged->id]);
 Cache::forget('arcturus-discord-recovery-at');
 check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:recover') === 0 && Cache::has('arcturus-discord-recovery-at'), 'Scheduled recovery command failed');
+check(str_contains(\Illuminate\Support\Facades\Artisan::output(), $damaged->id), 'Damaged receipt was silently skipped');
+$rawDamaged = DB::table('arcturus_modpack_operations')->where('id', $damaged->id)->first();
+check($rawDamaged->context === $damagedBytes && $rawDamaged->phase === 'stopping' &&
+    $rawDamaged->completed_at === null && $server->fresh()->active_operation_id === $damaged->id,
+    'Recovery command modified unreadable evidence or released its lock');
+// Dispose only of the isolated fixture, never normalize a production receipt.
+DB::table('arcturus_modpack_operations')->where('id', $damaged->id)->delete();
+$server->update(['active_operation_id' => $previousOperation]);
+
 
 // Actual provider discovery/checker subscriptions: current, repeated and disabled releases never POST.
 Queue::fake();
