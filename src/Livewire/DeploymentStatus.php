@@ -19,6 +19,15 @@ final class DeploymentStatus extends Component
     {
         Access::requireAdmin();
         $operation = Operation::where('managed_server_id', $this->managedServerId)->where('kind', 'deploy')->latest('created_at')->first();
-        return view('arcturus-modpack-manager::deployment-status', compact('operation'));
+        $context = []; $receiptReadable = true;
+        if ($operation) {
+            try { $context = $operation->context ?? []; }
+            catch (\Illuminate\Contracts\Encryption\DecryptException) {
+                // Status must remain visible. Never reinterpret ciphertext as plaintext
+                // or alter/replay a deployment because its receipt cannot be decrypted.
+                $receiptReadable = false;
+            }
+        }
+        return view('arcturus-modpack-manager::deployment-status', compact('operation', 'context', 'receiptReadable'));
     }
 }

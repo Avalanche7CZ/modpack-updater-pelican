@@ -189,6 +189,17 @@ $test->call('selectTab', 'overview');
 check(str_contains($test->html(), 'Update backend: Native Pelican / Wings') && ! str_contains($test->html(), 'Complete Local filesystem setup once'), 'Native overview still requires legacy host setup');
 $test->call('selectTab', 'backups');
 check(! str_contains($test->html(), 'Installation comparison') && ! str_contains($test->html(), 'outside-volume preservation is available') && str_contains($test->html(), 'without truncation'), 'Native recovery screen retained obsolete or unrelated status');
+// Corrupt/unreadable encrypted evidence must not crash the deployment status UI.
+$brokenDeployment = Operation::create(['id' => (string) Str::uuid(), 'managed_server_id' => $record->id,
+    'kind' => 'deploy', 'phase' => 'verifying', 'context' => ['from' => 'old', 'to' => 'new'], 'heartbeat_at' => now()]);
+\Illuminate\Support\Facades\DB::table('arcturus_modpack_operations')->where('id', $brokenDeployment->id)
+    ->update(['context' => '{"plaintext":"must-not-be-trusted"}']);
+$badStatus = Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\DeploymentStatus::class, ['managedServerId' => $record->id]);
+check(str_contains($badStatus->html(), 'encrypted deployment receipt cannot be read') &&
+    str_contains($badStatus->html(), $brokenDeployment->id) && ! str_contains($badStatus->html(), 'must-not-be-trusted'),
+    'Unreadable receipt crashed status or exposed untrusted plaintext');
+check(\Illuminate\Support\Facades\DB::table('arcturus_modpack_operations')->where('id', $brokenDeployment->id)->value('context') === '{"plaintext":"must-not-be-trusted"}',
+    'Status rendering rewrote recovery evidence');
 Auth::guard()->forgetUser();
 rejects(fn () => Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]), 'Guest mounted the managed-server review page');
 echo "All native Livewire detail tabs rendered; destructive control and guest access guards passed\n";
