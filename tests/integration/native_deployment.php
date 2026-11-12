@@ -302,6 +302,51 @@ try {
     }
 
     $mode = 'success'; Auth::guard()->forgetUser();
+    // An old receipt truncated by MySQL TEXT can only be retired after an
+    // independent read-only verification. No backup, apply, restore or start.
+    $prewrite = $make(false);
+    $prewriteUuid = $prewrite->pelican_server_uuid;
+    app(PreviewService::class)->generate($prewrite);
+    $prewritePreview = $prewrite->refresh()->preview_summary;
+    $prewriteExpected = \Arcturus\ModpackManager\Native\Transaction::scope($prewritePreview['changes'])['before'];
+    check(count($prewriteExpected) > 0, 'No candidate scope for prewrite safety fixture');
+    $damaged = Operation::create([
+        'id' => (string) Str::uuid(), 'managed_server_id' => $prewrite->id,
+        'kind' => 'deploy', 'phase' => 'stopping', 'node_operation_id' => bin2hex(random_bytes(16)),
+        'context' => ['truncated_evidence' => str_repeat('encrypted-original-', 6000)],
+        'heartbeat_at' => now()->subHour(), 'created_at' => now()->subHour(),
+    ]);
+    $cipher = substr($damaged->getAttributes()['context'], 0, 65535);
+    DB::table('arcturus_modpack_operations')->where('id', $damaged->id)->update(['context' => $cipher]);
+    $prewrite->update(['active_operation_id' => $damaged->id, 'approved_plan_sha256' => $prewritePreview['plan_sha256']]);
+    $systems[$prewriteUuid]['state'] = 'offline';
+    $app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(
+        new \Arcturus\ModpackManager\Console\Commands\RetireCorruptPrewrite);
+    $args = ['operation' => $damaged->id];
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:retire-corrupt-prewrite', $args) === 0,
+        'Read-only truncated receipt verification did not pass');
+    $review = \Illuminate\Support\Facades\Artisan::output();
+    check(preg_match('/Proof: ([a-f0-9]{64})/', $review, $proofMatch) === 1 &&
+        str_contains($review, 'Original candidate paths verified: '.count($prewriteExpected)),
+        'Read-only proof/count not reported');
+    check($prewrite->fresh()->active_operation_id === $damaged->id &&
+        DB::table('arcturus_modpack_operations')->where('id', $damaged->id)->value('context') === $cipher,
+        'Read-only prewrite review changed the encrypted receipt or server lock');
+    $bad = $args + ['--apply' => true, '--confirm' => str_repeat('0', 64), '--expect-count' => count($prewriteExpected)];
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:retire-corrupt-prewrite', $bad) !== 0 &&
+        $prewrite->fresh()->active_operation_id === $damaged->id, 'Invalid attestation released damaged receipt');
+    $good = $args + ['--apply' => true, '--confirm' => $proofMatch[1], '--expect-count' => count($prewriteExpected)];
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:retire-corrupt-prewrite', $good) === 0,
+        'Verified prewrite retirement did not complete: '.\Illuminate\Support\Facades\Artisan::output());
+    $retired = Operation::findOrFail($damaged->id);
+    check($retired->phase === 'cancelled' && $retired->completed_at !== null &&
+        $prewrite->fresh()->active_operation_id === null &&
+        DB::table('arcturus_modpack_operations')->where('id', $damaged->id)->value('context') === $cipher &&
+        $systems[$prewriteUuid]['state'] === 'offline' &&
+        $systems[$prewriteUuid]['data']['config/options.cfg'] === 'old',
+        'Prewrite retirement removed evidence, changed files, started Minecraft, or retained the lock');
+    echo "Guarded pre-backup retirement preserved damaged ciphertext, original files and offline state\n";
+
     // Native Schedules bridge: real task handler, no-update restart, and prepared update.
     \App\Models\User::retrieved(function ($user): void {
         $user->setRelation('roles', new \Illuminate\Database\Eloquent\Collection([(new \App\Models\Role)->forceFill(['name' => \App\Models\Role::ROOT_ADMIN])]));
