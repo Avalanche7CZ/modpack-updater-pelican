@@ -323,8 +323,16 @@ try {
     $app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(
         new \Arcturus\ModpackManager\Console\Commands\RetireCorruptPrewrite);
     $args = ['operation' => $damaged->id];
+    // A conflicting, still-present approval is never treated like one that
+    // the production deployment failure handler deliberately cleared.
+    $prewrite->update(['approved_plan_sha256' => str_repeat('0', 64)]);
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:retire-corrupt-prewrite', $args) !== 0 &&
+        $prewrite->fresh()->active_operation_id === $damaged->id, 'Conflicting approval was accepted for retirement');
+    // In production, Native Deployment::catch() removes this pointer before
+    // persisting failure; retain the independent exact preview for verification.
+    $prewrite->update(['approved_plan_sha256' => null]);
     check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:retire-corrupt-prewrite', $args) === 0,
-        'Read-only truncated receipt verification did not pass');
+        'Read-only truncated receipt verification did not pass with cleared approval');
     $review = \Illuminate\Support\Facades\Artisan::output();
     check(preg_match('/Proof: ([a-f0-9]{64})/', $review, $proofMatch) === 1 &&
         str_contains($review, 'Original candidate paths verified: '.count($prewriteExpected)),

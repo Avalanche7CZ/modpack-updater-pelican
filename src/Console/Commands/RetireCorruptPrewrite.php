@@ -69,7 +69,10 @@ final class RetireCorruptPrewrite extends Command
                 $managed = ManagedServer::query()->lockForUpdate()->findOrFail($check['managed_id']);
                 if ($operation->phase !== 'stopping' || $operation->completed_at !== null ||
                     $operation->backup_uuid !== null || $managed->active_operation_id !== $id ||
-                    $managed->installed_version !== $check['installed_version']) {
+                    $managed->installed_version !== $check['installed_version'] ||
+                    ($managed->preview_summary['plan_sha256'] ?? null) !== $check['plan_sha256'] ||
+                    ($managed->approved_plan_sha256 !== null &&
+                        ! hash_equals($check['plan_sha256'], $managed->approved_plan_sha256))) {
                     throw new RuntimeException('Deployment state changed while being reviewed. No lock was released.');
                 }
                 $raw = DB::table('arcturus_modpack_operations')->where('id', $id)->value('context');
@@ -167,12 +170,21 @@ final class RetireCorruptPrewrite extends Command
         }
         $preview = $managed->preview_summary ?? [];
         $qual = $preview['qualification'] ?? [];
+        $plan = $preview['plan_sha256'] ?? null;
+        $approval = $managed->approved_plan_sha256;
         if (($preview['from'] ?? null) !== $managed->installed_version ||
             ($qual['protocol'] ?? null) !== Qualification::PROTOCOL ||
             ! is_array($preview['changes'] ?? null) ||
             ! is_string($qual['panel_sha256'] ?? null) ||
-            ($preview['plan_sha256'] ?? null) !== $managed->approved_plan_sha256) {
-            throw new RuntimeException('An original, exact approved native comparison is required for independent verification.');
+            ! is_string($plan) || preg_match('/^[a-f0-9]{64}$/D', $plan) !== 1) {
+            throw new RuntimeException('An original, exact native comparison is required for independent verification.');
+        }
+        // Deployment failure intentionally clears approved_plan_sha256 in its
+        // error handler. Retirement is not an approval or a deployment: rely
+        // on independently reverified original files and runtime instead.
+        // A *present but different* approval is still a hard inconsistency.
+        if ($approval !== null && (! is_string($approval) || ! hash_equals($plan, $approval))) {
+            throw new RuntimeException('Saved approval conflicts with the retained plan. Do not retire without inspection.');
         }
         $before = Transaction::scope($preview['changes'])['before'];
         if (count($before) === 0) {
@@ -197,8 +209,8 @@ final class RetireCorruptPrewrite extends Command
         }
         $proof = hash('sha256', json_encode([$id, $managed->id,
             $operation->created_at?->toIso8601String(), $managed->installed_version,
-            $snapshotSha, $before, hash('sha256', $cipher)], JSON_THROW_ON_ERROR));
-        return ['proof' => $proof, 'count' => count($before), 'cipher_sha256' => hash('sha256', $cipher),
+            $snapshotSha, $plan, $before, hash('sha256', $cipher)], JSON_THROW_ON_ERROR));
+        return ['proof' => $proof, 'plan_sha256' => $plan, 'count' => count($before), 'cipher_sha256' => hash('sha256', $cipher),
             'managed_id' => $managed->id, 'installed_version' => $managed->installed_version, 'server' => $server];
     }
 }
