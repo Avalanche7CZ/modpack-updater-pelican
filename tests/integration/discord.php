@@ -290,6 +290,7 @@ check($rawDamaged->context === $damagedBytes && $rawDamaged->phase === 'stopping
 // A truncated encrypted deployment receipt must block Panel power starts without
 // attempting an HTTP call or leaking a low-level decryption exception.
 $pelicanWithDamagedReceipt = \App\Models\Server::where('uuid', $server->pelican_server_uuid)->firstOrFail();
+$pelicanWithDamagedReceipt->setRelation('node', new \App\Models\Node); // Fixture has no real Wings node.
 $startRejected = false;
 try {
     app(\App\Repositories\Daemon\DaemonServerRepository::class)
