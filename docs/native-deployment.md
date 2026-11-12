@@ -85,3 +85,18 @@ The automated fixtures inject write, startup, callback and interrupted-worker fa
 Use **Updates → Copy diagnostics** and include the plugin version, operation/worker IDs, provider, current backend, phase, HTTP status and sanitized `host`/`reason` when present. This export omits recipes, signed URL queries and credentials. Old failures will not acquire a hostname retrospectively; retry preparation once after upgrading to obtain the new diagnostic. Do not repeatedly switch a backend that is already saved as Native.
 
 For an unclassified Panel failure, include only the Laravel stack trace matching that operation ID, with tokens and signed query strings removed. For a queue that stays waiting, verify the ordinary Pelican supervisor has a running worker after the graceful reload. For an uncertain deployment/recovery outcome, leave the instance stopped and retain its exact locked backup and journal; do not replay deployment or manually truncate the volume.
+
+
+## Encrypted operation storage
+
+Operation contexts use LONGTEXT on MySQL/MariaDB. Encrypted runtime and file
+receipts can exceed the 65,535-byte TEXT limit. The upgrade migration widens
+existing columns without rewriting their contents; rollback never shrinks them.
+An oversized model write on an old TEXT schema is rejected before SQL, including
+on non-strict MySQL installations.
+
+A previously truncated encrypted context cannot be reconstructed by widening
+the column or changing APP_KEY. Retain that row and its operation lock. Inspect
+the operation-specific logs, actual Wings state, recorded backup and startup
+settings before any recovery decision. Never clear the lock or replay deployment
+merely because the schema migration succeeded.

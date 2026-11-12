@@ -34,7 +34,7 @@ return new class extends Migration
             $table->string('phase', 32)->default('queued');
             $table->string('node_operation_id', 32)->nullable();
             $table->string('backup_uuid', 36)->nullable();
-            $table->text('context')->nullable();
+            $table->longText('context')->nullable();
             $table->text('error')->nullable();
             $table->timestamp('heartbeat_at')->nullable();
             $table->timestamp('completed_at')->nullable();

@@ -60,6 +60,35 @@ $tracker = new OperationTracker;
 $op = $tracker->create($managed, 'baseline', ['version' => '2.8.0', 'recipe' => ['secret-example' => 'encrypted-context']]);
 rejects(fn () => $tracker->create($managed, 'prepare'), 'Concurrent operation accepted');
 check(! str_contains(DB::table('arcturus_modpack_operations')->value('context'), 'encrypted-context'), 'Operation context was stored without encryption');
+// Runtime/file receipts routinely exceed TEXT after encryption. Reload the exact bytes.
+$largeContext = [...$op->context, 'fixture_receipt' => str_repeat('verified-recovery-evidence-', 6000)];
+$op->update(['context' => $largeContext]);
+check(strlen(DB::table('arcturus_modpack_operations')->where('id', $op->id)->value('context')) > 65535,
+    'Large receipt fixture did not exceed the production truncation threshold');
+check($op->fresh()->context === $largeContext, 'Large encrypted operation receipt did not survive database reload');
+// Simulate a non-strict MySQL node that has not applied the widening migration.
+// The model must reject the write before it ever asks for a PDO connection.
+$originalResolver = Operation::getConnectionResolver();
+$oldMysql = new class(null, 'fixture', '', ['driver' => 'mysql']) extends \Illuminate\Database\MySqlConnection {
+    public function getSchemaBuilder() {
+        return new class($this) extends \Illuminate\Database\Schema\MySqlBuilder {
+            public function getColumnType($table, $column, $fullDefinition = false) { return 'text'; }
+        };
+    }
+};
+$resolver = new \Illuminate\Database\ConnectionResolver(['fixture-mysql' => $oldMysql]);
+$resolver->setDefaultConnection('fixture-mysql');
+try {
+    Operation::setConnectionResolver($resolver);
+    $oversized = new Operation;
+    $oversized->forceFill(['id' => (string) \Illuminate\Support\Str::uuid(), 'context' => $largeContext]);
+    try {
+        $oversized->save();
+        throw new RuntimeException('Oversized receipt was accepted by old MySQL TEXT');
+    } catch (RuntimeException $error) {
+        check(str_contains($error->getMessage(), 'old database column limit'), 'Receipt guard failed after reaching SQL instead of before it');
+    }
+} finally { Operation::setConnectionResolver($originalResolver); }
 $tracker->transition($op, 'downloading');
 check(Operation::find($op->id)->phase === 'downloading', 'Phase was not persisted across model reload');
 $tracker->transition($op, 'completed');
