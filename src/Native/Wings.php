@@ -21,7 +21,18 @@ final class Wings implements Files
     public function listing(string $directory = ''): array
     {
         if ($directory !== '') { UpdatePlanner::assertPath($directory); }
-        $rows = $this->repo()->getDirectory($directory === '' ? '/' : '/'.$directory);
+        // Directory reads are idempotent. Retry only transport connection failures;
+        // never replay mutations or bypass node authentication failures.
+        for ($attempt = 0; ; $attempt++) {
+            try {
+                $rows = $this->repo()->getDirectory($directory === '' ? '/' : '/'.$directory);
+                break;
+            } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                if ($attempt >= 2 || ! $e->getPrevious() instanceof \GuzzleHttp\Exception\ConnectException) { throw $e; }
+                $this->heartbeat?->__invoke();
+                usleep(250000 * ($attempt + 1));
+            }
+        }
         if (! array_is_list($rows) || count($rows) > 100000) { throw new RuntimeException('Wings returned an invalid or excessive directory listing.'); }
         $seen = [];
         foreach ($rows as $row) {

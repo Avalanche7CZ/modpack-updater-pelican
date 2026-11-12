@@ -80,5 +80,25 @@ Http::fake(function ($request) use ($headers) {
 });
 try { (new Wings($server, app(DaemonFileRepository::class)))->hash('linked/secret.txt'); throw new RuntimeException('Linked ancestor was accepted'); }
 catch (\Arcturus\ModpackManager\Native\SymlinkPath $link) { check($link->path === 'linked', 'Wrong protected ancestor'); }
+
+foreach ([false, true] as $permanent) {
+    Http::swap(new \Illuminate\Http\Client\Factory);
+    $attempts = 0;
+    Http::fake(function () use (&$attempts, $permanent, $headers) {
+        $attempts++;
+        if ($permanent || $attempts < 3) {
+            $cause = new \GuzzleHttp\Exception\ConnectException('connection refused', new \GuzzleHttp\Psr7\Request('GET', 'https://wings.fixture.test'));
+            throw new \Illuminate\Http\Client\ConnectionException('connection refused', 0, $cause);
+        }
+        return Http::response([], 200, $headers);
+    });
+    try {
+        check((new Wings($server, app(DaemonFileRepository::class)))->listing() === [], 'Recovered listing differs');
+        check(! $permanent, 'Permanent transport failure was swallowed');
+    } catch (\Illuminate\Http\Client\ConnectionException $e) {
+        check($permanent, 'Transient transport failure did not recover');
+    }
+    check($attempts === 3, 'Directory retry was not bounded to three attempts');
+}
 echo "Pelican rc.2 native Wings binary transfer, truncation, symlink and no-op rename integration passed (HTTP fixtures)\n";
 $GLOBALS['arcturus_integration_passed'] = true;
