@@ -21,6 +21,9 @@ final class ModpackManagerServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if ($this->app->runningInConsole()) {
+            $this->commands([\Arcturus\ModpackManager\Console\Commands\RetireCorruptPrewrite::class]);
+        }
         $this->app->make(LocalNode::class)->configureQueue();
         $queueKey = 'queue.connections.'.config('queue.default');
         if (in_array(config($queueKey.'.driver'), ['database', 'redis'], true)) {
