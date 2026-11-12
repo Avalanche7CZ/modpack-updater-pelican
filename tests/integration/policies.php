@@ -265,6 +265,37 @@ $plan = $previewer->generate($record);
 check(! isset(array_column($plan['changes'], 'action', 'path')['tacz/assets/gun.json']), 'Unchanged excluded file should not enter the delta');
 check($store->load($record->base_manifest_path)['files']['tacz/assets/gun.json'] === $hash('{}'), 'Directory review changed immutable evidence');
 rejects(fn () => app(ServerPolicyService::class)->save($record, [], [], $record->policy_revision, ['directory_decisions' => [['path' => 'unobserved', 'mode' => 'manage']]]), 'Unobserved directory was approved');
+// A later release asks only about its new directory and keeps previous choices.
+$next = $withDirectory('1235', 'value=new');
+$next['files']['new-assets/item.json'] = $hash('{}');
+$next['directory_discovery'][] = ['path' => 'new-assets', 'classification' => 'review'];
+$record->update(['target_manifest_path' => $store->put($next)]);
+$newReview = Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->getRouteKey()])
+    ->call('selectTab', 'updates')->call('mountAction', 'directoryDecisions');
+$newRows = $newReview->get('mountedActions')[0]['data']['directories'];
+check(array_column($newRows, 'path') === ['new-assets'], 'Update review repeated an existing directory decision');
+foreach ($newRows as &$row) { $row['mode'] = 'keep'; }
+unset($row);
+$newReview->set('mountedActions.0.data.directories', $newRows)->call('callMountedAction');
+$record->refresh();
+check(array_column($record->directory_decisions, 'mode', 'path')['tacz'] === 'keep', 'Review of a new directory erased a saved choice');
+check($directoryPolicy->pending($record) === [], 'New directory choice did not persist');
+app(\Arcturus\ModpackManager\Services\OperationTracker::class)->transition($record->operations()->findOrFail($record->active_operation_id), 'completed');
+$record->refresh();
+
+// Visiting Updates queues one expired-plan check, never a deployment or repeated jobs.
+$record->update(['comparison_status' => 'complete', 'last_preview_at' => now()->subMinutes(16),
+    'preview_summary' => [...$record->preview_summary, 'applicable' => true]]);
+$beforeChecks = $record->operations()->where('kind', 'comparison')->count();
+$expiredView = Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->getRouteKey()])->call('selectTab', 'updates');
+$record->refresh();
+check($record->active_operation_id !== null, 'Expired readiness was not refreshed automatically');
+$expiredView->call('pollEvidence');
+check($record->operations()->where('kind', 'comparison')->count() === $beforeChecks + 1, 'Polling duplicated an automatic comparison');
+app(\Arcturus\ModpackManager\Services\OperationTracker::class)->transition($record->operations()->findOrFail($record->active_operation_id), 'failed');
+$record->refresh()->update(['comparison_status' => 'failed']);
+$expiredView->call('pollEvidence');
+check($record->operations()->where('kind', 'comparison')->count() === $beforeChecks + 1, 'Failed comparison was retried in a loop');
 $record->update(['directory_decisions' => [], 'base_manifest_path' => $originalBase, 'target_manifest_path' => $originalTarget]);
 $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
 foreach ($iterator as $item) {

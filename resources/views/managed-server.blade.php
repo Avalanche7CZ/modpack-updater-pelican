@@ -113,7 +113,11 @@
                         <x-filament::button class="mt-3" color="warning" wire:click="selectTab('changes')">Review file changes</x-filament::button>
                     @elseif(!empty($preview['capability_blockers']))
                         <p class="mt-3 text-sm">File comparison is complete. Complete the deployment requirements listed below before updating.</p>
-                        <x-filament::button class="mt-3" color="gray" wire:click="selectTab('overview')">Review server setup and directories</x-filament::button>
+                        @php($pendingDirectories = (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->pending($record))
+                        @if($pendingDirectories)
+                            <p class="mt-2 text-sm">New directories: {{ implode(', ', $pendingDirectories) }}. Existing decisions are retained.</p>
+                            <x-filament::button class="mt-3" color="warning" wire:click="mountAction('directoryDecisions')">Review new directories</x-filament::button>
+                        @endif
                     @else
                         <p class="mt-3 text-sm">Review the changes below, then update with a Pelican backup. Runtime checks and exact-plan approval still apply.</p>
                         <x-filament::button class="mt-3" color="gray" wire:click="selectTab('changes')">View file changes</x-filament::button>
@@ -142,7 +146,7 @@
                             <li class="break-words">{{ $reason }}</li>
                         @endforeach
                     </ul>
-                    @if(!$this->canApplyUpdate() && !$record->active_operation_id)<p class="mt-2 text-sm">Review the listed requirements. Refresh comparison in File Changes if the prepared plan has expired. Qualified readiness expires after 15 minutes; each manual deployment needs a new exact-plan approval.</p>@endif
+                    @if(!$this->canApplyUpdate() && !$record->active_operation_id)<p class="mt-2 text-sm">Complete the requirements above. Expired readiness is refreshed automatically in the background. Each manual update requires approval of the current file and runtime plan.</p>@endif
                     <x-filament::button color="danger" wire:click="mountAction('applyUpdate')" :disabled="!$this->canApplyUpdate()" class="mt-4">Update with backup</x-filament::button>
                 </x-filament::section>
                 <x-filament::section heading="Release notes">

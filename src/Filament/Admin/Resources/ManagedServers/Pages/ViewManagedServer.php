@@ -72,9 +72,27 @@ final class ViewManagedServer extends ViewRecord
     public function pollEvidence(): void
     {
         Access::requireAdmin();
+        if ($this->tab === 'updates' && $this->refreshExpiredComparison()) { return; }
         $record = ManagedServer::query()->select(['id', 'policy_revision', 'comparison_status', 'active_operation_id', 'updated_at'])->findOrFail($this->getRecord()->id);
         $working = $record->active_operation_id && ! $record->operations()->whereKey($record->active_operation_id)->whereNotNull('completed_at')->exists();
         if ($working || $this->evidenceState === $this->evidenceStateFor($record)) { $this->skipRender(); }
+    }
+
+    /** Refresh expired readiness in the queue, once; never auto-retry failed comparisons. */
+    private function refreshExpiredComparison(): bool
+    {
+        $record = ManagedServer::lightweight()->findOrFail($this->getRecord()->id);
+        if ($record->active_operation_id || $record->comparison_status !== 'complete' ||
+            ! $record->target_manifest_path || ! ($record->preview_summary['applicable'] ?? false) ||
+            ! $record->last_preview_at || $record->last_preview_at->gt(now()->subMinutes(15))) { return false; }
+        try {
+            app(QueuePreparation::class)->comparison($record, true);
+        } catch (\Throwable $error) {
+            // Keep a queue/configuration failure visible without polling repeated jobs.
+            report($error);
+            return false;
+        }
+        return true;
     }
 
     public function managed()
@@ -100,6 +118,7 @@ final class ViewManagedServer extends ViewRecord
         $this->classification = '';
         $this->pathSearch = '';
         $this->selectedPaths = [];
+        if ($tab === 'updates') { $this->refreshExpiredComparison(); }
     }
 
     protected function getHeaderActions(): array
@@ -167,11 +186,11 @@ final class ViewManagedServer extends ViewRecord
                         Notification::make()->title('Filesystem access unavailable')->body($error->getMessage())->danger()->send();
                     }
                 }),
-            Action::make('directoryDecisions')->label('Review upstream directories')->button()->color('gray')
-                ->visible(fn () => $this->tab === 'overview' && (bool) $this->getRecord()->base_manifest_path)
+            Action::make('directoryDecisions')->label(fn () => $this->tab === 'updates' ? 'Review new directories' : 'Review upstream directories')->button()->color('gray')->modalSubmitActionLabel('Save and continue')
+                ->visible(fn () => in_array($this->tab, ['overview', 'updates'], true) && (bool) $this->getRecord()->base_manifest_path && ($this->tab !== 'updates' || (bool) (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->pending($this->getRecord())))
                 ->disabled(fn () => (bool) $this->getRecord()->active_operation_id)
-                ->modalDescription('Verified upstream structure. Standard folders default to Manage. Unfamiliar folders require a decision. Keep local and Exclude prevent inventory reads and updates. Protected runtime paths cannot be managed. Saving invalidates previous approval; compare again without downloading.')
-                ->fillForm(fn () => ['directories' => (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->rows($this->getRecord()), 'revision' => $this->getRecord()->policy_revision, 'request_id' => (string) \Illuminate\Support\Str::uuid()])
+                ->modalDescription('Verified upstream structure. Standard folders default to Manage. Unfamiliar folders require a decision. Keep local and Exclude prevent inventory reads and updates. Protected runtime paths cannot be managed. Saved decisions are reused for future releases. Saving automatically queues comparison using the prepared files.')
+                ->fillForm(fn () => ['directories' => array_values(array_filter((new \Arcturus\ModpackManager\Services\DirectoryPolicy)->rows($this->getRecord()), fn ($row) => $this->tab !== 'updates' || $row['mode'] === 'review')), 'revision' => $this->getRecord()->policy_revision, 'request_id' => (string) \Illuminate\Support\Str::uuid()])
                 ->schema([
                     \Filament\Forms\Components\Repeater::make('directories')->addable(false)->deletable(false)->reorderable(false)
                         ->itemLabel(fn (array $state) => ($state['path'] ?? '').' · '.($state['classification'] ?? ''))
@@ -185,6 +204,11 @@ final class ViewManagedServer extends ViewRecord
                     $server = $this->getRecord()->refresh();
                     $decisions = array_values(array_map(fn ($row) => ['path' => $row['path'], 'mode' => $row['mode']],
                         array_filter($data['directories'] ?? [], fn ($row) => ($row['classification'] ?? '') !== 'protected' && ($row['mode'] ?? 'review') !== 'review')));
+                    if ($this->tab === 'updates') {
+                        $saved = array_column((new \Arcturus\ModpackManager\Services\DirectoryPolicy)->normalize($server->directory_decisions ?? []), null, 'path');
+                        foreach ($decisions as $decision) { $saved[$decision['path']] = $decision; }
+                        $decisions = array_values($saved);
+                    }
                     $operation = app(ServerPolicyService::class)->saveDirectories($server, $decisions, (int) $data['revision'], $data['request_id']);
                     $this->queued('Directory decisions saved; comparison operation '.$operation->id);
                 }),
