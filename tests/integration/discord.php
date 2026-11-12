@@ -287,6 +287,18 @@ $rawDamaged = DB::table('arcturus_modpack_operations')->where('id', $damaged->id
 check($rawDamaged->context === $damagedBytes && $rawDamaged->phase === 'stopping' &&
     $rawDamaged->completed_at === null && $server->fresh()->active_operation_id === $damaged->id,
     'Recovery command modified unreadable evidence or released its lock');
+// A truncated encrypted deployment receipt must block Panel power starts without
+// attempting an HTTP call or leaking a low-level decryption exception.
+$pelicanWithDamagedReceipt = \App\Models\Server::where('uuid', $server->pelican_server_uuid)->firstOrFail();
+$startRejected = false;
+try {
+    app(\App\Repositories\Daemon\DaemonServerRepository::class)
+        ->setServer($pelicanWithDamagedReceipt)->power('start');
+} catch (\RuntimeException $exception) {
+    $startRejected = str_contains($exception->getMessage(), 'Unreadable encrypted modpack deployment receipt');
+}
+check($startRejected, 'A damaged receipt did not safely block native Panel start');
+
 // Dispose only of the isolated fixture, never normalize a production receipt.
 DB::table('arcturus_modpack_operations')->where('id', $damaged->id)->delete();
 $server->update(['active_operation_id' => $previousOperation]);
