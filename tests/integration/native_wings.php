@@ -97,6 +97,7 @@ foreach ([false, true] as $permanent) {
         check(! $permanent, 'Permanent transport failure was swallowed');
     } catch (\Illuminate\Http\Client\ConnectionException $e) {
         check($permanent, 'Transient transport failure did not recover');
+        check(\Arcturus\ModpackManager\Services\PreparationDiagnostic::fromException($e, 'comparing')['code'] === 'WINGS_CONNECTION', 'Native connection failure was mislabeled as upstream');
     }
     check($attempts === 3, 'Directory retry was not bounded to three attempts');
 }

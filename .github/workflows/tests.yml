@@ -54,6 +54,7 @@ jobs:
           php tests/integration/curseforge.php
           php tests/integration/runtime.php
           php tests/integration/native_download.php
+          php tests/integration/native_connections.php
           php tests/integration/native_wings.php
           php tests/integration/native_deployment.php
           php tests/integration/policies.php

@@ -16,6 +16,16 @@ final class Wings implements Files
     public function __construct(private readonly Server $server, private readonly DaemonFileRepository $daemon,
         private readonly ?\Closure $heartbeat = null) {}
 
+    // Share only the transport pool within this server operation. Every request still
+    // gets fresh Pelican authentication, node identity checks and Laravel middleware.
+    private mixed $transport = null;
+
+    private function client(): \Illuminate\Http\Client\PendingRequest
+    {
+        $this->transport ??= \GuzzleHttp\Utils::chooseHandler();
+        return $this->repo()->getHttpClient()->setHandler($this->transport);
+    }
+
     private function repo(): DaemonFileRepository { return $this->daemon->setServer($this->server); }
 
     public function listing(string $directory = ''): array
@@ -25,10 +35,12 @@ final class Wings implements Files
         // never replay mutations or bypass node authentication failures.
         for ($attempt = 0; ; $attempt++) {
             try {
-                $rows = $this->repo()->getDirectory($directory === '' ? '/' : '/'.$directory);
+                $rows = $this->client()->get('/api/servers/'.$this->server->uuid.'/files/list-directory',
+                    ['directory' => $directory === '' ? '/' : '/'.$directory])->json();
                 break;
             } catch (\Illuminate\Http\Client\ConnectionException $e) {
-                if ($attempt >= 2 || ! $e->getPrevious() instanceof \GuzzleHttp\Exception\ConnectException) { throw $e; }
+                if (! $e->getPrevious() instanceof \GuzzleHttp\Exception\ConnectException) { throw $e; }
+                if ($attempt >= 2) { throw new WingsConnectionException($e->getMessage(), 0, $e); }
                 $this->heartbeat?->__invoke();
                 usleep(250000 * ($attempt + 1));
             }
@@ -82,7 +94,7 @@ final class Wings implements Files
     {
         $before = $this->regular($path);
         if ($before === null) { return null; }
-        $response = $this->repo()->getHttpClient()->connectTimeout(5)->timeout(600)->withOptions(['stream' => true])
+        $response = $this->client()->connectTimeout(5)->timeout(600)->withOptions(['stream' => true])
             ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
         $stream = $response->toPsrResponse()->getBody();
         $hash = hash_init('sha256'); $bytes = 0;
@@ -105,7 +117,7 @@ final class Wings implements Files
         if ($limit < 1 || $limit > 4194304) { throw new RuntimeException('Native text read limit exceeded.'); }
         $before = $this->regular($path);
         if ($before === null || $before['size'] > $limit) { throw new RuntimeException('Required native text file is missing or too large: '.$path); }
-        $response = $this->repo()->getHttpClient()->connectTimeout(5)->timeout(30)->withOptions(['stream' => true])
+        $response = $this->client()->connectTimeout(5)->timeout(30)->withOptions(['stream' => true])
             ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
         $stream = $response->toPsrResponse()->getBody(); $data = '';
         try {
@@ -136,7 +148,7 @@ final class Wings implements Files
                 if (microtime(true) - $lastPulse >= 10) { $this->heartbeat?->__invoke(); $lastPulse = microtime(true); }
             };
             // Wings requires Content-Length and streams the raw body into this exact file.
-            $this->repo()->getHttpClient()->connectTimeout(5)->timeout(600)->withOptions(['progress' => $progress])->withQueryParameters(['file' => '/'.$path])
+            $this->client()->connectTimeout(5)->timeout(600)->withOptions(['progress' => $progress])->withQueryParameters(['file' => '/'.$path])
                 ->withHeaders(['Content-Length' => (string) filesize($localFile)])
                 ->withBody($stream, 'application/octet-stream')->post('/api/servers/'.$this->server->uuid.'/files/write')->throw();
         } finally { if (is_resource($stream)) { fclose($stream); } }

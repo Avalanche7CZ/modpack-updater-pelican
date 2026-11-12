@@ -8,6 +8,7 @@ namespace Arcturus\ModpackManager\Services;
 final class PreparationDiagnostic
 {
     public const DEFINITIONS = [
+        'WINGS_CONNECTION' => ['The Panel could not connect to Wings while inspecting server files.', 'The verified download is retained. Check Panel-to-node connectivity and node connection limits, then retry file comparison; this is not an upstream download failure.'],
         'BACKEND_UNAVAILABLE' => ['The saved filesystem backend is unavailable or the server record no longer exists.', 'Inspect the saved Native Pelican/Wings setting. After an upgrade, let current jobs finish and verify the normal queue supervisor reloads workers; do not repeatedly reselect the backend or change volume permissions.'],
         'SYMLINK_PATH' => ['A symbolic link was found in the selected managed scope.', 'Review the logical file ID and replace the link with reviewed regular content, or Keep local/Exclude its directory. Links are never followed.'],
         'FILE_TYPE' => ['A selected managed entry is not a regular file or directory.', 'Inspect the logical file ID for a socket, FIFO or changed directory. No partial inventory is accepted.'],
@@ -53,6 +54,7 @@ final class PreparationDiagnostic
     public static function fromException(\Throwable $error, string $phase = 'queued'): array
     {
         if ($error instanceof PreparationException) { return $error->diagnostic; }
+        if ($error instanceof \Arcturus\ModpackManager\Native\WingsConnectionException) { return self::normalize(['code' => 'WINGS_CONNECTION', 'phase' => $phase]); }
         if ($error instanceof \Arcturus\ModpackManager\Modpacks\ProviderHttpException) {
             return self::normalize(['code' => 'HTTP_STATUS', 'phase' => $phase, 'context' => ['http_status' => $error->status]]);
         }
