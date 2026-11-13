@@ -583,7 +583,7 @@ def extract_zip(archive, destination, maximum, cancelled=lambda: False, report=l
             written += count; files_done += 1
             report(state='extracting', bytes_done=written, bytes_total=total, files_done=files_done)
 
-def mod_metadata(root, path, expected_sha256=None):
+def mod_metadata(root, path, expected_sha256=None, *, strict=False):
     """Bounded JAR metadata, including legacy Forge mcmod.info. Never infer IDs from names."""
     if not path.startswith('mods/') or not (path.lower().endswith('.jar') or path.lower().endswith('.jar.disabled')):
         return None
@@ -599,6 +599,12 @@ def mod_metadata(root, path, expected_sha256=None):
             if expected_sha256 is not None and sha256 != expected_sha256:
                 raise PreparationFailure('FILES_CHANGED', file=path)
             with zipfile.ZipFile(stream) as jar:
+                if strict:
+                    identity_entries = {'META-INF/MANIFEST.MF', 'META-INF/neoforge.mods.toml', 'META-INF/mods.toml',
+                                        'fabric.mod.json', 'quilt.mod.json', 'mcmod.info'}
+                    names = [item.filename for item in jar.infolist() if item.filename in identity_entries]
+                    if len(names) != len(set(names)):
+                        return None
                 return embedded_mod_metadata(jar, stream, before, sha256, path)
     except PreparationFailure:
         raise

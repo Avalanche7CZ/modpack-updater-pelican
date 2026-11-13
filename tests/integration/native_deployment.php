@@ -31,19 +31,49 @@ $systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = [];
 $hash = fn ($value) => hash('sha256', $value);
 $bootLog = fn ($mc, $version, $java) => "ModLauncher running: args [--fml.neoForgeVersion, $version, --fml.mcVersion, $mc]\nModLauncher 10.0.9 starting: java version $java.0.1\n[Server thread/INFO]: Done (0.1s)!\n";
 $targetConsole = "\033[31mTarget launcher failed <error>before creating latest.log</error>\033[0m\r";
-$make = function (bool $migration, bool $installer = false) use (&$systems, &$stages, $bootLog, $hash): ManagedServer {
+$almanac = fn ($v) => 'mods/almanac-forge-1.20.1-'.$v.'.jar';
+$letMeDespawn = fn ($v) => 'mods/letmedespawn-forge-1.20.1-'.$v.'.jar';
+$fixtureModJar = function (string $mod, string $version): string {
+    $path = tempnam(sys_get_temp_dir(), 'arcturus-fixture-');
+    try {
+        $zip = new ZipArchive;
+        check($zip->open($path, ZipArchive::OVERWRITE) === true, 'Cannot make JAR fixture');
+        $zip->addFromString('META-INF/mods.toml', "modLoader = \"javafml\"\n[[mods]]\nmodId = \"$mod\"\nversion = \"$version\"\n");
+        $zip->close();
+        return file_get_contents($path);
+    } finally { unlink($path); }
+};
+$make = function (bool $migration, bool $installer = false, bool $drift = false) use (&$systems, &$stages, $bootLog, $hash, $fixtureModJar, $almanac, $letMeDespawn): ManagedServer {
     $uuid = (string) Str::uuid(); $id = bin2hex(random_bytes(16));
     $args = fn ($mc, $v) => "-p libraries/fixture/runtime.jar --fml.neoForgeVersion $v --fml.mcVersion $mc";
     $oldArgs = 'libraries/net/neoforged/neoforge/21.1.1/unix_args.txt';
     $newArgs = 'libraries/net/neoforged/neoforge/26.1.2.121/unix_args.txt';
     $base = ['config/options.cfg' => 'old', 'kubejs/server_scripts/upstream.js' => 'old script', $oldArgs => $args('1.21.1', '21.1.1'), 'libraries/fixture/runtime.jar' => 'verified runtime dependency'];
     $target = [...$base, 'config/options.cfg' => 'new', 'kubejs/server_scripts/upstream.js' => 'new script', 'config/added.cfg' => 'new added file'];
+    if ($drift) {
+        $base[$almanac('1.26.10.3')] = $fixtureModJar('almanac', '1.26.10.3');
+        $target[$almanac('1.26.11.1')] = $fixtureModJar('almanac', '1.26.11.1');
+        $base[$letMeDespawn('1.26.10.1')] = $fixtureModJar('letmedespawn', '1.26.10.1');
+        $target[$letMeDespawn('1.26.11.1')] = $fixtureModJar('letmedespawn', '1.26.11.1');
+    }
     if ($migration) { unset($target[$oldArgs]); if (! $installer) { $target[$newArgs] = $args('26.1.2', '26.1.2.121'); $target['libraries/net/neoforged/neoforge/26.1.2.121/neoforge-26.1.2.121-server.jar'] = 'published patched server fixture'; } }
     $runtime = ['minecraft' => $migration ? '26.1.2' : '1.21.1', 'loader' => 'neoforge', 'loader_version' => $migration ? '26.1.2.121' : '21.1.1'];
     $manifest = fn ($version, $files, $runtime) => ['schema' => 2, 'provider' => 'custom', 'project' => 'native-fixture', 'version' => $version, 'verification' => 'upstream-checksums',
         'files' => array_map($hash, $files), 'runtime' => $runtime, 'artifacts' => [['sha256' => $hash($version), 'hashes' => ['sha256' => $hash($version)]]]];
     $baseManifest = $manifest('1', $base, ['minecraft' => '1.21.1', 'loader' => 'neoforge', 'loader_version' => '21.1.1']);
     $targetManifest = $manifest('2', $target, $runtime);
+    if ($drift) {
+        foreach ([&$baseManifest, &$targetManifest] as &$item) {
+            $old = $item['version'] === '1';
+            foreach ([['almanac', $almanac, '1.26.10.3'], ['letmedespawn', $letMeDespawn, '1.26.10.1']] as [$mod, $path, $original]) {
+                $v = $old ? $original : '1.26.11.1'; $p = $path($v);
+                $item['identities'][$p] = $mod;
+                $item['metadata'][$p] = ['identity' => $mod, 'ids' => [$mod], 'version' => $v,
+                    'source' => 'META-INF/mods.toml', 'loader' => 'forge', 'sha256' => $item['files'][$p]];
+            }
+        }
+        unset($item);
+    }
     $startup = $migration ? 'java -Xms128M @'.$oldArgs.' nogui' : 'java -Xms128M @unix_args.txt nogui';
     DB::table('servers')->insert(['uuid' => $uuid, 'name' => 'Native fixture', 'node_id' => 1, 'owner_id' => 1, 'startup' => $startup, 'image' => 'fixture:java_21', 'created_at' => now()->subMinutes(2), 'updated_at' => now()->subMinutes(2)]);
     $managed = ManagedServer::create(['label' => 'Native fixture', 'pelican_server_uuid' => $uuid, 'provider' => 'custom', 'source' => 'native-fixture', 'transport' => 'native',
@@ -62,6 +92,10 @@ $make = function (bool $migration, bool $installer = false) use (&$systems, &$st
         'kubejs/server_scripts/local.js' => 'custom script', 'world/level.dat' => 'world data', 'world/region/r.0.0.mca' => 'old region',
         'backups/previous.zip' => 'excluded archive', 'logs/latest.log' => $bootLog('1.21.1', '21.1.1', 21)],
         'configuration' => ['invocation' => $startup, 'container' => ['image' => 'fixture:java_21'], 'suspended' => false, 'crash_detection_enabled' => true]];
+    if ($drift) {
+        unset($systems[$uuid]['data'][$almanac('1.26.10.3')]);
+        $systems[$uuid]['data'][$almanac('1.26.10.2')] = $fixtureModJar('almanac', '1.26.10.2');
+    }
     return $managed;
 };
 $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $bootLog, $targetConsole) {
@@ -152,7 +186,8 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
         $backup = Backup::where('uuid', $request['uuid'])->firstOrFail();
         check($backup->is_locked && $backup->ignored_files === ['/backups/'], 'Backup identity/protection differs');
         $snapshots[$backup->uuid] = array_filter($sys['data'], fn ($p) => ! str_starts_with($p, 'backups/') && ! isset($sys['links'][$p]), ARRAY_FILTER_USE_KEY);
-        $callback = ReportBackupCompleteRequest::create('/fixture/backup', 'POST', ['successful' => true, 'checksum_type' => 'sha256', 'checksum' => hash('sha256', json_encode($snapshots[$backup->uuid])), 'size' => strlen(json_encode($snapshots[$backup->uuid]))]);
+        $backupBytes = serialize($snapshots[$backup->uuid]);
+        $callback = ReportBackupCompleteRequest::create('/fixture/backup', 'POST', ['successful' => true, 'checksum_type' => 'sha256', 'checksum' => hash('sha256', $backupBytes), 'size' => strlen($backupBytes)]);
         $callback->attributes->set('node', Node::findOrFail(1)); app(BackupStatusController::class)->index($callback, $backup->uuid);
         // Other Panel starts must be blocked even if they bypass the UI button.
         rejects(fn () => app(DaemonServerRepository::class)->setServer(Server::where('uuid', $uuid)->firstOrFail())->power('restart'), 'Concurrent Panel restart bypassed the operation');
@@ -185,11 +220,21 @@ try {
         ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'],
         ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'],
         ['disabled destination collision', false, 'disable_collision'], ['missing implicit runtime dependency', true, 'missing_core'],
+        ['TFG alternate Almanac JAR', false, 'drift_success'], ['duplicate Almanac IDs', false, 'drift_duplicate'],
+        ['Almanac explicitly disabled', false, 'drift_disabled'], ['unverified Almanac candidate', false, 'drift_unverified'],
+        ['Almanac filename lookalike', false, 'drift_lookalike'],
         ['root args migration', true, 'root_args_success'], ['root args migration rollback', true, 'root_args_failed_boot'],
     ] as [$label, $migration, $scenario]) {
         // Keep only one scenario's HTTP recordings and stream responses in memory.
         Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
-        $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_')); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
+        $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_'), str_starts_with($scenario, 'drift_')); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
+        if ($scenario === 'drift_duplicate') { $systems[$uuid]['data'][$almanac('1.26.10.1')] = $fixtureModJar('almanac', '1.26.10.1'); }
+        if ($scenario === 'drift_disabled') {
+            $systems[$uuid]['data'][$almanac('1.26.10.2').'.disabled'] = $systems[$uuid]['data'][$almanac('1.26.10.2')];
+            unset($systems[$uuid]['data'][$almanac('1.26.10.2')]);
+        }
+        if ($scenario === 'drift_unverified') { $systems[$uuid]['data'][$almanac('1.26.10.2')] = 'not a JAR'; }
+        if ($scenario === 'drift_lookalike') { $systems[$uuid]['data'][$almanac('1.26.10.2')] = $fixtureModJar('unrelated', '1.26.10.2'); }
         if (str_starts_with($scenario, 'disable_')) {
             $managed->update(['file_rules' => [...$managed->file_rules, ['scope' => 'exact', 'pattern' => 'mods/local-disable.jar', 'mode' => 'disable', 'priority' => 100, 'enabled' => true]]]);
             $systems[$uuid]['data']['mods/local-disable.jar'] = 'local mod bytes';
@@ -296,7 +341,26 @@ try {
             unset($incomplete['files']['libraries/net/neoforged/neoforge/26.1.2.121/neoforge-26.1.2.121-server.jar']);
             $managed->update(['target_manifest_path' => app(ReleaseStore::class)->put($incomplete)]);
         }
+        $from = count($requests);
         $preview = app(PreviewService::class)->generate($managed);
+        if (str_starts_with($scenario, 'drift_')) {
+            $readPaths = array_column(array_column(array_filter(array_slice($requests, $from), fn ($r) => str_ends_with($r[1], '/files/contents')), 2), 'file');
+            check(! in_array('/mods/Paradigm.jar', $readPaths, true), 'Mod drift read an unrelated JAR');
+            $row = array_column($preview['changes'], null, 'path')[$almanac('1.26.10.3')];
+            if (in_array($scenario, ['drift_disabled', 'drift_lookalike'], true)) {
+                check($row['action'] === 'keep_mod_disabled' && $row['mod_upgrade']['members'] === [], 'A disabled or unrelated JAR was selected for replacement');
+            }
+            elseif ($scenario !== 'drift_success') { check($row['action'] === 'mod_identity_review' && ! $preview['applicable'], 'Unverified/duplicate JAR did not block approval'); }
+            else {
+                check($row['action'] === 'mod_upgrade_conflict' && $row['mod_upgrade']['installed']['path'] === $almanac('1.26.10.2') &&
+                    $row['mod_upgrade']['installed']['version'] === '1.26.10.2' && ! $preview['applicable'], 'Active Almanac drift was not presented as a local version conflict');
+                app(\Arcturus\ModpackManager\Services\ServerPolicyService::class)->assign($managed, [$almanac('1.26.10.3')], 'replace', $managed->policy_revision);
+                $preview = app(PreviewService::class)->generate($managed->refresh());
+                $scope = \Arcturus\ModpackManager\Native\Transaction::scope($preview['changes']);
+                check(array_key_exists($almanac('1.26.10.2'), $scope['after']) && $scope['after'][$almanac('1.26.10.2')] === null && isset($scope['after'][$almanac('1.26.11.1')]), 'Approved plan did not replace the actual old JAR');
+            }
+            if ($scenario !== 'drift_success') { echo $label." native qualification passed\n"; continue; }
+        }
         if ($scenario === 'missing_core') {
             check(! $preview['applicable'] && str_contains(implode('; ', $preview['capability_blockers']), 'neoforge-26.1.2.121-server.jar'), 'Incomplete runtime with an implicit missing core was approved');
             check($systems[$uuid]['data'] === $originalData && ! isset($snapshots[$uuid]), 'Incomplete runtime changed live files or created a backup');
@@ -334,8 +398,12 @@ try {
         if ($scenario === 'rollback_log_grows') {
             check($systems[$uuid]['starts'] === 2 && str_contains($operation->error ?? '', 'Minecraft exited during native startup verification'), 'Real target exit was not rolled back');
         }
-        if (in_array($scenario, ['success', 'installer_success', 'disable_success', 'root_args_success', 'target_log_grows'], true)) {
+        if (in_array($scenario, ['success', 'installer_success', 'disable_success', 'root_args_success', 'target_log_grows', 'drift_success'], true)) {
             check($operation->phase === 'completed' && $managed->installed_version === '2', $label.' did not complete: '.$operation->error);
+            if ($scenario === 'drift_success') {
+                check(! isset($systems[$uuid]['data'][$almanac('1.26.10.2')]) && ! isset($systems[$uuid]['data'][$letMeDespawn('1.26.10.1')]) &&
+                    isset($systems[$uuid]['data'][$almanac('1.26.11.1')], $systems[$uuid]['data'][$letMeDespawn('1.26.11.1')]), 'The approved Almanac and Let Me Despawn pair was not installed');
+            }
             if ($migration) { check(str_contains($managed->pelicanServer->startup, '/26.1.2.121/') && $managed->pelicanServer->image === 'fixture:java_25', 'Runtime startup/image migration was not committed'); }
         } else {
             check($operation->phase === 'restored' && $managed->installed_version === '1' && $managed->active_operation_id === null, $label.' recovery failed: '.$operation->error);

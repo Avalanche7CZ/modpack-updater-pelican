@@ -50,7 +50,8 @@ $absent = $base['files']; $absentMeta = $base['metadata']; unset($absent[$old], 
 check($rows($make($absent, $absentMeta))[$identity]['action'] === 'keep_mod_disabled', 'Intentionally absent mod was re-enabled');
 $renamed = $base['files']; $renamedMeta = $base['metadata']; $alias = 'mods/manually-renamed.jar';
 $renamed[$alias] = $renamed[$old]; $renamedMeta[$alias] = $renamedMeta[$old]; unset($renamed[$old], $renamedMeta[$old]);
-check($rows($make($renamed, $renamedMeta))[$identity]['mod_upgrade']['installed']['path'] === $alias, 'Installed identity was matched by filename instead of embedded IDs');
+$renamedRow = $rows($make($renamed, $renamedMeta))[$identity];
+check($renamedRow['mod_upgrade']['installed']['path'] === $alias && $renamedRow['action'] === 'mod_upgrade_conflict', 'An embedded identity match did not retain a review for the renamed local JAR');
 $duplicate = $base['files']; $duplicateMeta = $base['metadata']; $duplicate[$alias] = $duplicate[$old]; $duplicateMeta[$alias] = $duplicateMeta[$old];
 check($rows($make($duplicate, $duplicateMeta))[$identity]['action'] === 'mod_identity_review', 'Duplicate active identities were accepted');
 $unknownTarget = $target['metadata']; unset($unknownTarget[$new]['sha256']);

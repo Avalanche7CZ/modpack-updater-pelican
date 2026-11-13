@@ -69,14 +69,29 @@ final class PreviewService
             $local = $this->inventory->hashPaths($root, $paths);
             $identities = [];
         } else {
-            $remote = $this->files->managed($server, $operation)->inventory($comparisonPaths);
+            $backend = $this->files->managed($server, $operation);
+            $remote = $backend->inventory($comparisonPaths);
+            $safetyRoots = array_merge($safetyRoots, $remote['excluded_roots'] ?? []);
+            if ($server->transport === 'native') {
+                $drift = $backend->inspectModDrift([...$base, 'identities' => $upstreamIdentities['base']],
+                    [...$target, 'identities' => $upstreamIdentities['target']], $remote, $safetyRoots);
+                $remote['files'] = array_replace($remote['files'], $drift['files']);
+                $remote['metadata'] = array_replace($remote['metadata'] ?? [], $drift['metadata']);
+                $remote['identities'] ??= [];
+                foreach ($drift['metadata'] as $path => $item) { $remote['identities'][$path] = $item['identity']; }
+                $remote['mod_drift_review'] = $drift['review'];
+                $remote['missing'] = array_values(array_diff($remote['missing'] ?? [], array_keys($drift['files'])));
+                $remote['inventory_summary']['files_hashed'] = count($remote['files']);
+                $comparisonPaths = array_values(array_unique([...$comparisonPaths, ...array_keys($drift['files'])]));
+                sort($comparisonPaths, SORT_STRING);
+            }
             $local = $remote['files'];
             $identities = [...$upstreamIdentities, 'local' => $remote['identities'] ?? []];
-            $safetyRoots = array_merge($safetyRoots, $remote['excluded_roots'] ?? []);
             $metadata = array_replace($base['metadata'] ?? [], $target['metadata'] ?? [], $remote['metadata'] ?? []);
             $server->file_inventory = [...$remote, 'observed_at' => now()->toIso8601String()];
         }
-        $modEvidence = ['base' => $base['metadata'] ?? [], 'target' => $target['metadata'] ?? [], 'local' => $remote['metadata'] ?? [], 'diagnostics' => []];
+        $modEvidence = ['base' => $base['metadata'] ?? [], 'target' => $target['metadata'] ?? [], 'local' => $remote['metadata'] ?? [],
+            'drift_review' => $remote['mod_drift_review'] ?? [], 'diagnostics' => []];
         if ($operation) { PreparationProgress::phase($operation, 'comparing', 'planning'); }
         $identities = (new ModIdentityMappings)->apply($identities, $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'local' => $local, 'target' => $target['files']]);
         $plan = $this->planner->plan($base['files'], $local, $target['files'], $rules, $identities, $server->disabled_mods ?? [], $safetyRoots, $metadata, $modEvidence);
@@ -127,6 +142,7 @@ final class PreviewService
             'base' => $base['files'], 'local' => $local, 'target' => $target['files'], 'rules' => $rules,
             'directory_decisions' => $server->directory_decisions ?? [], 'decisions' => $plan['changes'], 'identities' => $identities, 'safety_roots' => $safetyRoots, 'disabled' => $server->disabled_mods, 'runtime' => $compatibility, 'backup_mode' => $server->backup_mode,
             'exclusions' => $server->backup_excluded_directories, 'mod_evidence' => $modEvidence, 'qualification' => $qualification];
+        if ($native) { $binding['native_mod_drift_schema'] = \Arcturus\ModpackManager\Native\ModDrift::SCHEMA; }
         $digest = hash('sha256', json_encode($binding, JSON_THROW_ON_ERROR));
         $preview = ['comparison_schema' => ManifestComparison::SCHEMA, 'candidate_count' => count($comparisonPaths), 'mod_plan_schema' => ModUpgradePlanner::SCHEMA, 'logical_mod_upgrades' => $plan['counts']['upgrade_mod'] ?? 0, 'qualification' => $qualification, 'policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],
             'counts' => $plan['counts'], 'total' => count($plan['changes']), 'applicable' => $gateReasons === [],
@@ -138,6 +154,7 @@ final class PreviewService
             'backup' => ['backend' => $server->backup_mode, 'locked_required' => true,
                 'exclusions' => $server->backup_excluded_directories],
             'notice' => 'Preview only. Review loader/world migrations separately. No runtime settings are changed automatically.'];
+        if ($native) { $preview['native_mod_drift_schema'] = $binding['native_mod_drift_schema']; }
         $saved = DB::transaction(function () use ($server, $preview, $digest): ManagedServer {
             $fresh = ManagedServer::lockForUpdate()->findOrFail($server->id);
             foreach (['policy_revision', 'base_manifest_path', 'target_manifest_path', 'installed_version', 'selected_version', 'available_version', 'baseline_status', 'runtime_report'] as $field) {

@@ -120,18 +120,39 @@ final class Wings implements Files
     /** Stream only a requested candidate. No recursive enumeration or world hashing. */
     public function hash(string $path): ?string
     {
+        return $this->streamHash($path, self::MAX_FILE_BYTES, 600);
+    }
+
+    /** Copy one selected JAR into an already open, Panel-private temporary file. */
+    public function copyModForInspection(string $path, $sink, int $limit): string
+    {
+        if (! preg_match('~^mods/[^/]+\.jar(?:\.disabled)?$~iD', $path) || ! is_resource($sink) || $limit < 1 || $limit > 67108864) {
+            throw new RuntimeException('Invalid native mod inspection request.');
+        }
+        return $this->streamHash($path, $limit, 60, $sink) ?? throw new RuntimeException('Native mod inspection candidate disappeared: '.$path);
+    }
+
+    private function streamHash(string $path, int $limit, int $timeout, $sink = null): ?string
+    {
         $before = $this->regular($path);
         if ($before === null) { return null; }
-        $response = $this->client()->connectTimeout(5)->timeout(600)->withOptions(['stream' => true])
+        if ($before['size'] > $limit) { throw new RuntimeException('Native file exceeds the inspection byte limit: '.$path); }
+        $options = ['stream' => true];
+        if ($sink !== null) { $options += ['read_timeout' => 5, 'allow_redirects' => false]; }
+        $response = $this->client()->connectTimeout(5)->timeout($timeout)->withOptions($options)
             ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
         $stream = $response->toPsrResponse()->getBody();
         $hash = hash_init('sha256'); $bytes = 0;
+        $deadline = microtime(true) + $timeout;
         try {
+            if ($sink !== null && $response->status() !== 200) { throw new RuntimeException('Native mod inspection requires a direct Wings file response.'); }
             while (! $stream->eof()) {
+                if ($sink !== null && microtime(true) >= $deadline) { throw new RuntimeException('Native mod inspection timed out.'); }
                 $chunk = $stream->read(1048576);
                 if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings file stream stalled.'); }
                 $bytes += strlen($chunk);
                 if ($bytes > $before['size']) { throw new RuntimeException('Wings file grew while being verified.'); }
+                if ($sink !== null && fwrite($sink, $chunk) !== strlen($chunk)) { throw new RuntimeException('Panel cannot save private mod inspection bytes.'); }
                 hash_update($hash, $chunk); $this->heartbeat?->__invoke();
             }
         } finally { $stream->close(); }

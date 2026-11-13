@@ -102,6 +102,22 @@ def run(request, observer=None):
         request = {**request, 'operation': 'capabilities'}
     settings = settings_for(request)
     server, operation, payload = request['server'], request['operation'], request.get('payload', {})
+    if operation == 'native_mod_metadata':
+        # Only temporary, authenticated Wings copies in the native inspection spool.
+        # This operation is not available in the remote HTTP worker.
+        import re
+        from worker import mod_metadata
+        paths = payload.get('files', {})
+        root = Path(settings['servers'][server]['root'])
+        if (root.name != 'inspection' or root.stat().st_uid != os.geteuid() or root.stat().st_mode & 0o077
+                or not isinstance(paths, dict) or not 1 <= len(paths) <= 32):
+            raise LocalError('paths')
+        result = {}
+        for path, digest in paths.items():
+            if not re.fullmatch(r'mods/inspect-[a-f0-9]{32}\.jar', path) or not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest):
+                raise LocalError('paths')
+            result[path] = mod_metadata(root, path, digest, strict=True)
+        return {'metadata': result}
     if operation not in {'capabilities', 'hashes', 'inventory', 'prepare', 'status', 'cancel', 'manifest', 'stage_file', 'stage_mod_metadata', 'requirements', 'resolve'}:
         raise LocalError('operation')
     # Reuse identical scope, descriptor-relative hashing, pinned downloads, archive and manifest code.

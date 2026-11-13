@@ -147,6 +147,9 @@
                         @endforeach
                     </ul>
                     @if(!$this->canApplyUpdate() && !$record->active_operation_id)<p class="mt-2 text-sm">Complete the requirements above. Expired readiness is refreshed automatically in the background. Each manual update requires approval of the current file and runtime plan.</p>@endif
+                    @if($preview && $record->transport === 'native' && ($preview['native_mod_drift_schema'] ?? null) !== \Arcturus\ModpackManager\Native\ModDrift::SCHEMA)
+                        <p class="mt-2 text-sm">Compare files again to check for alternate installed mod JARs before updating.</p>
+                    @endif
                     <x-filament::button color="danger" wire:click="mountAction('applyUpdate')" :disabled="!$this->canApplyUpdate()" class="mt-4">Update with backup</x-filament::button>
                 </x-filament::section>
                 <x-filament::section heading="Release notes">

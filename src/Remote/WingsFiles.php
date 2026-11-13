@@ -216,6 +216,14 @@ final class WingsFiles implements ServerFiles
         return $this->worker->request('prepare', ['recipe' => $recipe, 'operation_id' => $operationId]);
     }
 
+    public function inspectModDrift(array $base, array $target, array $inventory, array $protected): array
+    {
+        if (! $this->worker instanceof \Arcturus\ModpackManager\Native\Preparation) {
+            throw new RuntimeException('Native mod drift inspection requires Native Pelican/Wings.');
+        }
+        return $this->worker->inspectModDrift($base, $target, $inventory, $protected);
+    }
+
     public function progress(string $operationId): array
     {
         return $this->worker->request('status', ['operation_id' => $operationId]);

@@ -88,12 +88,14 @@ final class ModUpgradePlanner
             }
             $paths = array_values(array_unique($paths)); sort($paths, SORT_STRING);
             $problem = null;
-            if (! $baseline || ! $destination || count($group['local'] ?? []) > 1 || isset($ambiguous[$id])) { $problem = 'Duplicated or overlapping embedded mod IDs. Review all candidate JARs; no version was selected.'; }
+            if (! empty($evidence['drift_review'][$id])) { $problem = 'A possible installed JAR could not be verified. Review '.implode(', ', array_slice($evidence['drift_review'][$id], 0, 3)).'. No version was selected.'; }
+            elseif (! $baseline || ! $destination || count($group['local'] ?? []) > 1 || isset($ambiguous[$id])) { $problem = 'Duplicated or overlapping embedded mod IDs. Review all candidate JARs; no version was selected.'; }
             elseif ($baseline['loader'] !== null && $destination['loader'] !== null && $baseline['loader'] !== $destination['loader']) { $problem = 'Mod loader metadata changes. Prepare and qualify a loader migration separately.'; }
             elseif ($installed && ($verified['local'][$installed['path']] ?? null) !== $id) { $problem = 'The installed JAR cannot be associated with this upstream operation. Review this replacement.'; }
             elseif ($destination && isset($local[$destination['path']]) && ($installed['path'] ?? null) !== $destination['path']) { $problem = 'The target filename is already occupied. Review installed mod identities before upgrading.'; }
             $alreadyTarget = $installed && $destination && $installed['path'] === $destination['path'] && $installed['sha256'] === $destination['sha256'];
-            $modified = ! $alreadyTarget && $installed !== null && $baseline !== null && $installed['sha256'] !== $baseline['sha256'];
+            $modified = ! $alreadyTarget && $installed !== null && $baseline !== null &&
+                ($installed['sha256'] !== $baseline['sha256'] || $installed['path'] !== $baseline['path']);
             $class = $modified ? 'locally_modified' : 'updated_upstream';
             $decisions = []; $invariant = null; $protected = false; $review = false; $replace = true; $disable = false;
             foreach ($paths as $path) {
@@ -107,11 +109,11 @@ final class ModUpgradePlanner
             $reason = $problem;
             if ($invariant !== null || $protected) { $action = 'keep_mod'; $class = 'protected'; $reason = $invariant ?? 'An existing rule protects a member of this mod upgrade. Keep the installed mod; do not add a second version.'; }
             elseif ($problem !== null) { $action = 'mod_identity_review'; $class = 'unsafe_or_ambiguous'; }
-            elseif (! $installed || str_ends_with(strtolower($installed['path']), '.disabled')) { $action = 'keep_mod_disabled'; $class = 'disabled_mod'; $reason = 'Preserving an intentionally absent or disabled installed mod; the target is not re-enabled.'; }
+            elseif (! $installed || str_ends_with(strtolower($installed['path']), '.disabled')) { $action = 'keep_mod_disabled'; $class = 'disabled_mod'; $reason = $installed ? 'Preserving the verified disabled JAR; the target is not re-enabled.' : 'No active JAR was verified for this mod. The target is not installed automatically.'; }
             elseif ($disabledIdentity || $disable) { $action = 'mod_upgrade_review'; $class = 'disabled_mod'; $reason = 'This mod is configured as disabled but an active JAR remains. Disable it explicitly before considering an upgrade.'; }
             elseif ($review) { $action = 'mod_upgrade_review'; $reason = 'An explicit member rule requires review. Choose a policy for this whole mod operation.'; }
             elseif ($installed['path'] === $destination['path'] && $installed['sha256'] === $destination['sha256']) { $action = 'unchanged'; $class = 'unchanged_upstream'; $reason = 'The verified target is already installed.'; }
-            elseif ($modified && ! $replace) { $action = 'mod_upgrade_conflict'; $reason = 'The installed JAR differs from the verified installed-release baseline. Keep the installed mod or upgrade the entire mod to the verified target.'; }
+            elseif ($modified && ! $replace) { $action = 'mod_upgrade_conflict'; $reason = 'The installed JAR path or contents differ from the verified baseline. Keep the installed mod or upgrade the entire mod to the verified target.'; }
 
             else { $action = 'upgrade_mod'; $reason = $modified ? 'Explicitly approved replacement of a locally modified mod.' : 'Installed JAR matches the verified baseline. Replace it with the verified target as one offline transaction.'; }
             $blocked = in_array($action, ['mod_identity_review', 'mod_upgrade_review', 'mod_upgrade_conflict'], true);

@@ -13,6 +13,9 @@ final class DeploymentGate
     {
         $preview = $server->preview_summary ?? [];
         if (($preview['comparison_schema'] ?? null) !== ManifestComparison::SCHEMA) { throw new RuntimeException('Compare files again: this plan predates manifest-scoped comparison. Previous approvals cannot be reused.'); }
+        if ($server->transport === 'native' && ($preview['native_mod_drift_schema'] ?? null) !== \Arcturus\ModpackManager\Native\ModDrift::SCHEMA) {
+            throw new RuntimeException('Compare files again: this native plan predates alternate mod JAR verification.');
+        }
         $native = $server->transport === 'native' && ($preview['qualification']['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL &&
             ($server->target_metadata['prepared']['transport'] ?? '') === 'native';
         $local = $server->transport === 'local' && ($preview['qualification']['protocol'] ?? '') === SameHostDeployment::PROTOCOL &&

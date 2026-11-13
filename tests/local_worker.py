@@ -1,9 +1,12 @@
 import fcntl
 import json
+import io
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+import warnings
+import zipfile
 from unittest.mock import patch
 
 import node_worker as fixtures
@@ -75,6 +78,34 @@ class LocalTests(unittest.TestCase):
         self.settings['servers'][self.server]['root'] = str(link)
         with self.assertRaises(local.LocalError):
             local.run(self.request('capabilities'))
+
+    def test_native_identity_is_hash_bound_and_rejects_duplicate_archive_metadata(self):
+        root = self.root / 'inspection'
+        root.mkdir(mode=0o700)
+        (root / 'mods').mkdir(mode=0o700)
+        self.settings['servers'][self.server]['root'] = str(root)
+        path = 'mods/inspect-' + 'a' * 32 + '.jar'
+        meta = b'[[mods]]\nmodId = "almanac"\nversion = "1.26.10.2"\n'
+        for duplicate in (False, True):
+            jar = io.BytesIO()
+            with warnings.catch_warnings(), zipfile.ZipFile(jar, 'w') as zipped:
+                warnings.simplefilter('ignore', UserWarning)
+                zipped.writestr('META-INF/mods.toml', meta)
+                if duplicate:
+                    zipped.writestr('META-INF/mods.toml', meta)
+            blob = jar.getvalue()
+            (root / path).write_bytes(blob)
+            digest = fixtures.w.hashlib.sha256(blob).hexdigest()
+            result = local.run(self.request('native_mod_metadata', files={path: digest}))['metadata'][path]
+            if duplicate:
+                self.assertIsNone(result)
+            else:
+                self.assertEqual((result['identity'], result['version'], result['sha256']), ('almanac', '1.26.10.2', digest))
+            with self.assertRaises(local.PreparationFailure) as error:
+                local.run(self.request('native_mod_metadata', files={path: '0' * 64}))
+            self.assertEqual(error.exception.code, 'FILES_CHANGED')
+        with self.assertRaises(local.LocalError):
+            local.run(self.request('native_mod_metadata', files={'mods/arbitrary.jar': digest}))
 
     def test_overlapping_staging_and_servers(self):
         child = self.live / 'stage'
