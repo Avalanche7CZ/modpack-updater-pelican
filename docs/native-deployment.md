@@ -105,3 +105,5 @@ the column or changing APP_KEY. Retain that row and its operation lock. Inspect
 the operation-specific logs, actual Wings state, recorded backup and startup
 settings before any recovery decision. Never clear the lock or replay deployment
 merely because the schema migration succeeded.
+
+See [bounded native verification](native-batch-verification.md) for directory-sharing batches, verification phases, measured fixture request counts and deferred staging/batch-mutation work.

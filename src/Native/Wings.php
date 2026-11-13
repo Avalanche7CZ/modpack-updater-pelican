@@ -9,7 +9,7 @@ use Arcturus\ModpackManager\Services\UpdatePlanner;
 use RuntimeException;
 
 /** Pelican rc.2 authenticated binary streams; no client token and no host-volume access. */
-final class Wings implements Files
+final class Wings implements BatchFiles
 {
     public const MAX_FILE_BYTES = 2147483648;
 
@@ -63,8 +63,10 @@ final class Wings implements Files
         // never replay mutations or bypass node authentication failures.
         for ($attempt = 0; ; $attempt++) {
             try {
-                $rows = $this->client()->get('/api/servers/'.$this->server->uuid.'/files/list-directory',
-                    ['directory' => $directory === '' ? '/' : '/'.$directory])->json();
+                $response = $this->client()->get('/api/servers/'.$this->server->uuid.'/files/list-directory',
+                    ['directory' => $directory === '' ? '/' : '/'.$directory])->throw();
+                if ($response->status() !== 200) { throw new RuntimeException('Wings directory listing requires a direct complete response.'); }
+                $rows = $response->json();
                 break;
             } catch (\Illuminate\Http\Client\ConnectionException $e) {
                 if (! $e->getPrevious() instanceof \GuzzleHttp\Exception\ConnectException) { throw $e; }
@@ -141,22 +143,21 @@ final class Wings implements Files
         return $this->streamHash($path, 67108864, 60, $sink) ?? throw new RuntimeException('The active Crucible JAR is missing: '.$path);
     }
 
-    private function streamHash(string $path, int $limit, int $timeout, $sink = null): ?string
+    private function streamHash(string $path, int $limit, int $timeout, $sink = null, ?array $verifiedMetadata = null): ?string
     {
-        $before = $this->regular($path);
+        $before = $verifiedMetadata ?? $this->regular($path);
         if ($before === null) { return null; }
         if ($before['size'] > $limit) { throw new RuntimeException('Native file exceeds the inspection byte limit: '.$path); }
-        $options = ['stream' => true];
-        if ($sink !== null) { $options += ['read_timeout' => 5, 'allow_redirects' => false]; }
+        $options = ['stream' => true, 'read_timeout' => 5, 'allow_redirects' => false];
         $response = $this->client()->connectTimeout(5)->timeout($timeout)->withOptions($options)
             ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
         $stream = $response->toPsrResponse()->getBody();
         $hash = hash_init('sha256'); $bytes = 0;
         $deadline = microtime(true) + $timeout;
         try {
-            if ($sink !== null && $response->status() !== 200) { throw new RuntimeException('Native mod inspection requires a direct Wings file response.'); }
+            if ($response->status() !== 200) { throw new RuntimeException('Native mod inspection requires a direct Wings file response.'); }
             while (! $stream->eof()) {
-                if ($sink !== null && microtime(true) >= $deadline) { throw new RuntimeException('Native mod inspection timed out.'); }
+                if (microtime(true) >= $deadline) { throw new RuntimeException('Native mod inspection timed out.'); }
                 $chunk = $stream->read(1048576);
                 if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings file stream stalled.'); }
                 $bytes += strlen($chunk);
@@ -165,9 +166,51 @@ final class Wings implements Files
                 hash_update($hash, $chunk); $this->heartbeat?->__invoke();
             }
         } finally { $stream->close(); }
-        $after = $this->regular($path);
+        // A batch validates fresh ancestor and leaf metadata together after all bounded reads.
+        $after = $verifiedMetadata ?? $this->regular($path);
         if ($bytes !== $before['size'] || $after !== $before) { throw new RuntimeException('Wings file changed or transfer was truncated during verification.'); }
         return hash_final($hash);
+    }
+
+    /** Fresh snapshots are local to ONE read-only batch. Never reused by writes or another phase. */
+    public function hashBatch(array $paths): array
+    {
+        if (count($paths) > 32 || ! array_is_list($paths)) { throw new RuntimeException('Native hash batch must contain at most 32 explicit paths.'); }
+        $snapshot = function () use ($paths): array {
+            $directories = []; $metadata = []; $ancestors = [];
+            foreach ($paths as $path) {
+                UpdatePlanner::assertPath($path);
+                $parent = ''; $parts = explode('/', $path);
+                foreach ($parts as $index => $part) {
+                    if (! array_key_exists($parent, $directories)) {
+                        $directories[$parent] = array_column($this->listing($parent), null, 'name');
+                    }
+                    $row = $directories[$parent][$part] ?? null;
+                    $next = $parent === '' ? $part : $parent.'/'.$part;
+                    if ($row === null) { $metadata[$path] = null; break; }
+                    if ($row['symlink']) { throw new SymlinkPath($next); }
+                    if (! is_string($row['modified'] ?? null) || $row['modified'] === '') { throw new RuntimeException('Wings batch metadata lacks a modification timestamp.'); }
+                    if ($index === count($parts) - 1) {
+                        if (! $row['file'] || $row['directory'] || ! is_int($row['size'] ?? null) || $row['size'] < 0 || $row['size'] > self::MAX_FILE_BYTES) {
+                            throw new RuntimeException('Native batch candidate is not a regular bounded file.');
+                        }
+                        $metadata[$path] = $row;
+                    } else {
+                        if (! $row['directory'] || $row['file']) { throw new RuntimeException('Native batch ancestor is not a regular directory.'); }
+                        $ancestors[$next] = $row;
+                        $parent = $next;
+                    }
+                }
+                $this->heartbeat?->__invoke();
+            }
+            return [$metadata, $ancestors];
+        };
+        $before = $snapshot(); $hashes = [];
+        foreach ($paths as $path) {
+            $hashes[$path] = $before[0][$path] === null ? null : $this->streamHash($path, self::MAX_FILE_BYTES, 600, null, $before[0][$path]);
+        }
+        if ($snapshot() !== $before) { throw new RuntimeException('Native batch file or ancestor changed during verification.'); }
+        return $hashes;
     }
 
     public function read(string $path, int $limit = 1048576): string

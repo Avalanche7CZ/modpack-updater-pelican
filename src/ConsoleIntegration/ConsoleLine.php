@@ -17,6 +17,8 @@ final class ConsoleLine
             'comparing' => 'Comparing the installation with the prepared plan',
             'waiting_for_approval' => 'Plan ready for review and approval',
             'stopping' => 'Stopping Minecraft · waiting for the maintenance guard',
+            'verifying_before_backup' => 'Verifying files before backup',
+            'verifying_after_backup' => 'Verifying files after backup',
             'backing_up' => 'Waiting for the locked Pelican backup',
             'applying' => 'Applying and verifying approved files',
             'starting' => 'Starting Minecraft · waiting for verified startup',
@@ -49,6 +51,9 @@ final class ConsoleLine
             } elseif ($current['phase'] !== 'downloading' && self::counts($current['files_done'] ?? null, $current['files_total'] ?? null)) {
                 $message = ucfirst($current['phase']).' '.$current['files_done'].' / '.$current['files_total'].' files';
             }
+        }
+        if (in_array($phase, ['verifying_before_backup', 'verifying_after_backup'], true) && self::counts($progress['files_done'] ?? null, $progress['files_total'] ?? null)) {
+            $message .= ' · '.number_format($progress['files_done'], 0, '.', ' ').' / '.number_format($progress['files_total'], 0, '.', ' ').' paths';
         }
         if ($phase === 'applying' && self::counts($progress['files_done'] ?? null, $progress['files_total'] ?? null)) {
             $message = 'Applying and verifying '.$progress['files_done'].' / '.$progress['files_total'].' files';

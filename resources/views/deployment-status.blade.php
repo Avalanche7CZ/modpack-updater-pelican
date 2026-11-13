@@ -6,6 +6,9 @@
                 <p class="mt-2 text-sm">The encrypted deployment receipt cannot be read. The displayed phase is the last recorded database state, not confirmation that deployment succeeded. Do not repeat the update or delete its recovery evidence. Check Panel and queue logs and the original APP_KEY configuration.</p>
             @endif
             <p class="mt-2 text-sm">{{ $operation->progress['message'] ?? 'Waiting for a queue worker.' }}</p>
+            @if(in_array($operation->phase, ['verifying_before_backup', 'verifying_after_backup'], true) && is_int($operation->progress['files_done'] ?? null) && is_int($operation->progress['files_total'] ?? null))
+                <p class="mt-2 text-sm">{{ number_format($operation->progress['files_done'], 0, '.', ' ') }} / {{ number_format($operation->progress['files_total'], 0, '.', ' ') }} paths verified (including expected absence).</p>
+            @endif
             @if($receiptReadable && $operation->phase === 'completed')<p class="mt-2 text-sm">Update completed. Minecraft reached a fresh startup marker.</p>@endif
             @if($receiptReadable && $operation->phase === 'restored')<p class="mt-2 text-sm">Update failed. Pelican confirmed the native restore; managed file hashes, original launcher settings and Minecraft startup were verified.</p>@endif
             @if($operation->error)<p class="mt-2 break-words text-sm">{{ $operation->error }}</p>@endif

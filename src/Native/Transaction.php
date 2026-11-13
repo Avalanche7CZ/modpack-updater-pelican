@@ -104,8 +104,18 @@ final class Transaction
         $journal(['step' => 'files_verified']);
     }
 
-    public function verify(array $expected): void
+    public function verify(array $expected, ?\Closure $progress = null): void
     {
-        foreach ($expected as $path => $digest) { if ($this->files->hash($path) !== $digest) { throw new RuntimeException('Native verification mismatch: '.$path); } }
+        // Directory ordering improves sharing without broadening the explicit approved scope.
+        uksort($expected, fn ($a, $b) => [dirname($a), $a] <=> [dirname($b), $b]);
+        $done = 0; $total = count($expected);
+        foreach (array_chunk($expected, 32, true) as $batch) {
+            $hashes = $this->files instanceof BatchFiles ? $this->files->hashBatch(array_keys($batch)) : null;
+            foreach ($batch as $path => $digest) {
+                if (($hashes !== null ? $hashes[$path] : $this->files->hash($path)) !== $digest) { throw new RuntimeException('Native verification mismatch: '.$path); }
+                $done++;
+            }
+            $progress?->__invoke($done, $total);
+        }
     }
 }

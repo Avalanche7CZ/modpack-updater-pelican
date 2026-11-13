@@ -67,7 +67,7 @@ final class RetireCorruptPrewrite extends Command
             DB::transaction(function () use ($check, $id): void {
                 $operation = Operation::query()->lockForUpdate()->findOrFail($id);
                 $managed = ManagedServer::query()->lockForUpdate()->findOrFail($check['managed_id']);
-                if ($operation->phase !== 'stopping' || $operation->completed_at !== null ||
+                if (! in_array($operation->phase, ['stopping', 'verifying_before_backup'], true) || $operation->completed_at !== null ||
                     $operation->backup_uuid !== null || $managed->active_operation_id !== $id ||
                     $managed->installed_version !== $check['installed_version'] ||
                     ($managed->preview_summary['plan_sha256'] ?? null) !== $check['plan_sha256'] ||
@@ -130,10 +130,10 @@ final class RetireCorruptPrewrite extends Command
     private function inspect(string $id): array
     {
         $operation = Operation::query()->findOrFail($id);
-        if ($operation->kind !== 'deploy' || $operation->phase !== 'stopping' ||
+        if ($operation->kind !== 'deploy' || ! in_array($operation->phase, ['stopping', 'verifying_before_backup'], true) ||
             $operation->completed_at !== null || $operation->backup_uuid !== null ||
             ! $operation->heartbeat_at || $operation->heartbeat_at->gt(now()->subMinutes(30))) {
-            throw new RuntimeException('Only an old, unfinished native stopping checkpoint without a recorded backup can be retired.');
+            throw new RuntimeException('Only an old, unfinished native stopping or pre-backup verification checkpoint without a recorded backup can be retired.');
         }
         if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true) &&
             Schema::getColumnType('arcturus_modpack_operations', 'context') !== 'longtext') {

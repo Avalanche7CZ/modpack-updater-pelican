@@ -79,6 +79,16 @@ final class Deployment
             $server = $managed->pelicanServer;
             $files = new Wings($server, app(DaemonFileRepository::class), $heartbeat);
             $transaction = new Transaction($files);
+            $verify = function (array $expected, string $name, string $message) use ($transaction, &$operation, $phase): void {
+                $phase($name, $message);
+                $operation->update(['progress' => ['message' => $message, 'files_done' => 0, 'files_total' => count($expected)]]);
+                $last = microtime(true);
+                $transaction->verify($expected, function (int $done, int $total) use (&$last, &$operation, $message): void {
+                    if ($done !== $total && microtime(true) - $last < 5) { return; }
+                    $operation->update(['progress' => ['message' => $message, 'files_done' => $done, 'files_total' => $total], 'heartbeat_at' => now()]);
+                    $last = microtime(true);
+                });
+            };
             $stage = app(Qualification::class)->stage($managed);
             $target = app(ReleaseStore::class)->load($managed->target_manifest_path);
             $runtime = $preview['qualification']['runtime_plan'];
@@ -94,7 +104,7 @@ final class Deployment
                 'native_retained_launcher' => $retainedLauncher, 'excluded_directories' => $excluded]);
             $stopped = true;
             $power->guardAndStop($server, $heartbeat);
-            $transaction->verify($before);
+            $verify($before, 'verifying_before_backup', 'Verifying files before backup');
             CrucibleRuntime::verify($files, $retainedLauncher);
             if ($files->hash('server.properties') !== $preview['qualification']['properties_sha256']) { throw new RuntimeException('World properties changed after approval; compare again.'); }
             // Capture a small independent recovery receipt, never worlds or a full inventory.
@@ -106,7 +116,7 @@ final class Deployment
             $managed->update(['last_backup_uuid' => $backup->uuid]);
             $backups->awaitSuccessful($backup, $excluded, (int) config('arcturus-modpack-manager.deployment_backup_timeout', 3600), $heartbeat);
             $backupComplete = true;
-            $transaction->verify($critical);
+            $verify($critical, 'verifying_after_backup', 'Verifying files after backup');
             CrucibleRuntime::verify($files, $retainedLauncher);
             app(Runtime::class)->requireSnapshot($server, $original);
             $phase('applying', 'Transferring and verifying approved candidate files through Wings', ['backup_complete' => true, 'native_writes_started' => true]);

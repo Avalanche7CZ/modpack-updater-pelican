@@ -203,6 +203,12 @@ $test->call('selectTab', 'overview');
 check(str_contains($test->html(), 'Update backend: Native Pelican / Wings') && ! str_contains($test->html(), 'Complete Local filesystem setup once'), 'Native overview still requires legacy host setup');
 $test->call('selectTab', 'backups');
 check(! str_contains($test->html(), 'Installation comparison') && ! str_contains($test->html(), 'outside-volume preservation is available') && str_contains($test->html(), 'without truncation'), 'Native recovery screen retained obsolete or unrelated status');
+foreach (['verifying_before_backup' => 'Verifying files before backup', 'verifying_after_backup' => 'Verifying files after backup'] as $phase => $label) {
+    $statusOperation = new Operation;
+    $statusOperation->forceFill(['id' => (string) Str::uuid(), 'phase' => $phase, 'progress' => ['message' => $label, 'files_done' => 8870, 'files_total' => 9208], 'heartbeat_at' => now()]);
+    $statusHtml = view('arcturus-modpack-manager::deployment-status', ['operation' => $statusOperation, 'context' => [], 'receiptReadable' => true])->render();
+    check(str_contains($statusHtml, $label) && str_contains($statusHtml, '8 870 / 9 208'), 'Verification phase/counts missing from deployment UI');
+}
 // Corrupt/unreadable encrypted evidence must not crash the deployment status UI.
 $brokenDeployment = Operation::create(['id' => (string) Str::uuid(), 'managed_server_id' => $record->id,
     'kind' => 'deploy', 'phase' => 'verifying', 'context' => ['from' => 'old', 'to' => 'new'], 'heartbeat_at' => now()]);

@@ -153,6 +153,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
     if (str_ends_with($path, '/files/contents')) {
         $file = ltrim($q['file'], '/'); check(! str_starts_with($file, 'world/'), 'Plugin attempted to read world data');
         $contents = $sys['data'][$file];
+        if ($mode === 'prebackup_failure' && $sys['state'] === 'offline' && $file === 'config/options.cfg') { $contents = 'bad'; }
         if ($file === 'logs/latest.log' && isset($sys['pending_boot_log'])) {
             $sys['data'][$file] = $sys['pending_boot_log']; unset($sys['pending_boot_log']);
             $sys['boot_log_races'] = ($sys['boot_log_races'] ?? 0) + 1;
@@ -525,6 +526,18 @@ try {
         check(count($requests) === $count, 'Duplicate delivery replayed a native transaction');
         echo $label." native transaction passed\n";
     }
+
+    Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
+    $mode = 'success'; Auth::guard()->setUser($adminUser); $precheck = $make(false);
+    $precheckPlan = app(PreviewService::class)->generate($precheck);
+    $precheckOp = app(DeploymentApproval::class)->queue($precheck, $precheckPlan['plan_sha256'], (string) Str::uuid());
+    $mode = 'prebackup_failure'; $requestStart = count($requests);
+    Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+    check($precheckOp->fresh()->phase === 'manual_intervention' && $systems[$precheck->pelican_server_uuid]['state'] === 'offline', 'Pre-backup mismatch did not retain the stopped checkpoint');
+    check(! array_filter(array_slice($requests, $requestStart), fn ($r) => str_ends_with($r[1], '/backup') || str_ends_with($r[1], '/files/write')), 'Failed pre-backup verification reached backup or file writes');
+    $precheckHistory = \Arcturus\ModpackManager\ConsoleIntegration\ConsoleHistory::read($precheck->id, null)['lines'];
+    check(str_contains(json_encode($precheckHistory), 'Verifying files before backup'), 'New verification phase missing from console history');
+    echo "Pre-backup verification failure retained guard without backup or writes\n";
 
     $mode = 'success'; Auth::guard()->forgetUser();
     // An old receipt truncated by MySQL TEXT can only be retired after an

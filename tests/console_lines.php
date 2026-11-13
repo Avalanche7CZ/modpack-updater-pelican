@@ -24,3 +24,6 @@ foreach ([null, -1, 1001, '100', INF] as $bad) {
 }
 check(str_contains($line('applying', ['files_done' => 112, 'files_total' => 340])['message'], '112 / 340'), 'Recorded file progress missing');
 echo "Console vocabulary, real measurements, secret exclusion and verified recovery semantics passed\n";
+
+$verification = ConsoleLine::make('deploy', 'verifying_before_backup', ['files_done' => 8870, 'files_total' => 9208], []);
+check(str_contains($verification['message'], '8 870 / 9 208'), 'Real verification progress missing');
