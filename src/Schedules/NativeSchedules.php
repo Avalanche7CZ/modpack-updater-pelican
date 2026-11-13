@@ -116,11 +116,16 @@ final class NativeSchedules
                 try {
                     if ($power->state($server->pelicanServer) === 'running') {
                         $heartbeat = fn () => $operation->update(['heartbeat_at' => now()]);
-                        $power->stop($server->pelicanServer, heartbeat: $heartbeat);
+                        $restartRuntime = null;
                         if ($server->transport === 'native') {
                             $files = new \Arcturus\ModpackManager\Native\Wings($server->pelicanServer, app(\App\Repositories\Daemon\DaemonFileRepository::class), $heartbeat);
+                            $restartRuntime = (new \Arcturus\ModpackManager\Services\RuntimeInspector)->fromStartupLog($files->bootLogEvidence()['text']);
+                            if (empty($restartRuntime['minecraft']) || empty($restartRuntime['loader']) || !is_int($restartRuntime['java'])) { throw new \RuntimeException('Cannot establish the existing runtime before scheduled restart.'); }
+                        }
+                        $power->stop($server->pelicanServer, heartbeat: $heartbeat);
+                        if ($server->transport === 'native') {
                             app(\Arcturus\ModpackManager\Native\Boot::class)->start($server->pelicanServer, $files, $operation->id,
-                                [], fn (array $row) => $operation->update(['context' => [...$operation->context, 'native_checkpoint' => $row]]), $heartbeat);
+                                $restartRuntime, fn (array $row) => $operation->update(['context' => [...$operation->context, 'native_checkpoint' => $row]]), $heartbeat);
                         } else { $power->startAndVerify($server->pelicanServer, $server->local_root, heartbeat: $heartbeat); }
                     }
                     app(OperationTracker::class)->transition($operation, 'completed');

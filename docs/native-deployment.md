@@ -109,3 +109,5 @@ merely because the schema migration succeeded.
 See [bounded native verification](native-batch-verification.md) for directory-sharing batches, verification phases, measured fixture request counts and deferred staging/batch-mutation work.
 
 See [Applying progress and Wings mutation batches](native-applying.md) for step-specific counts, bounded chmod/rename, partial-batch recovery and remaining per-file upload work.
+
+For a retained recovery whose original Minecraft is already running, use [read-only running-original verification](verify-running-original.md) before considering another restore.

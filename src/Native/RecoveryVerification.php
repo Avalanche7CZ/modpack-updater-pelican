@@ -18,23 +18,30 @@ use Throwable;
 /** Explicit administrator recovery of an interrupted native operation, never apply replay. */
 final class RecoveryVerification
 {
-    public function run(Operation $operation): void
+    public function run(Operation $operation, ?string $executionId = null): void
     {
+        $executionId ??= $operation->context['native_execution_id'] ?? null;
         $managed = ManagedServer::lightweight()->findOrFail($operation->managed_server_id);
         $server = $managed->pelicanServer; $power = app(PelicanPowerController::class);
-        $heartbeat = function () use ($operation): void {
-            if ($operation->fresh()->completed_at) { throw new RuntimeException('Recovery receipt closed. Keep the stopped checkpoint.'); }
+        $heartbeat = function () use ($operation, $executionId): void {
+            if ($operation->fresh()->completed_at || ($operation->fresh()->context['native_execution_id'] ?? null) !== $executionId) { throw new RuntimeException('Recovery receipt closed. Keep the stopped checkpoint.'); }
             $operation->update(['heartbeat_at' => now()]);
         };
         $journal = function (array $row) use ($operation, $heartbeat): void {
             $heartbeat(); $operation->update(['context' => [...$operation->context, 'native_checkpoint' => $row,
+                ...(isset($row['restore_confirmation']) ? ['native_restore_confirmation' => [...$row['restore_confirmation'], 'execution_id' => $operation->context['native_execution_id'] ?? null]] : []),
+                ...(isset($row['boot_attempt']) ? ['native_boot_attempts' => [...($operation->context['native_boot_attempts'] ?? []), $row['boot_attempt']['id'] => [...$row['boot_attempt'], 'execution_id' => $operation->context['native_execution_id'] ?? null, 'restore_callback_id' => $operation->context['native_restore_confirmation']['callback_id'] ?? null]]] : []),
                 ...(array_key_exists('link_stash', $row) ? ['native_link_stash' => $row['link_stash']] : [])]]);
         };
-        $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id, 14400); $locked = false;
+        $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id, 14400); $locked = false; $ownsRecovery = false;
         try {
             $locked = $lock->get();
             if (! $locked) { throw new RuntimeException('The previous deployment worker lease is still held. Keep the server stopped and wait for that lease to expire before recovery; never force-unlock an uncertain apply.'); }
+            $operation->refresh(); $managed->refresh();
+            if ($executionId === null || ($operation->context['native_execution_id'] ?? null) !== $executionId || !in_array($operation->phase, ['recovery_queued', 'checking_recovery'], true) || $operation->completed_at || ($operation->context['protocol'] ?? '') !== Qualification::PROTOCOL) { throw new RuntimeException('Recovery worker no longer owns an open queued recovery.'); }
             if ($managed->active_operation_id !== $operation->id || ! ($operation->context['recovery_actor_id'] ?? null)) { throw new RuntimeException('Native recovery receipt is not active or lacks administrator approval.'); }
+            $ownsRecovery = true;
+            $operation->update(['phase' => 'checking_recovery', 'heartbeat_at' => now()]);
             $power->deploymentGuard($server, false);
             if ($power->state($server) !== 'exited' || $server->status !== null || $server->backups()->whereNull('completed_at')->exists()) {
                 throw new RuntimeException('Confirm Wings offline state and completed backup/restore callbacks before native recovery.');
@@ -64,6 +71,7 @@ final class RecoveryVerification
                 app(Runtime::class)->requireSnapshot($server, $original);
             }
             CrucibleRuntime::verify($files, $operation->context['native_retained_launcher'] ?? []);
+            $operation->update(['context' => [...$operation->context, 'native_original_files_verified' => ['backup_uuid' => $operation->context['backup_uuid'] ?? null, 'confirmation' => $operation->context['native_restore_confirmation'] ?? null, 'scope_sha256' => hash('sha256', json_encode($critical, JSON_THROW_ON_ERROR)), 'verified_at' => microtime(true)]]]);
             $attempt = (int) ($operation->context['native_recovery_attempt'] ?? 0) + 1;
             $operation->update(['phase' => 'recovery_starting', 'context' => [...$operation->context, 'native_recovery_attempt' => $attempt]]);
             app(Runtime::class)->syncAndRequire($server, $original);
@@ -83,7 +91,8 @@ final class RecoveryVerification
             app(DiscordNotifier::class)->forEvent($event);
         } catch (Throwable $error) {
             report($error);
-            if ($operation->fresh()->completed_at) { return; }
+            if (!$locked || !$ownsRecovery) { return; }
+            if ($operation->fresh()->completed_at || ($operation->fresh()->context['native_execution_id'] ?? null) !== $executionId) { return; }
             $operation->update(['phase' => 'restoring']);
             try { $power->guardAndStop($server); } catch (Throwable $failure) { report($failure); }
             $message = get_class($error) === RuntimeException::class ? $error->getMessage() : 'Native recovery infrastructure failed; retain the exact backup and stopped checkpoint and inspect the Panel log.';

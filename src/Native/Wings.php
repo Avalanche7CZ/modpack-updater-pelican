@@ -143,7 +143,7 @@ final class Wings implements MutationBatches
         return $this->streamHash($path, 67108864, 60, $sink) ?? throw new RuntimeException('The active Crucible JAR is missing: '.$path);
     }
 
-    private function streamHash(string $path, int $limit, int $timeout, $sink = null, ?array $verifiedMetadata = null): ?string
+    private function streamHash(string $path, int $limit, int $timeout, $sink = null, ?array $verifiedMetadata = null, ?\Closure $capture = null): ?string
     {
         $before = $verifiedMetadata ?? $this->regular($path);
         if ($before === null) { return null; }
@@ -161,13 +161,18 @@ final class Wings implements MutationBatches
                 $chunk = $stream->read(1048576);
                 if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings file stream stalled.'); }
                 $bytes += strlen($chunk);
-                if ($bytes > $before['size']) { throw new RuntimeException('Wings file grew while being verified.'); }
+                if ($bytes > $before['size']) {
+                    if ($capture !== null) { throw new TextChangedDuringInspection('Startup log grew during inspection.'); }
+                    throw new RuntimeException('Wings file grew while being verified.');
+                }
                 if ($sink !== null && fwrite($sink, $chunk) !== strlen($chunk)) { throw new RuntimeException('Panel cannot save private mod inspection bytes.'); }
+                $capture?->__invoke($chunk);
                 hash_update($hash, $chunk); $this->heartbeat?->__invoke();
             }
         } finally { $stream->close(); }
         // A batch validates fresh ancestor and leaf metadata together after all bounded reads.
         $after = $verifiedMetadata ?? $this->regular($path);
+        if ($capture !== null && $after !== $before) { throw new TextChangedDuringInspection('Startup log changed during inspection.'); }
         if ($bytes !== $before['size'] || $after !== $before) { throw new RuntimeException('Wings file changed or transfer was truncated during verification.'); }
         return hash_final($hash);
     }
@@ -213,6 +218,24 @@ final class Wings implements MutationBatches
             $this->heartbeat?->__invoke();
         }
         return [$metadata, $ancestors];
+    }
+
+    /** Bounded in-memory head/tail, streamed full hash. A busy or replaced log is never accepted. */
+    public function bootLogEvidence(): array
+    {
+        $head = ''; $tail = ''; $bytes = 0; $done = false; $overlap = '';
+        $digest = $this->streamHash('logs/latest.log', self::MAX_FILE_BYTES, 600, null, null,
+            function (string $chunk) use (&$head, &$tail, &$bytes, &$done, &$overlap): void {
+                $bytes += strlen($chunk);
+                $scan = $overlap.$chunk;
+                $done = $done || preg_match('/\bDone \([\d.]+s\)!/i', $scan) === 1;
+                $overlap = substr($scan, -128);
+                if (strlen($head) < 1048576) { $head .= substr($chunk, 0, 1048576 - strlen($head)); }
+                $tail = substr($tail.$chunk, -3145728);
+            });
+        if ($digest === null) { throw new RuntimeException('Current startup log is missing.'); }
+        $text = $bytes <= 3145728 ? $tail : ($bytes <= 4194304 ? substr($head, 0, $bytes - 3145728).$tail : $head."\n".$tail);
+        return ['text' => $text, 'sha256' => $digest, 'done' => $done];
     }
 
     public function read(string $path, int $limit = 1048576): string

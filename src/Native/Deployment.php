@@ -41,6 +41,8 @@ final class Deployment
         $checkpoint = function (array $row) use (&$operation, $heartbeat): void {
             $heartbeat();
             $operation->update(['context' => [...$operation->context, ...(array_key_exists('link_stash', $row) ? ['native_link_stash' => $row['link_stash']] : []), 'native_checkpoint' => $row,
+                ...(isset($row['restore_confirmation']) ? ['native_restore_confirmation' => [...$row['restore_confirmation'], 'execution_id' => $operation->context['native_execution_id'] ?? null]] : []),
+                ...(isset($row['boot_attempt']) ? ['native_boot_attempts' => [...($operation->context['native_boot_attempts'] ?? []), $row['boot_attempt']['id'] => [...$row['boot_attempt'], 'execution_id' => $operation->context['native_execution_id'] ?? null, 'restore_callback_id' => $operation->context['native_restore_confirmation']['callback_id'] ?? null]]] : []),
                 'native_checkpoint_sequence' => (int) ($operation->context['native_checkpoint_sequence'] ?? 0) + 1]]);
         };
         $phase = function (string $value, string $message, array $context = []) use (&$operation, $heartbeat): void {
@@ -166,6 +168,7 @@ final class Deployment
                         CrucibleRuntime::verify($files, $retainedLauncher);
                         app(Runtime::class)->restoreSettings($server, $original, $blocked);
                         app(Runtime::class)->syncAndRequire($server, $original);
+                        $operation->update(['context' => [...$operation->context, 'native_original_files_verified' => ['backup_uuid' => $backup->uuid, 'confirmation' => $operation->context['native_restore_confirmation'] ?? null, 'scope_sha256' => hash('sha256', json_encode($critical, JSON_THROW_ON_ERROR)), 'verified_at' => microtime(true)]]]);
                         $phase('restarting_original', 'Verifying the original installation after confirmed native restore');
                         $power->deploymentGuard($server, true);
                         app(Boot::class)->start($server, $files, $operation->id.'-old', $preview['qualification']['current'], $checkpoint, $heartbeat, $bootFailure('rollback'));

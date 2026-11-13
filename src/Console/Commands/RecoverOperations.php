@@ -37,7 +37,7 @@ final class RecoverOperations extends Command
                 if ($op->phase === 'recovery_queued') {
                     \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery::dispatch($op->id);
                     $this->line('Requeued the same recovery verification receipt: '.$op->id);
-                } elseif ($op->phase === 'checking_recovery') {
+                } elseif (in_array($op->phase, ['checking_recovery', 'recovery_starting'], true)) {
                     (new \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery($op->id))->failed(null);
                 } elseif ($op->phase === 'queued') {
                     \Arcturus\ModpackManager\Jobs\DeployManagedServer::dispatch($op->managed_server_id, (bool) ($context['automatic_approval'] ?? false), $context['plan_sha256'], $op->id);

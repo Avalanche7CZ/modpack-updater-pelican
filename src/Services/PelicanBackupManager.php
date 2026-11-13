@@ -143,14 +143,15 @@ final class PelicanBackupManager
         $linkReceipt = $links->preserve('.arcturus-recovery-'.$backup->uuid, $linkReceipt, $journal);
         (new \Arcturus\ModpackManager\Native\Recovery($files))->clearForRestore($excludedFolders, $authorize, $journal, $linkReceipt ? [$linkReceipt['path']] : []);
         $journal(['step' => 'native_restore_intent', 'backup_uuid' => $backup->uuid, 'truncate' => false]);
-        $this->requestRestoreAndWait($server, $backup, $excludedFolders, $timeoutSeconds, false, $heartbeat);
+        $confirmation = $this->requestRestoreAndWait($server, $backup, $excludedFolders, $timeoutSeconds, false, $heartbeat);
         // Wings temporarily manages suspension during restore. Re-arm our guard explicitly.
         $this->power->guardAndStop($server, $heartbeat);
         $links->restore($linkReceipt, $journal);
-        $journal(['step' => 'native_restore_callback_verified', 'backup_uuid' => $backup->uuid]);
+        $confirmation['launcher_links'] = $linkReceipt['links'] ?? [];
+        $journal(['step' => 'native_restore_callback_verified', 'backup_uuid' => $backup->uuid, 'restore_confirmation' => $confirmation]);
     }
 
-    private function requestRestoreAndWait(Server $server, Backup $backup, array $excludedFolders, int $timeoutSeconds, bool $truncate, ?\Closure $heartbeat): void
+    private function requestRestoreAndWait(Server $server, Backup $backup, array $excludedFolders, int $timeoutSeconds, bool $truncate, ?\Closure $heartbeat): array
     {
         $this->requireCompleted($backup->refresh(), BackupExclusions::patterns($excludedFolders));
         if ($server->refresh()->status !== null) {
@@ -189,7 +190,7 @@ final class PelicanBackupManager
                 $event !== null && $server->refresh()->status === null
             )) {
                 $this->requireCompleted($backup->refresh(), BackupExclusions::patterns($excludedFolders));
-                return;
+                return ['backup_uuid' => $backup->uuid, 'watermark' => $eventWatermark, 'callback_id' => $event->id];
             }
             $heartbeat?->__invoke();
             sleep(1);

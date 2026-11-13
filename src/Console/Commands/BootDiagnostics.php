@@ -24,6 +24,11 @@ final class BootDiagnostics extends Command
         catch (DecryptException) { $this->error('The encrypted deployment receipt could not be read.'); return self::FAILURE; }
 
         $found = false;
+        foreach ($context['native_boot_attempts'] ?? [] as $id => $attempt) {
+            if (!is_string($id) || !preg_match('/^[a-z0-9-]{32,50}$/D', $id)) { continue; }
+            $reason = match ($attempt['failure'] ?? '') { 'start_not_observed' => 'start not observed before timeout', 'startup_failed_after_observation' => 'startup failed after start observation', default => 'accepted/verified attempt' };
+            $this->line('Boot attempt '.$id.' — '.$reason);
+        }
         foreach (['target' => 'Target version', 'rollback' => 'Automatic rollback', 'recovery' => 'Manual recovery'] as $role => $label) {
             $evidence = $context['native_'.$role.'_boot_failure'] ?? null;
             if (! is_array($evidence)) { continue; }

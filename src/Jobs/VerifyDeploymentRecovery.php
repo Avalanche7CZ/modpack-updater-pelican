@@ -22,17 +22,24 @@ final class VerifyDeploymentRecovery implements ShouldQueue
     use Queueable;
     public int $tries = 1;
     public int $timeout = 10800;
-    public function __construct(public readonly string $operationId) {}
+    public ?string $executionId = null;
+    public function __construct(public readonly string $operationId)
+    {
+        $this->executionId = Operation::find($operationId)?->context['native_execution_id'] ?? null;
+    }
 
     public function handle(PelicanPowerController $power): void
     {
         $operation = DB::transaction(function (): ?Operation {
             $row = Operation::lockForUpdate()->findOrFail($this->operationId);
             if ($row->phase !== 'recovery_queued' || $row->completed_at) { return null; }
-            $row->update(['phase' => 'checking_recovery', 'heartbeat_at' => now()]); return $row;
+            if (($row->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL &&
+                ($this->executionId === null || $this->executionId !== ($row->context['native_execution_id'] ?? null))) { return null; }
+            if (($row->context['protocol'] ?? '') !== \Arcturus\ModpackManager\Native\Qualification::PROTOCOL) { $row->update(['phase' => 'checking_recovery', 'heartbeat_at' => now()]); }
+            return $row;
         });
         if (! $operation) { return; }
-        if (($operation->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL) { app(\Arcturus\ModpackManager\Native\RecoveryVerification::class)->run($operation); return; }
+        if (($operation->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL) { app(\Arcturus\ModpackManager\Native\RecoveryVerification::class)->run($operation, $this->executionId); return; }
         $server = ManagedServer::lightweight()->findOrFail($operation->managed_server_id);
         $requireOpen = function () use ($operation): void { if ($operation->fresh()->completed_at) { throw new RuntimeException('Recovery verification receipt is closed. Retain its stopped recovery checkpoint.'); } };
         $pulseAt = 0;
@@ -80,11 +87,20 @@ final class VerifyDeploymentRecovery implements ShouldQueue
     {
         $row = Operation::find($this->operationId);
         if (! $row || $row->completed_at) { return; }
+        if (($row->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL &&
+            ($this->executionId === null || $this->executionId !== ($row->context['native_execution_id'] ?? null))) { return; }
         $server = ManagedServer::lightweight()->findOrFail($row->managed_server_id);
-        $row->update(['phase' => 'restoring']);
-        try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); } catch (Throwable) { }
-        $row->update(['error' => 'Recovery verification interrupted. Confirm Wings offline state and retain the locked backup; do not reapply the update.']);
-        app(OperationTracker::class)->transition($row, 'manual_intervention');
-        app(\Arcturus\ModpackManager\Services\DiscordNotifier::class)->criticalRecovery($server, $row->error, $row->id);
+        $lease = \Illuminate\Support\Facades\Cache::lock('arcturus-modpack-manager-deploy-'.$server->id, 14400);
+        if (!$lease->get()) { report(new RuntimeException('Recovery failure handler blocked by another worker lease: '.$row->id)); return; }
+        try {
+            $row->refresh(); $server->refresh();
+            if (($row->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL && $this->executionId !== ($row->context['native_execution_id'] ?? null)) { return; }
+            if ($row->completed_at || $server->active_operation_id !== $row->id || !in_array($row->phase, ['recovery_queued', 'checking_recovery', 'recovery_starting'], true)) { return; }
+            $row->update(['phase' => 'restoring']);
+            try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); } catch (Throwable) { }
+            $row->update(['error' => 'Recovery verification interrupted. Confirm Wings offline state and retain the locked backup; do not reapply the update.']);
+            app(OperationTracker::class)->transition($row, 'manual_intervention');
+            app(\Arcturus\ModpackManager\Services\DiscordNotifier::class)->criticalRecovery($server, $row->error, $row->id);
+        } finally { $lease->release(); }
     }
 }

@@ -27,7 +27,7 @@ use Illuminate\Http\Request;
 
 Schema::table('servers', fn (Blueprint $t) => $t->boolean('skip_scripts')->default(false));
 $egg->docker_images = ['Java 21' => 'fixture:java_21', 'Java 25' => 'fixture:java_25'];
-$systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = [];
+$systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = []; $syncFail = false;
 $hash = fn ($value) => hash('sha256', $value);
 $bootLog = fn ($mc, $version, $java) => "ModLauncher running: args [--fml.neoForgeVersion, $version, --fml.mcVersion, $mc]\nModLauncher 10.0.9 starting: java version $java.0.1\n[Server thread/INFO]: Done (0.1s)!\n";
 $crucibleBootLog = fn () => "Forge Mod Loader version 7.99.40.1614 for Minecraft 1.7.10 loading\nJava is OpenJDK, version 25.0.1\nMinecraftForge v10.13.4.1614 Initialized\nCrucible DummyMod injected successfully!\n[Server thread/INFO]: Done (0.1s)!\n";
@@ -126,7 +126,7 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false,
     }
     return $managed;
 };
-$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $bootLog, $crucibleBootLog, $targetConsole) {
+$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$syncFail, $bootLog, $crucibleBootLog, $targetConsole) {
     $url = $request->url(); preg_match('~/api/servers/([a-f0-9-]+)~', $url, $m); $uuid = $m[1] ?? ''; check(isset($systems[$uuid]), 'Unexpected native fixture server');
     $sys = &$systems[$uuid]; $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
     $path = parse_url($url, PHP_URL_PATH); parse_str(parse_url($url, PHP_URL_QUERY) ?? '', $q);
@@ -137,6 +137,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
         return Http::response(['data' => $sys['console'] ?? ['Original console before the update']], 200, $headers);
     }
     if (str_ends_with($path, '/sync')) {
+        if ($syncFail) { return Http::response([], 500, $headers); }
         $cfg = app(\App\Services\Servers\ServerConfigurationStructureService::class)->handle(Server::where('uuid', $uuid)->firstOrFail());
         $sys['configuration'] = array_replace(['crash_detection_enabled' => true], $cfg);
         return Http::response([], 204, $headers);
@@ -197,6 +198,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
             if ($mode === 'crucible_drift') { $sys['modes']['java9args.txt'] = 0600; }
         }
         else {
+            $sys['boot_started'] = microtime(true); $sys['polls_since_start'] = 0;
             $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot', 'root_args_failed_boot', 'rollback_log_grows', 'diagnostic_unavailable', 'stale_console'], true) && $sys['starts'] === 1;
             $sys['state'] = $fail ? 'offline' : 'running';
             if ($fail) {
@@ -211,6 +213,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
                     $log = $crucibleBootLog();
                     if ($mode === 'crucible_wrong_boot' && $sys['starts'] === 1) { $log = str_replace('Crucible', 'stock Forge', $log); }
                 }
+                $log .= "\nBoot instance ".$sys['starts']."\n";
                 if (in_array($mode, ['target_log_grows', 'rollback_log_grows', 'recovery_log_grows'], true)) {
                     $sys['pending_boot_log'] = $log;
                     $log = substr($log, 0, strpos($log, '[Server thread/INFO]'));
@@ -252,10 +255,12 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
         $callback->attributes->set('node', Node::findOrFail(1)); app(BackupStatusController::class)->restore($callback, $backupUuid);
         return Http::response([], 202, $headers);
     }
-    return Http::response(['state' => $sys['state'], 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => 60000]], 200, $headers);
+    $observedState = $sys['state'];
+    if ($observedState === 'offline' && $sys['starts'] === 1 && ($sys['polls_since_start'] ?? 0) === 0) { $sys['polls_since_start'] = 1; $observedState = 'starting'; }
+    return Http::response(['state' => $observedState, 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => max(1, (microtime(true) - ($sys['boot_started'] ?? (microtime(true) - 60))) * 1000)]], 200, $headers);
 };
 try {
-    foreach ([
+    foreach ((getenv('ARCTURUS_RECOVERY_ONLY') ? [] : [
         ['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'],
         ['partial batch 204 rollback', false, 'batch_partial'], ['no-op batch 204 rollback', false, 'batch_noop'],
         ['runtime/image rollback', true, 'failed_boot'], ['target boot with growing log', true, 'target_log_grows'], ['rollback boot with growing log', true, 'rollback_log_grows'],
@@ -269,7 +274,7 @@ try {
         ['GTNH retains Crucible', false, 'crucible_success'], ['GTNH rejects wrong boot and rolls back', false, 'crucible_wrong_boot'],
         ['GTNH blocks launcher permission drift', false, 'crucible_drift'],
         ['root args migration', true, 'root_args_success'], ['root args migration rollback', true, 'root_args_failed_boot'],
-    ] as [$label, $migration, $scenario]) {
+    ]) as [$label, $migration, $scenario]) {
         // Keep only one scenario's HTTP recordings and stream responses in memory.
         Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
         $mode = $scenario; $crucible = str_starts_with($scenario, 'crucible_'); Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_'), str_starts_with($scenario, 'drift_'), $crucible); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
@@ -530,6 +535,85 @@ try {
         check(count($requests) === $count, 'Duplicate delivery replayed a native transaction');
         echo $label." native transaction passed\n";
     }
+
+    // Recreate a retained recovery after an actually successful original boot, without inferring power ordering.
+    Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
+    Schema::create('roles', function (Blueprint $t) { $t->id(); $t->string('name'); $t->string('guard_name'); $t->timestamps(); });
+    Schema::create('model_has_roles', function (Blueprint $t) { $t->unsignedBigInteger('role_id'); $t->string('model_type'); $t->unsignedBigInteger('model_id'); });
+    DB::table('roles')->insert(['id'=>1,'name'=>\App\Models\Role::ROOT_ADMIN,'guard_name'=>'web']);
+    DB::table('model_has_roles')->insert(['role_id'=>1,'model_type'=>(new \App\Models\User)->getMorphClass(),'model_id'=>1]);
+    $mode = 'crucible_wrong_boot'; Auth::guard()->setUser($adminUser); $orphan = $make(false, false, false, true);
+    app(\Arcturus\ModpackManager\Services\ServerPolicyService::class)->save($orphan, [...$orphan->file_rules, ['scope'=>'exact','pattern'=>'java9args.txt','mode'=>'protect'], ['scope'=>'exact','pattern'=>'lwjgl3ify-forgePatches.jar','mode'=>'protect']], [], $orphan->policy_revision, ['keep_existing_crucible_runtime'=>true]);
+    $orphan->refresh();
+    $orphanPlan = app(PreviewService::class)->generate($orphan);
+    $orphanOp = app(DeploymentApproval::class)->queue($orphan, $orphanPlan['plan_sha256'], (string) Str::uuid());
+    Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep:0,timeout:0));
+    $orphanOp->refresh(); $orphan->refresh(); $ouuid = $orphan->pelican_server_uuid;
+    check($orphanOp->phase==='restored', 'Original fixture startup did not complete');
+    $originalContext = $orphanOp->context;
+    $resetOrphan = function (bool $legacy = false) use ($orphanOp, $orphan, $ouuid, $originalContext, &$systems): void {
+        $orphanOp->refresh(); $orphan->refresh();
+        $ctx = $originalContext; $ctx['from']='2.8.1'; $ctx['to']='2.9.0';
+        if ($legacy) {
+            unset($ctx['native_restore_confirmation'], $ctx['native_original_files_verified'], $ctx['native_boot_attempts']);
+            $ctx['native_recovery_attempt']=1; $ctx['native_checkpoint']=['step'=>'boot_start_intent'];
+            $old='logs/.arcturus-before-'.$orphanOp->id.'-old.log';
+            $systems[$ouuid]['data']['logs/.arcturus-before-'.$orphanOp->node_operation_id.'-r1.log']=$systems[$ouuid]['data'][$old];
+        }
+        $orphanOp->update(['phase'=>'manual_intervention','context'=>$ctx,'completed_at'=>now(),'error'=>'Queue worker timed out after 10800 seconds; startup verification was not attributable']);
+        $orphan->update(['active_operation_id'=>$orphanOp->id]); $systems[$ouuid]['state']='running'; $systems[$ouuid]['configuration']['suspended']=true;
+    };
+    $forbidden = fn ($rows) => array_filter($rows, fn ($r) => preg_match('~/(?:power|restore|files/(?:write|rename|chmod|delete|create-directory))$~', $r[1]));
+    $verifier = app(\Arcturus\ModpackManager\Native\RunningOriginal::class);
+    foreach ([false,true] as $legacy) {
+        $resetOrphan($legacy); $start=count($requests); $ctx=$orphanOp->getRawOriginal('context');
+        $dry=$verifier->run($orphanOp->id);
+        check($dry['verified'] && !$dry['applied'] && $orphanOp->fresh()->getRawOriginal('context')===$ctx, 'Dry run changed retained recovery evidence');
+        check(!$forbidden(array_slice($requests,$start)) && !array_filter(array_slice($requests,$start),fn($r)=>str_ends_with($r[1],'/sync')), 'Dry run mutated server');
+        $result=$verifier->run($orphanOp->id,true,1);
+        check($result['applied'] && $orphanOp->fresh()->phase==='restored' && $orphan->fresh()->active_operation_id===null && !$systems[$ouuid]['configuration']['suspended'], 'Running original did not release modpack suspension');
+        check(!$forbidden(array_slice($requests,$start)), 'Finalization issued power/restore/file writes');
+    }
+    $resetOrphan(); $start=count($requests);
+    $foreign=\Illuminate\Support\Facades\Cache::lock('arcturus-modpack-manager-deploy-'.$orphan->id,14400); check($foreign->get(),'Cannot acquire foreign test lease');
+    rejects(fn()=>$verifier->run($orphanOp->id,true,1),'Foreign lease accepted');
+    $orphanOp->update(['phase'=>'checking_recovery','completed_at'=>null]);
+    app(\Arcturus\ModpackManager\Native\RecoveryVerification::class)->run($orphanOp);
+    (new \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery($orphanOp->id))->failed(null);
+    $foreign->release(); check(count($requests)===$start && $orphanOp->fresh()->phase==='checking_recovery','Failed lease acquisition stopped or changed another worker server');
+    $resetOrphan();
+    $staleJob = new \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery($orphanOp->id);
+    $orphanOp->update(['phase'=>'recovery_queued','completed_at'=>null,'context'=>[...$orphanOp->context,'native_execution_id'=>bin2hex(random_bytes(16))]]);
+    $newAttemptContext = $orphanOp->getRawOriginal('context'); $start=count($requests);
+    $staleJob->handle(app(\Arcturus\ModpackManager\Services\PelicanPowerController::class)); $staleJob->failed(null);
+    check(count($requests)===$start && $orphanOp->fresh()->phase==='recovery_queued' && $orphanOp->fresh()->getRawOriginal('context')===$newAttemptContext,'Stale job or failure callback took over a newer recovery');
+    foreach (['callback','runtime','backup','instance','archive'] as $bad) {
+        $resetOrphan(); $savedContext=$orphanOp->context; $savedLog=$systems[$ouuid]['data']['logs/latest.log']; $savedBoot=$systems[$ouuid]['boot_started']; $savedArchive=$systems[$ouuid]['data']['logs/.arcturus-before-'.$orphanOp->id.'-old.log'];
+        if($bad==='callback')$orphanOp->update(['context'=>[...$savedContext,'native_restore_confirmation'=>[...$savedContext['native_restore_confirmation'],'callback_id'=>999999]]]);
+        if($bad==='backup')$orphanOp->update(['context'=>[...$savedContext,'backup_uuid'=>(string)Str::uuid()]]);
+        if($bad==='instance')$systems[$ouuid]['boot_started']=microtime(true);
+        if($bad==='archive')unset($systems[$ouuid]['data']['logs/.arcturus-before-'.$orphanOp->id.'-old.log']);
+        if($bad==='runtime')$systems[$ouuid]['data']['logs/latest.log']=str_replace('Crucible','stock Forge',$savedLog);
+        $start=count($requests); rejects(fn()=>$verifier->run($orphanOp->id,true,1),'Bad proof accepted: '.$bad);
+        check(!$forbidden(array_slice($requests,$start)) && $orphanOp->fresh()->phase==='manual_intervention','Rejected evidence changed server state');
+        $systems[$ouuid]['data']['logs/latest.log']=$savedLog; $systems[$ouuid]['boot_started']=$savedBoot; $systems[$ouuid]['data']['logs/.arcturus-before-'.$orphanOp->id.'-old.log']=$savedArchive;
+    }
+    $resetOrphan(); $start=count($requests);
+    $app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(new \Arcturus\ModpackManager\Console\Commands\VerifyRunningOriginal);
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:verify-running-original',['operation'=>$orphanOp->id])===0,'CLI default inspection failed');
+    check($orphanOp->fresh()->phase==='manual_intervention' && !$forbidden(array_slice($requests,$start)),'CLI default inspection mutated recovery');
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:verify-running-original',['operation'=>$orphanOp->id,'--apply'=>true])!==0,'CLI apply accepted no root actor');
+    rejects(fn()=>$verifier->run($orphanOp->id,true,1,true),'Sync-only closed an unverified recovery');
+    $orphan->pelicanServer->update(['status'=>\App\Enums\ServerState::Suspended]);
+    rejects(fn()=>$verifier->run($orphanOp->id,true,1),'Administrator suspension was overridden');
+    check($orphan->pelicanServer->fresh()->isSuspended(),'Administrator suspension changed');
+    $orphan->pelicanServer->update(['status'=>null]);
+    $resetOrphan(); $syncFail=true; $start=count($requests);
+    rejects(fn()=>$verifier->run($orphanOp->id,true,1),'Sync failure unexpectedly succeeded');
+    check($orphanOp->fresh()->phase==='restored' && $orphanOp->fresh()->context['running_original_sync_pending'] && $orphan->fresh()->active_operation_id===null,'Sync failure lost the verified recovery receipt');
+    $syncFail=false; $retry=$verifier->run($orphanOp->id,true,1,true);
+    check($retry['applied'] && !$orphanOp->fresh()->context['running_original_sync_pending'] && !$forbidden(array_slice($requests,$start)),'Sync retry restarted or restored the server');
+    echo "Running original finalization: new/legacy proof, dry run, foreign lease, failures and sync-only retry passed\n";
 
     Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
     $mode = 'success'; Auth::guard()->setUser($adminUser); $precheck = $make(false);

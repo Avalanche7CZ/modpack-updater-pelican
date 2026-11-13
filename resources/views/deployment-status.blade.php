@@ -11,6 +11,7 @@
             @endif
             @if($receiptReadable && $operation->phase === 'completed')<p class="mt-2 text-sm">Update completed. Minecraft reached a fresh startup marker.</p>@endif
             @if($receiptReadable && $operation->phase === 'restored')<p class="mt-2 text-sm">Update failed. Pelican confirmed the native restore; managed file hashes, original launcher settings and Minecraft startup were verified.</p>@endif
+            @if($context['running_original_sync_pending'] ?? false)<p class="mt-2 text-sm text-amber-600">Original installation verified; Wings configuration release is pending. Use Retry verified recovery sync. No restore or restart is needed.</p>@endif
             @if($operation->error)<p class="mt-2 break-words text-sm">{{ $operation->error }}</p>@endif
             @if(isset($context['native_target_boot_failure']) || isset($context['native_rollback_boot_failure']) || isset($context['native_recovery_boot_failure']))
                 <p class="mt-2 text-sm">Private startup diagnostics: <code>php artisan arcturus-modpack:boot-diagnostics {{ $operation->id }}</code></p>

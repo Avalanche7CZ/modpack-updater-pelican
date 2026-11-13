@@ -125,6 +125,24 @@ final class ViewManagedServer extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('verifyRunningOriginal')->label('Verify running original installation')->color('warning')
+                ->visible(fn () => $this->getRecord()->transport === 'native' && $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('kind', 'deploy')->where('phase', 'manual_intervention')->exists())
+                ->requiresConfirmation()->modalDescription('Verify the exact original backup, configuration, scoped files and current startup evidence. No stop, start, restore or log rotation. Close only a proven original recovery and synchronize Wings.')
+                ->action(function (): void {
+                    Access::requireAdmin();
+                    try {
+                        $result = app(\Arcturus\ModpackManager\Native\RunningOriginal::class)->run($this->getRecord()->active_operation_id, true, (int)auth()->id());
+                        $this->queued($result['message']);
+                    } catch (\Throwable $error) { report($error); Notification::make()->title('Running original verification not completed')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Inspect the private Panel log. If recovery is restored, retry only the configuration sync.')->danger()->send(); }
+                }),
+            Action::make('syncRunningOriginal')->label('Retry verified recovery sync')->color('warning')
+                ->visible(fn () => $this->getRecord()->transport === 'native' && !$this->getRecord()->active_operation_id && $this->getRecord()->operations()->where('phase', 'restored')->latest()->first()?->context['running_original_sync_pending'] ?? false)
+                ->action(function (): void {
+                    Access::requireAdmin();
+                    $operation = $this->getRecord()->operations()->where('phase', 'restored')->latest()->firstOrFail();
+                    try { $result = app(\Arcturus\ModpackManager\Native\RunningOriginal::class)->run($operation->id, true, (int)auth()->id(), true); $this->queued($result['message']); }
+                    catch (\Throwable $error) { report($error); Notification::make()->title('Recovery sync not confirmed')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Configuration sync remains pending. No power or restore was requested.')->danger()->send(); }
+                }),
             Action::make('verifyRecovery')->label(fn () => $this->getRecord()->transport === 'native' ? 'Recover original installation' : 'Verify restored original snapshot')->button()->color('warning')
                 ->visible(fn () => $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('kind', 'deploy')->where('phase', 'manual_intervention')->exists())
                 ->requiresConfirmation()->modalDescription(fn () => $this->getRecord()->transport === 'native' ? 'Restore the exact recorded native backup, preserve excluded backup directories and the retained launcher link, restore original launch settings, and verify a fresh Minecraft boot. An unverified server stays stopped. The update is never reapplied.' : 'First restore the exact locked Pelican backup while Minecraft is stopped. This verifies the original scoped receipt, returns any preserved excluded folders, and tests the original startup. It never reapplies the update.')

@@ -24,7 +24,7 @@ final class DeploymentApproval
             $operation = $fresh->operations()->lockForUpdate()->findOrFail($fresh->active_operation_id);
             if ($operation->phase === 'recovery_queued') { return $operation; }
             if ($operation->kind !== 'deploy' || $operation->phase !== 'manual_intervention') { throw new RuntimeException('Only a stopped deployment recovery checkpoint can be verified.'); }
-            $operation->update(['phase' => 'recovery_queued', 'completed_at' => null, 'heartbeat_at' => now(), 'context' => [...$operation->context, 'recovery_actor_id' => auth()->id(), 'native_execution_id' => bin2hex(random_bytes(16))],
+            $operation->update(['phase' => 'recovery_queued', 'completed_at' => null, 'heartbeat_at' => now(), 'error' => null, 'context' => [...$operation->context, 'previous_recovery_error' => $operation->error, 'recovery_actor_id' => auth()->id(), 'native_execution_id' => bin2hex(random_bytes(16))],
                 'progress' => ['message' => 'Administrator requested verification of the manually restored original snapshot']]);
             DB::afterCommit(function () use ($operation): void {
                 try { Bus::dispatch(new \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery($operation->id)); }
