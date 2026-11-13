@@ -9,6 +9,9 @@
             @if($receiptReadable && $operation->phase === 'completed')<p class="mt-2 text-sm">Update completed. Minecraft reached a fresh startup marker.</p>@endif
             @if($receiptReadable && $operation->phase === 'restored')<p class="mt-2 text-sm">Update failed. Pelican confirmed the native restore; managed file hashes, original launcher settings and Minecraft startup were verified.</p>@endif
             @if($operation->error)<p class="mt-2 break-words text-sm">{{ $operation->error }}</p>@endif
+            @if(isset($context['native_target_boot_failure']) || isset($context['native_rollback_boot_failure']) || isset($context['native_recovery_boot_failure']))
+                <p class="mt-2 text-sm">Private startup diagnostics: <code>php artisan arcturus-modpack:boot-diagnostics {{ $operation->id }}</code></p>
+            @endif
             @if($operation->phase === 'manual_intervention')
                 <p class="mt-2 text-sm">Keep Minecraft stopped. Check the locked backup and retained deployment journal before restoring. Do not retry Apply Update or delete recovery evidence. If Wings could not confirm stopped state, stop the server through the node first. After an operator restores the correct snapshot and original launch settings, use Verify restored original snapshot; it never reapplies the update.</p>
             @endif

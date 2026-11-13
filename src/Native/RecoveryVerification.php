@@ -67,7 +67,11 @@ final class RecoveryVerification
             $operation->update(['phase' => 'recovery_starting', 'context' => [...$operation->context, 'native_recovery_attempt' => $attempt]]);
             app(Runtime::class)->syncAndRequire($server, $original);
             $power->deploymentGuard($server, true);
-            app(Boot::class)->start($server, $files, $operation->node_operation_id.'-r'.base_convert((string) $attempt, 10, 36), $runtime, $journal, $heartbeat);
+            app(Boot::class)->start($server, $files, $operation->node_operation_id.'-r'.base_convert((string) $attempt, 10, 36), $runtime, $journal, $heartbeat,
+                function (array $evidence) use ($operation, $heartbeat, $attempt): void {
+                    $heartbeat();
+                    $operation->update(['context' => [...$operation->context, 'native_recovery_boot_failure' => [...$evidence, 'attempt' => $attempt]]]);
+                });
             app(Runtime::class)->requireSnapshot($server, $original);
             $managed->update(['last_error' => 'Previous native update failed; original backup, runtime settings and fresh Minecraft boot have now been verified.']);
             $operation->update(['error' => null, 'progress' => ['message' => 'Original installation recovered and startup verified']]);

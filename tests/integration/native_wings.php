@@ -83,6 +83,25 @@ try {
     $files->delete('candidate.jar'); // Safe leaf symlink removal during root recovery.
     check(! isset($data['candidate.jar']), 'Leaf link could not be removed for recovery');
 } finally { unlink($temp); }
+
+// The operator console is bounded independently of the game-file readers.
+Http::swap(new \Illuminate\Http\Client\Factory); Http::preventStrayRequests();
+$console = null;
+Http::fake(function ($request, array $options) use (&$console, $headers) {
+    check(str_ends_with(parse_url($request->url(), PHP_URL_PATH), '/logs'), 'Unexpected console diagnostic endpoint');
+    check(($options['stream'] ?? false) && ($options['allow_redirects'] ?? true) === false && ($options['read_timeout'] ?? null) === 1, 'Console request was not constrained');
+    return Http::response(['data' => $console], 200, $headers);
+});
+check($files->consoleTail() === [], 'An empty Wings console was not handled');
+$console = [str_repeat('a', 524289)];
+rejects(fn () => $files->consoleTail(), 'Oversized console response was accepted');
+$console = ['fresh stdout', 'fresh stderr'];
+check($files->consoleTail() === $console, 'Console response was not read');
+$evidence = new \Arcturus\ModpackManager\Native\BootFailureEvidence($files);
+$evidence->sample("Fresh Minecraft log\nLast sampled line\n");
+check($evidence->collect() === ['source' => 'startup_log_sample', 'text' => "Fresh Minecraft log\nLast sampled line\n"], 'The stable Minecraft log did not replace stale console output');
+$safe = \Arcturus\ModpackManager\Native\BootFailureEvidence::safeTail(str_repeat('ž', 9000)."\033[31m\r\0last\n");
+check(strlen($safe) <= 16384 && mb_check_encoding($safe, 'UTF-8') && str_ends_with($safe, "last\n") && ! str_contains($safe, "\033"), 'Console tail was not bounded UTF-8 plain text');
 // A linked ancestor is reported before opening any descendant or target.
 Http::swap(new \Illuminate\Http\Client\Factory); Http::preventStrayRequests();
 Http::fake(function ($request) use ($headers) {

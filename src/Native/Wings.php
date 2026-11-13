@@ -28,6 +28,34 @@ final class Wings implements Files
 
     private function repo(): DaemonFileRepository { return $this->daemon->setServer($this->server); }
 
+    /** Read Docker stdout/stderr via Wings, including for a stopped container. */
+    public function consoleTail(): array
+    {
+        $deadline = hrtime(true) + 3_000_000_000;
+        $response = $this->client()->connectTimeout(1)->timeout(3)->withOptions([
+            'stream' => true, 'read_timeout' => 1, 'allow_redirects' => false,
+        ])->get('/api/servers/'.$this->server->uuid.'/logs', ['size' => 60]);
+        $stream = $response->toPsrResponse()->getBody(); $data = ''; $limit = 524288;
+        try {
+            if ($response->status() !== 200) { throw new RuntimeException('Wings console is unavailable.'); }
+            while (! $stream->eof()) {
+                if (hrtime(true) >= $deadline) { throw new RuntimeException('Wings console read timed out.'); }
+                $chunk = $stream->read(min(16384, $limit + 1 - strlen($data)));
+                if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings console stream stalled.'); }
+                $data .= $chunk;
+                if (strlen($data) > $limit) { throw new RuntimeException('Wings console response exceeds the diagnostic limit.'); }
+            }
+        } finally { $stream->close(); }
+        $decoded = json_decode($data, true, 8, JSON_THROW_ON_ERROR);
+        if (! is_array($decoded) || ! array_key_exists('data', $decoded)) { throw new RuntimeException('Invalid Wings console response.'); }
+        $lines = $decoded['data'] ?? []; // Wings encodes an empty Go slice as null.
+        if (! is_array($lines) || ! array_is_list($lines) || count($lines) > 60) { throw new RuntimeException('Invalid Wings console lines.'); }
+        foreach ($lines as $line) {
+            if (! is_string($line)) { throw new RuntimeException('Invalid Wings console line.'); }
+        }
+        return $lines;
+    }
+
     public function listing(string $directory = ''): array
     {
         if ($directory !== '') { UpdatePlanner::assertPath($directory); }

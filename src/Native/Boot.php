@@ -9,10 +9,11 @@ use Arcturus\ModpackManager\Services\PelicanPowerController;
 use Arcturus\ModpackManager\Services\Pelican\GuardedDaemonServerRepository;
 use Arcturus\ModpackManager\Services\RuntimeInspector;
 use RuntimeException;
+use Throwable;
 
 final class Boot
 {
-    public function start(Server $server, Wings $files, string $id, array $target, \Closure $journal, ?\Closure $heartbeat = null): array
+    public function start(Server $server, Wings $files, string $id, array $target, \Closure $journal, ?\Closure $heartbeat = null, ?\Closure $onFailure = null): array
     {
         if (! preg_match('/^[a-z0-9-]{32,50}$/D', $id)) { throw new RuntimeException('Invalid startup checkpoint identity.'); }
         $power = app(PelicanPowerController::class);
@@ -22,28 +23,38 @@ final class Boot
         $journal(['step' => 'boot_log_retire_intent', 'saved' => $saved]);
         if ($files->stat($log) !== null) { $files->rename($log, $saved); }
         if ($files->stat($log) !== null) { throw new RuntimeException('Old startup log was not retired.'); }
+        $capture = $onFailure === null ? null : new BootFailureEvidence($files);
         $journal(['step' => 'boot_start_intent']);
-        GuardedDaemonServerRepository::controlledStart($server->uuid, fn () => app(DaemonServerRepository::class)->setServer($server)->power('start')->throw());
-        $deadline = microtime(true) + (int) config('arcturus-modpack-manager.deployment_start_timeout', 900);
-        while (microtime(true) < $deadline) {
-            $heartbeat?->__invoke(); sleep(1);
-            $state = $power->state($server);
-            if (in_array($state, ['exited', 'dead'], true)) { throw new RuntimeException('Minecraft exited during native startup verification.'); }
-            if ($files->stat($log) === null) { continue; }
-            try { $text = $files->read($log, 4194304); }
-            catch (TextChangedDuringInspection) {
-                // Minecraft is writing this log. Discard the read and retry on the
-                // next poll, within the same deadline and after checking power again.
-                continue;
+        try {
+            GuardedDaemonServerRepository::controlledStart($server->uuid, fn () => app(DaemonServerRepository::class)->setServer($server)->power('start')->throw());
+            $deadline = microtime(true) + (int) config('arcturus-modpack-manager.deployment_start_timeout', 900);
+            while (microtime(true) < $deadline) {
+                $heartbeat?->__invoke(); sleep(1);
+                $state = $power->state($server);
+                if (in_array($state, ['exited', 'dead'], true)) { throw new RuntimeException('Minecraft exited during native startup verification.'); }
+                if ($state === 'running') { $capture?->observedRunning(); }
+                if ($files->stat($log) === null) { continue; }
+                try { $text = $files->read($log, 4194304); }
+                catch (TextChangedDuringInspection) {
+                    // Discard the raced read and poll again within the same deadline.
+                    continue;
+                }
+                $capture?->sample($text);
+                if ($state !== 'running' || ! preg_match('/\bDone \([\d.]+s\)!/i', $text)) { continue; }
+                $observed = (new RuntimeInspector)->fromStartupLog($text);
+                foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
+                    if (isset($target[$key]) && $observed[$key] !== $target[$key]) { throw new RuntimeException('Fresh Minecraft boot did not confirm target '.$key.'. Keep this runtime blocked until its boot evidence can be verified.'); }
+                }
+                $journal(['step' => 'boot_verified', 'runtime' => $observed]);
+                return [...$target, ...$observed, 'java_confidence' => 'verified'];
             }
-            if ($state !== 'running' || ! preg_match('/\bDone \([\d.]+s\)!/i', $text)) { continue; }
-            $observed = (new RuntimeInspector)->fromStartupLog($text);
-            foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
-                if (isset($target[$key]) && $observed[$key] !== $target[$key]) { throw new RuntimeException('Fresh Minecraft boot did not confirm target '.$key.'. Keep this runtime blocked until its boot evidence can be verified.'); }
+            throw new RuntimeException('Minecraft did not produce a fresh Done marker before timeout.');
+        } catch (Throwable $error) {
+            // Diagnostics must never mask the boot error or prevent rollback.
+            if ($capture !== null) {
+                try { $onFailure($capture->collect()); } catch (Throwable) { }
             }
-            $journal(['step' => 'boot_verified', 'runtime' => $observed]);
-            return [...$target, ...$observed, 'java_confidence' => 'verified'];
+            throw $error;
         }
-        throw new RuntimeException('Minecraft did not produce a fresh Done marker before timeout.');
     }
 }

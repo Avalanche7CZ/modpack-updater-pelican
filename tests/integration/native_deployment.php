@@ -30,6 +30,7 @@ $egg->docker_images = ['Java 21' => 'fixture:java_21', 'Java 25' => 'fixture:jav
 $systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = [];
 $hash = fn ($value) => hash('sha256', $value);
 $bootLog = fn ($mc, $version, $java) => "ModLauncher running: args [--fml.neoForgeVersion, $version, --fml.mcVersion, $mc]\nModLauncher 10.0.9 starting: java version $java.0.1\n[Server thread/INFO]: Done (0.1s)!\n";
+$targetConsole = "\033[31mTarget launcher failed <error>before creating latest.log</error>\033[0m\r";
 $make = function (bool $migration, bool $installer = false) use (&$systems, &$stages, $bootLog, $hash): ManagedServer {
     $uuid = (string) Str::uuid(); $id = bin2hex(random_bytes(16));
     $args = fn ($mc, $v) => "-p libraries/fixture/runtime.jar --fml.neoForgeVersion $v --fml.mcVersion $mc";
@@ -63,11 +64,16 @@ $make = function (bool $migration, bool $installer = false) use (&$systems, &$st
         'configuration' => ['invocation' => $startup, 'container' => ['image' => 'fixture:java_21'], 'suspended' => false, 'crash_detection_enabled' => true]];
     return $managed;
 };
-$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $bootLog) {
+$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $bootLog, $targetConsole) {
     $url = $request->url(); preg_match('~/api/servers/([a-f0-9-]+)~', $url, $m); $uuid = $m[1] ?? ''; check(isset($systems[$uuid]), 'Unexpected native fixture server');
     $sys = &$systems[$uuid]; $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
     $path = parse_url($url, PHP_URL_PATH); parse_str(parse_url($url, PHP_URL_QUERY) ?? '', $q);
     $requests[] = [$request->method(), $path, $q];
+    if (str_ends_with($path, '/logs')) {
+        check($request->method() === 'GET' && ($q['size'] ?? '') === '60', 'Console was not queried with a bounded read');
+        if ($mode === 'diagnostic_unavailable' && $sys['starts'] > 0) { return Http::response(['error' => 'private remote failure body'], 500, $headers); }
+        return Http::response(['data' => $sys['console'] ?? ['Original console before the update']], 200, $headers);
+    }
     if (str_ends_with($path, '/sync')) {
         $cfg = app(\App\Services\Servers\ServerConfigurationStructureService::class)->handle(Server::where('uuid', $uuid)->firstOrFail());
         $sys['configuration'] = array_replace(['crash_detection_enabled' => true], $cfg);
@@ -122,10 +128,14 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
     if (str_ends_with($path, '/power')) {
         if ($request['action'] === 'stop') { $sys['state'] = 'offline'; }
         else {
-            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot', 'root_args_failed_boot', 'rollback_log_grows'], true) && $sys['starts'] === 1;
+            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot', 'root_args_failed_boot', 'rollback_log_grows', 'diagnostic_unavailable', 'stale_console'], true) && $sys['starts'] === 1;
             $sys['state'] = $fail ? 'offline' : 'running';
-            if ($fail) { $sys['data']['world/region/new-failed-boot.mca'] = 'must disappear on full recovery'; }
+            if ($fail) {
+                $sys['data']['world/region/new-failed-boot.mca'] = 'must disappear on full recovery';
+                if ($mode !== 'stale_console') { $sys['console'] = [$targetConsole]; }
+            }
             else {
+                $sys['console'] = ['Original or target boot continued normally'];
                 $server = Server::where('uuid', $uuid)->firstOrFail(); $new = str_contains($server->startup, '/26.1.2.121/');
                 $log = $bootLog($new ? '26.1.2' : '1.21.1', $new ? '26.1.2.121' : '21.1.1', str_contains($server->image, '25') ? 25 : 21);
                 if (in_array($mode, ['target_log_grows', 'rollback_log_grows', 'recovery_log_grows'], true)) {
@@ -149,6 +159,12 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
         return Http::response([], 202, $headers);
     }
     if (str_ends_with($path, '/restore')) {
+        if (in_array($mode, ['failed_boot', 'diagnostic_unavailable', 'stale_console'], true)) {
+            $managed = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
+            $evidence = Operation::findOrFail($managed->active_operation_id)->context['native_target_boot_failure'] ?? [];
+            $expected = $mode === 'failed_boot' ? ['source' => 'wings_console', 'text' => 'Target launcher failed <error>before creating latest.log</error>'] : ['source' => 'unavailable', 'text' => ''];
+            check($evidence === $expected, 'Target failure evidence was missing, stale or unsafe at restore time');
+        }
         check($request['truncate_directory'] === false && $sys['state'] === 'offline', 'Native restore truncated exclusions or ran online');
         check(str_contains($sys['configuration']['invocation'], 'recovery verification pending'), 'Restore lacked an inert recovery startup barrier');
         check(! array_filter(array_keys($sys['data']), fn ($p) => $p !== 'backups/previous.zip' && ! str_starts_with($p, '.arcturus-recovery-')), 'Root was not completely cleared before nontruncating restore');
@@ -165,6 +181,7 @@ try {
     foreach ([
         ['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'],
         ['runtime/image rollback', true, 'failed_boot'], ['target boot with growing log', true, 'target_log_grows'], ['rollback boot with growing log', true, 'rollback_log_grows'],
+        ['rollback with console API failure', false, 'diagnostic_unavailable'], ['rollback with stale console', false, 'stale_console'],
         ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'],
         ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'],
         ['disabled destination collision', false, 'disable_collision'], ['missing implicit runtime dependency', true, 'missing_core'],
@@ -295,6 +312,14 @@ try {
         $operation = app(DeploymentApproval::class)->queue($managed, $preview['plan_sha256'], (string) Str::uuid());
         Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
         $operation->refresh(); $managed->refresh();
+        if ($scenario === 'failed_boot') {
+            $app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(new \Arcturus\ModpackManager\Console\Commands\BootDiagnostics);
+            $requestCount = count($requests); $contextBefore = $operation->getRawOriginal('context');
+            check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:boot-diagnostics', ['operation' => $operation->id]) === 0, 'Private diagnostics command failed');
+            $output = \Illuminate\Support\Facades\Artisan::output();
+            check(str_contains($output, 'Target launcher failed <error>before creating latest.log</error>') && ! str_contains($output, 'Original console'), 'The operator did not receive the exact failed target output');
+            check(count($requests) === $requestCount && $operation->fresh()->getRawOriginal('context') === $contextBefore, 'Diagnostics command contacted Wings or modified the receipt');
+        }
         if (in_array($scenario, ['failed_restore', 'interrupted'], true)) {
             check($operation->phase === 'manual_intervention' && $systems[$uuid]['state'] === 'offline' && $managed->active_operation_id === $operation->id,
                 'Interrupted/unverified operation was released: '.$operation->error);

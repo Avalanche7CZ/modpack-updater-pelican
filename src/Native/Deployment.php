@@ -46,6 +46,12 @@ final class Deployment
         $phase = function (string $value, string $message, array $context = []) use (&$operation, $heartbeat): void {
             $heartbeat(); $operation->update(['phase' => $value, 'progress' => ['message' => $message], 'context' => [...$operation->context, ...$context]]);
         };
+        $bootFailure = function (string $role) use (&$operation, $heartbeat): \Closure {
+            return function (array $evidence) use (&$operation, $heartbeat, $role): void {
+                $heartbeat();
+                $operation->update(['context' => [...$operation->context, 'native_'.$role.'_boot_failure' => $evidence]]);
+            };
+        };
         try {
             $managed = ManagedServer::findOrFail($job->managedServerId);
             if (! $job->operationId) { throw new RuntimeException('Native deployment requires a durable exact-plan approval receipt.'); }
@@ -102,7 +108,7 @@ final class Deployment
             app(Runtime::class)->syncAndRequire($server, $expected);
             $phase('starting', 'Verifying a fresh Minecraft boot and the exact target runtime');
             $power->deploymentGuard($server, true);
-            $actualRuntime = app(Boot::class)->start($server, $files, $operation->id, $runtime['target'], $checkpoint, $heartbeat);
+            $actualRuntime = app(Boot::class)->start($server, $files, $operation->id, $runtime['target'], $checkpoint, $heartbeat, $bootFailure('target'));
             app(Runtime::class)->requireSnapshot($server, $expected);
             $event = DB::transaction(function () use ($managed, $target, $operation, $actualRuntime, $backup, $after) {
                 $from = $managed->installed_version;
@@ -145,7 +151,7 @@ final class Deployment
                         app(Runtime::class)->syncAndRequire($server, $original);
                         $phase('restarting_original', 'Verifying the original installation after confirmed native restore');
                         $power->deploymentGuard($server, true);
-                        app(Boot::class)->start($server, $files, $operation->id.'-old', $preview['qualification']['current'], $checkpoint, $heartbeat);
+                        app(Boot::class)->start($server, $files, $operation->id.'-old', $preview['qualification']['current'], $checkpoint, $heartbeat, $bootFailure('rollback'));
                         app(Runtime::class)->requireSnapshot($server, $original);
                         $restored = true; $recovery = 'Exact locked backup, original runtime settings and fresh original boot verified.';
                     } else { $recovery = 'No game-file deployment began. Confirm any pending native backup before releasing maintenance.'; }

@@ -48,6 +48,10 @@ If deletion, callback, hashes, launch settings or original boot cannot be confir
 
 Locked recovery backups and unrelated backups are never pruned by this workflow. Backup quotas are respected.
 
+For a failed native deployment boot, the worker asks Wings for the failed container's console tail **before** the rollback can replace the container. It keeps a short private sample in the encrypted operation receipt, separately for the target, automatic rollback and latest failed manual recovery. If the console is unavailable or matches the pre-start console, it uses the last stable sample of the fresh `logs/latest.log`, if one was read. Failure to collect diagnostics never blocks recovery. The console tail is not sent to Discord, written to the application log, or included in Copy diagnostics.
+
+From the Panel host, run `sudo -u www-data php artisan arcturus-modpack:boot-diagnostics <operation-uuid>` in the Panel directory. This is read-only and does not contact Wings or replay the update. Console output can contain sensitive values. Review it before sharing. The command cannot retrieve output for failures before this feature was installed.
+
 ## Validation boundary
 
 A real checksummed NeoForge 21.1.172 installer was executed successfully under Java 21 in a disposable filesystem/PID sandbox, generating its patched server JAR and runtime libraries. The executor maps system-package ownership to UID 65534, so the scratch smoke harness adapts that identity only; production still requires root-owned tools. This exercised actual installer output, not a Minecraft boot.
