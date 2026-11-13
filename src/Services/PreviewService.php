@@ -49,6 +49,7 @@ final class PreviewService
         $rules = $server->file_rules ?? [];
         $safetyRoots = array_merge($server->runtime_report['protected_roots'] ?? [], (new DirectoryPolicy)->protectedRoots($server, $base, $target));
         $metadata = [];
+        $fullBase = $base;
         $fullTarget = $target;
         $upstreamIdentities = (new ModIdentityMappings)->apply(['base' => $base['identities'] ?? [], 'target' => $target['identities'] ?? []],
             $server->mod_identity_mappings ?? [], ['base' => $base['files'], 'target' => $target['files'], 'local' => []]);
@@ -106,7 +107,9 @@ final class PreviewService
             try {
                 $lastPulse = 0;
                 $pulse = $operation ? function () use ($operation, &$lastPulse): void { if (time() - $lastPulse >= 10) { $operation->update(['heartbeat_at' => now()]); $lastPulse = time(); } } : null;
-                $qualification = app($native ? \Arcturus\ModpackManager\Native\Qualification::class : SameHostDeployment::class)->qualify($server, $fullTarget, $plan, $pulse);
+                $qualification = $native
+                    ? app(\Arcturus\ModpackManager\Native\Qualification::class)->qualify($server, $fullTarget, $plan, $pulse, $fullBase)
+                    : app(SameHostDeployment::class)->qualify($server, $fullTarget, $plan, $pulse);
             } catch (\Throwable $error) {
                 if (get_class($error) !== \RuntimeException::class) { report($error); }
                 $qualificationError = get_class($error) === \RuntimeException::class ? $error->getMessage()

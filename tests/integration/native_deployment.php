@@ -30,6 +30,17 @@ $egg->docker_images = ['Java 21' => 'fixture:java_21', 'Java 25' => 'fixture:jav
 $systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = [];
 $hash = fn ($value) => hash('sha256', $value);
 $bootLog = fn ($mc, $version, $java) => "ModLauncher running: args [--fml.neoForgeVersion, $version, --fml.mcVersion, $mc]\nModLauncher 10.0.9 starting: java version $java.0.1\n[Server thread/INFO]: Done (0.1s)!\n";
+$crucibleBootLog = fn () => "Forge Mod Loader version 7.99.40.1614 for Minecraft 1.7.10 loading\nJava is OpenJDK, version 25.0.1\nMinecraftForge v10.13.4.1614 Initialized\nCrucible DummyMod injected successfully!\n[Server thread/INFO]: Done (0.1s)!\n";
+$crucibleJar = function (string $forge = '10.13.4.1614'): string {
+    $file = tempnam(sys_get_temp_dir(), 'arcturus-crucible-fixture-');
+    try {
+        $zip = new ZipArchive;
+        check($zip->open($file, ZipArchive::OVERWRITE) === true, 'Cannot create Crucible fixture');
+        $zip->addFromString('META-INF/MANIFEST.MF', "Manifest-Version: 1.0\r\nImplementation-Title: Crucible\r\nForge-Version: $forge\r\nMain-Class: cpw.mods.fml.relauncher.ServerLaunchWrapper\r\n\r\n");
+        $zip->close();
+        return file_get_contents($file);
+    } finally { unlink($file); }
+};
 $targetConsole = "\033[31mTarget launcher failed <error>before creating latest.log</error>\033[0m\r";
 $almanac = fn ($v) => 'mods/almanac-forge-1.20.1-'.$v.'.jar';
 $letMeDespawn = fn ($v) => 'mods/letmedespawn-forge-1.20.1-'.$v.'.jar';
@@ -43,7 +54,7 @@ $fixtureModJar = function (string $mod, string $version): string {
         return file_get_contents($path);
     } finally { unlink($path); }
 };
-$make = function (bool $migration, bool $installer = false, bool $drift = false) use (&$systems, &$stages, $bootLog, $hash, $fixtureModJar, $almanac, $letMeDespawn): ManagedServer {
+$make = function (bool $migration, bool $installer = false, bool $drift = false, bool $crucible = false) use (&$systems, &$stages, $bootLog, $crucibleBootLog, $crucibleJar, $hash, $fixtureModJar, $almanac, $letMeDespawn): ManagedServer {
     $uuid = (string) Str::uuid(); $id = bin2hex(random_bytes(16));
     $args = fn ($mc, $v) => "-p libraries/fixture/runtime.jar --fml.neoForgeVersion $v --fml.mcVersion $mc";
     $oldArgs = 'libraries/net/neoforged/neoforge/21.1.1/unix_args.txt';
@@ -58,9 +69,18 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false)
     }
     if ($migration) { unset($target[$oldArgs]); if (! $installer) { $target[$newArgs] = $args('26.1.2', '26.1.2.121'); $target['libraries/net/neoforged/neoforge/26.1.2.121/neoforge-26.1.2.121-server.jar'] = 'published patched server fixture'; } }
     $runtime = ['minecraft' => $migration ? '26.1.2' : '1.21.1', 'loader' => 'neoforge', 'loader_version' => $migration ? '26.1.2.121' : '21.1.1'];
-    $manifest = fn ($version, $files, $runtime) => ['schema' => 2, 'provider' => 'custom', 'project' => 'native-fixture', 'version' => $version, 'verification' => 'upstream-checksums',
+    $baselineRuntime = ['minecraft' => '1.21.1', 'loader' => 'neoforge', 'loader_version' => '21.1.1'];
+    if ($crucible) {
+        $base = ['config/options.cfg' => 'old', 'java9args.txt' => '-Dfixture=upstream', 'lwjgl3ify-forgePatches.jar' => 'old upstream launcher',
+            'forge-1.7.10-10.13.4.1614-1.7.10-universal.jar' => 'shared upstream forge'];
+        $target = [...$base, 'config/options.cfg' => 'new', 'config/added.cfg' => 'new added file',
+            'java9args.txt' => '-Dfixture=target', 'lwjgl3ify-forgePatches.jar' => 'new upstream launcher'];
+        $baselineRuntime = ['minecraft' => '1.7.10', 'java' => 17, 'java_max' => 25];
+        $runtime = [...$baselineRuntime, 'java_max' => 26];
+    }
+    $manifest = fn ($version, $files, $runtime) => ['schema' => 2, 'provider' => $crucible ? 'gtnh' : 'custom', 'project' => $crucible ? 'gtnh' : 'native-fixture', 'version' => $version, 'verification' => 'upstream-checksums',
         'files' => array_map($hash, $files), 'runtime' => $runtime, 'artifacts' => [['sha256' => $hash($version), 'hashes' => ['sha256' => $hash($version)]]]];
-    $baseManifest = $manifest('1', $base, ['minecraft' => '1.21.1', 'loader' => 'neoforge', 'loader_version' => '21.1.1']);
+    $baseManifest = $manifest('1', $base, $baselineRuntime);
     $targetManifest = $manifest('2', $target, $runtime);
     if ($drift) {
         foreach ([&$baseManifest, &$targetManifest] as &$item) {
@@ -76,8 +96,10 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false)
         unset($item);
     }
     $startup = $migration ? 'java -Xms128M @'.$oldArgs.' nogui' : 'java -Xms128M @unix_args.txt nogui';
-    DB::table('servers')->insert(['uuid' => $uuid, 'name' => 'Native fixture', 'node_id' => 1, 'owner_id' => 1, 'startup' => $startup, 'image' => 'fixture:java_21', 'created_at' => now()->subMinutes(2), 'updated_at' => now()->subMinutes(2)]);
-    $managed = ManagedServer::create(['label' => 'Native fixture', 'pelican_server_uuid' => $uuid, 'provider' => 'custom', 'source' => 'native-fixture', 'transport' => 'native',
+    if ($crucible) { $startup = 'java -Xms128M -XX:MaxRAMPercentage=95.0 -jar @java9args.txt -jar Crucible-1.7.10-server.jar nogui'; }
+    $image = $crucible ? 'fixture:java_25' : 'fixture:java_21';
+    DB::table('servers')->insert(['uuid' => $uuid, 'name' => 'Native fixture', 'node_id' => 1, 'owner_id' => 1, 'startup' => $startup, 'image' => $image, 'created_at' => now()->subMinutes(2), 'updated_at' => now()->subMinutes(2)]);
+    $managed = ManagedServer::create(['label' => 'Native fixture', 'pelican_server_uuid' => $uuid, 'provider' => $baseManifest['provider'], 'source' => $baseManifest['project'], 'transport' => 'native',
         'installed_version' => '1', 'selected_version' => '2', 'baseline_status' => 'verified', 'base_manifest_path' => app(ReleaseStore::class)->put($baseManifest),
         'target_manifest_path' => app(ReleaseStore::class)->put($targetManifest), 'baseline_provenance' => ['transport' => 'local'],
         'runtime_report' => ['world_path_verified' => true, 'protected_roots' => ['world']], 'adopted_at' => now(), 'enabled' => true, 'backup_mode' => 'pelican',
@@ -92,14 +114,19 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false)
         'mods/Paradigm.jar' => 'custom paradigm', 'mods/ArcturusTokens.jar' => 'custom tokens', 'mods/disabled.jar.disabled' => 'disabled mod',
         'kubejs/server_scripts/local.js' => 'custom script', 'world/level.dat' => 'world data', 'world/region/r.0.0.mca' => 'old region',
         'backups/previous.zip' => 'excluded archive', 'logs/latest.log' => $bootLog('1.21.1', '21.1.1', 21)],
-        'configuration' => ['invocation' => $startup, 'container' => ['image' => 'fixture:java_21'], 'suspended' => false, 'crash_detection_enabled' => true]];
+        'configuration' => ['invocation' => $startup, 'container' => ['image' => $image], 'suspended' => false, 'crash_detection_enabled' => true]];
     if ($drift) {
         unset($systems[$uuid]['data'][$almanac('1.26.10.3')]);
         $systems[$uuid]['data'][$almanac('1.26.10.2')] = $fixtureModJar('almanac', '1.26.10.2');
     }
+    if ($crucible) {
+        $systems[$uuid]['data']['Crucible-1.7.10-server.jar'] = $crucibleJar();
+        $systems[$uuid]['data']['java9args.txt'] = "-Dcrucible.weAreJava9=true\n--add-opens\njava.base/java.io=ALL-UNNAMED\n";
+        $systems[$uuid]['data']['logs/latest.log'] = $crucibleBootLog();
+    }
     return $managed;
 };
-$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $bootLog, $targetConsole) {
+$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $bootLog, $crucibleBootLog, $targetConsole) {
     $url = $request->url(); preg_match('~/api/servers/([a-f0-9-]+)~', $url, $m); $uuid = $m[1] ?? ''; check(isset($systems[$uuid]), 'Unexpected native fixture server');
     $sys = &$systems[$uuid]; $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
     $path = parse_url($url, PHP_URL_PATH); parse_str(parse_url($url, PHP_URL_QUERY) ?? '', $q);
@@ -161,7 +188,10 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
         return Http::response([], 204, $headers);
     }
     if (str_ends_with($path, '/power')) {
-        if ($request['action'] === 'stop') { $sys['state'] = 'offline'; }
+        if ($request['action'] === 'stop') {
+            $sys['state'] = 'offline';
+            if ($mode === 'crucible_drift') { $sys['modes']['java9args.txt'] = 0600; }
+        }
         else {
             $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot', 'root_args_failed_boot', 'rollback_log_grows', 'diagnostic_unavailable', 'stale_console'], true) && $sys['starts'] === 1;
             $sys['state'] = $fail ? 'offline' : 'running';
@@ -173,6 +203,10 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
                 $sys['console'] = ['Original or target boot continued normally'];
                 $server = Server::where('uuid', $uuid)->firstOrFail(); $new = str_contains($server->startup, '/26.1.2.121/');
                 $log = $bootLog($new ? '26.1.2' : '1.21.1', $new ? '26.1.2.121' : '21.1.1', str_contains($server->image, '25') ? 25 : 21);
+                if (str_contains($server->startup, 'Crucible-1.7.10-server.jar')) {
+                    $log = $crucibleBootLog();
+                    if ($mode === 'crucible_wrong_boot' && $sys['starts'] === 1) { $log = str_replace('Crucible', 'stock Forge', $log); }
+                }
                 if (in_array($mode, ['target_log_grows', 'rollback_log_grows', 'recovery_log_grows'], true)) {
                     $sys['pending_boot_log'] = $log;
                     $log = substr($log, 0, strpos($log, '[Server thread/INFO]'));
@@ -224,11 +258,13 @@ try {
         ['TFG alternate Almanac JAR', false, 'drift_success'], ['duplicate Almanac IDs', false, 'drift_duplicate'],
         ['Almanac explicitly disabled', false, 'drift_disabled'], ['unverified Almanac candidate', false, 'drift_unverified'],
         ['Almanac filename lookalike', false, 'drift_lookalike'],
+        ['GTNH retains Crucible', false, 'crucible_success'], ['GTNH rejects wrong boot and rolls back', false, 'crucible_wrong_boot'],
+        ['GTNH blocks launcher permission drift', false, 'crucible_drift'],
         ['root args migration', true, 'root_args_success'], ['root args migration rollback', true, 'root_args_failed_boot'],
     ] as [$label, $migration, $scenario]) {
         // Keep only one scenario's HTTP recordings and stream responses in memory.
         Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
-        $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_'), str_starts_with($scenario, 'drift_')); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
+        $mode = $scenario; $crucible = str_starts_with($scenario, 'crucible_'); Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_'), str_starts_with($scenario, 'drift_'), $crucible); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
         if ($scenario === 'drift_duplicate') { $systems[$uuid]['data'][$almanac('1.26.10.1')] = $fixtureModJar('almanac', '1.26.10.1'); }
         if ($scenario === 'drift_disabled') {
             $systems[$uuid]['data'][$almanac('1.26.10.2').'.disabled'] = $systems[$uuid]['data'][$almanac('1.26.10.2')];
@@ -337,6 +373,35 @@ try {
                 'target_metadata' => ['prepared' => [...$prepared, 'node_operation_id' => $built['node_id'], 'manifest_sha256' => $built['manifest_sha256']]]]);
             unlink($input);
         }
+        if ($crucible) {
+            $optOut = app(PreviewService::class)->generate($managed);
+            check(! $optOut['applicable'] && str_contains(implode(' ', $optOut['capability_blockers']), 'Keep existing Crucible runtime'), 'Crucible qualified without opt-in');
+            $settings = app(\Arcturus\ModpackManager\Services\ServerPolicyService::class);
+            $revision = $managed->policy_revision;
+            $settings->save($managed, $managed->file_rules, [], $revision, ['keep_existing_crucible_runtime' => true]);
+            check($managed->refresh()->policy_revision === $revision + 1, 'Crucible opt-in did not invalidate approval');
+            $overwrites = app(PreviewService::class)->generate($managed);
+            check(! $overwrites['applicable'] && str_contains(implode(' ', $overwrites['capability_blockers']), 'planned change to lwjgl3ify-forgePatches.jar'), 'A Crucible update could overwrite a local runtime file');
+            $settings->save($managed, [...$managed->file_rules,
+                ['scope' => 'exact', 'pattern' => 'java9args.txt', 'mode' => 'protect'],
+                ['scope' => 'exact', 'pattern' => 'lwjgl3ify-forgePatches.jar', 'mode' => 'protect'],
+            ], [], $managed->policy_revision);
+            $managed->refresh();
+            if ($scenario === 'crucible_success') {
+                $systems[$uuid]['data']['logs/latest.log'] = str_replace('25.0.1', '27.0.1', $crucibleBootLog());
+                $wrongJava = app(PreviewService::class)->generate($managed);
+                check(! $wrongJava['applicable'] && str_contains(implode(' ', $wrongJava['capability_blockers']), 'Java range'), 'Out-of-range Java was accepted');
+                $systems[$uuid]['data']['logs/latest.log'] = $originalData['logs/latest.log'];
+                $systems[$uuid]['data']['Crucible-1.7.10-server.jar'] = $crucibleJar('10.13.4.1500');
+                $incorrectJar = app(PreviewService::class)->generate($managed);
+                check(! $incorrectJar['applicable'] && str_contains(implode(' ', $incorrectJar['capability_blockers']), 'active Crucible JAR does not prove'), 'An incompatible Crucible JAR was accepted');
+                $systems[$uuid]['data']['Crucible-1.7.10-server.jar'] = $originalData['Crucible-1.7.10-server.jar'];
+                $systems[$uuid]['data']['java9args.txt'] = '@nested.txt';
+                $nested = app(PreviewService::class)->generate($managed);
+                check(! $nested['applicable'] && str_contains(implode(' ', $nested['capability_blockers']), 'direct java command'), 'Nested Java argfile was accepted');
+                $systems[$uuid]['data']['java9args.txt'] = $originalData['java9args.txt'];
+            }
+        }
         if ($scenario === 'missing_core') {
             $incomplete = app(ReleaseStore::class)->load($managed->target_manifest_path);
             unset($incomplete['files']['libraries/net/neoforged/neoforge/26.1.2.121/neoforge-26.1.2.121-server.jar']);
@@ -373,10 +438,38 @@ try {
             echo $label." native qualification passed\n"; continue;
         }
         check($preview['applicable'], $label.' blocked: '.implode('; ', $preview['capability_blockers']).' '.json_encode(array_values(array_filter($preview['changes'], fn ($c) => $c['blocked']))));
+        if ($crucible) {
+            $runtime = $preview['qualification']['runtime_plan'];
+            check($runtime['strategy'] === \Arcturus\ModpackManager\Native\CrucibleRuntime::STRATEGY &&
+                $runtime['upstream_runtime']['loader'] === 'forge' && $runtime['target']['loader'] === 'crucible' &&
+                $runtime['target']['java'] === 25 && count($runtime['retained_launcher_files']) === 2, 'Crucible runtime plan lost the separate upstream or retained runtime');
+        }
         check($managed->local_root === null && $managed->staging_parent === null, 'Native deployment inherited host volume access');
         $operation = app(DeploymentApproval::class)->queue($managed, $preview['plan_sha256'], (string) Str::uuid());
         Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
         $operation->refresh(); $managed->refresh();
+        if ($crucible) {
+            foreach (['Crucible-1.7.10-server.jar', 'java9args.txt', 'lwjgl3ify-forgePatches.jar'] as $path) {
+                check($systems[$uuid]['data'][$path] === $originalData[$path], 'Crucible runtime file changed: '.$path);
+            }
+            check($managed->pelicanServer->startup === $originalStartup && $managed->pelicanServer->image === 'fixture:java_25', 'Crucible startup/image changed');
+            if ($scenario === 'crucible_drift') {
+                check($operation->phase === 'manual_intervention' && $managed->last_backup_uuid === null && $systems[$uuid]['starts'] === 0
+                    && str_contains($operation->error ?? '', 'Retained Crucible launcher file drifted'), 'Retained runtime drift did not stop the deployment before backup/writes');
+                check($systems[$uuid]['data']['config/options.cfg'] === 'old', 'A config was installed despite launcher drift');
+                echo $label." native transaction passed\n"; continue;
+            }
+            if ($scenario === 'crucible_wrong_boot') {
+                check($operation->phase === 'restored' && $managed->installed_version === '1' && $systems[$uuid]['starts'] === 2
+                    && str_contains($operation->error ?? '', 'did not confirm target loader'), 'Unexpected Forge boot was committed or could not roll back');
+                check($systems[$uuid]['data']['config/options.cfg'] === 'old', 'Crucible rollback failed to restore original config');
+            } else {
+                check($operation->phase === 'completed' && $managed->installed_version === '2' && $managed->runtime_report['loader'] === 'crucible'
+                    && $systems[$uuid]['data']['config/options.cfg'] === 'new', 'Crucible update did not commit the new pack');
+            }
+            check($systems[$uuid]['data']['world/level.dat'] === $originalData['world/level.dat'], 'Crucible deployment touched world data');
+            echo $label." native transaction passed\n"; continue;
+        }
         if ($scenario === 'failed_boot') {
             $app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(new \Arcturus\ModpackManager\Console\Commands\BootDiagnostics);
             $requestCount = count($requests); $contextBefore = $operation->getRawOriginal('context');

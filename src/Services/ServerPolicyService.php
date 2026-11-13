@@ -19,7 +19,7 @@ final class ServerPolicyService
     public function save(ManagedServer $server, array $rules, array $disabled, int $revision, array $attributes = []): void
     {
         Access::requireAdmin();
-        $allowed = ['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'directory_decisions', 'label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport', ...DiscordSettings::FIELDS];
+        $allowed = ['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'directory_decisions', 'label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport', 'keep_existing_crucible_runtime', ...DiscordSettings::FIELDS];
         if (array_diff(array_keys($attributes), $allowed)) {
             throw new RuntimeException('Invalid policy settings');
         }
@@ -62,6 +62,7 @@ final class ServerPolicyService
                     'maintenance_time' => ['sometimes', 'nullable', 'regex:/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/'],
                     'maintenance_timezone' => ['sometimes', 'required', 'timezone'],
                     'restart_when_current' => ['sometimes', 'boolean'], 'deploy_enabled' => ['sometimes', 'boolean'],
+                    'keep_existing_crucible_runtime' => ['sometimes', 'boolean'],
                     'transport' => ['sometimes', Rule::in(['native', 'wings', 'local'])],
                 ])->validate();
                 $transport = $attributes['transport'] ?? $fresh->transport;
@@ -72,6 +73,14 @@ final class ServerPolicyService
                 $fresh->fill([...$attributes, 'file_rules' => $rules, 'disabled_mods' => $disabled]);
                 $rebound = $fresh->isDirty('pelican_server_uuid');
                 $associationChanged = $fresh->isDirty(['pelican_server_uuid', 'provider', 'source', 'installed_version', 'asset_pattern']);
+                if ($associationChanged || $transport !== 'native') {
+                    // This opt-in belongs to the native server binding and its verified baseline.
+                    if ($fresh->keep_existing_crucible_runtime) { $fresh->keep_existing_crucible_runtime = false; }
+                }
+                if ($fresh->keep_existing_crucible_runtime && ($fresh->provider !== \Arcturus\ModpackManager\Modpacks\Providers\GtnhProvider::SOURCE ||
+                    $fresh->source !== \Arcturus\ModpackManager\Modpacks\Providers\GtnhProvider::SOURCE || $fresh->baseline_status !== 'verified')) {
+                    throw new RuntimeException('Keeping Crucible is available only for an official GTNH installation with a verified baseline.');
+                }
                 if ($associationChanged) {
                     $clear = ['available_version', 'available_asset_url', 'available_asset_sha256', 'available_release_url',
                         'release_metadata', 'selected_version', 'target_metadata', 'base_manifest_path', 'target_manifest_path',
@@ -86,11 +95,11 @@ final class ServerPolicyService
                         $fresh->forceFill(array_fill_keys(['local_root', 'staging_parent', 'worker_key', 'backup_root', 'last_backup_uuid', 'runtime_report'], null));
                     }
                     // Share the policy revision guard so stale forms/comparisons cannot revive old evidence.
-                    if (! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
+                    if (! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime'])) {
                         $fresh->policy_revision++;
                     }
                 }
-                if (! $associationChanged && $transport !== $fresh->transport && ! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
+                if (! $associationChanged && $transport !== $fresh->transport && ! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime'])) {
                     $fresh->policy_revision++;
                 }
                 $fresh->save();

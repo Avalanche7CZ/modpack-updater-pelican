@@ -132,6 +132,9 @@
                     @endif
                     @if($preview['qualification']['runtime_strategy'] ?? null)<p class="mt-3 text-sm">Runtime: {{ $preview['qualification']['current']['loader'] ?? 'unknown' }} {{ $preview['qualification']['current']['loader_version'] ?? '' }} → {{ $preview['qualification']['target']['loader'] ?? 'unknown' }} {{ $preview['qualification']['target']['loader_version'] ?? '' }} / Minecraft {{ $preview['qualification']['target']['minecraft'] ?? 'unknown' }} / Java {{ $preview['qualification']['target']['java'] ?? 'unknown' }}.</p>@endif
                     @php($runtimePlan = $preview['qualification']['runtime_plan'] ?? null)
+                    @if($runtimePlan['upstream_runtime'] ?? null)
+                        <p class="mt-2 text-sm">The GTNH pack ships Forge {{ $runtimePlan['upstream_runtime']['loader_version'] }}. This plan keeps the active Crucible launcher, its arguments and the current Java image.</p>
+                    @endif
                     @if($runtimePlan && (($runtimePlan['startup'] ?? '') !== ($preview['qualification']['current']['startup'] ?? '') || ($runtimePlan['image'] ?? '') !== ($preview['qualification']['current']['image'] ?? '')))
                         <details class="mt-3 text-sm"><summary class="cursor-pointer">Review startup and image changes</summary>
                             <p class="mt-2 break-all">Image: {{ $preview['qualification']['current']['image'] ?? 'unknown' }} → {{ $runtimePlan['image'] }}</p>
@@ -149,6 +152,9 @@
                     @if(!$this->canApplyUpdate() && !$record->active_operation_id)<p class="mt-2 text-sm">Complete the requirements above. Expired readiness is refreshed automatically in the background. Each manual update requires approval of the current file and runtime plan.</p>@endif
                     @if($preview && $record->transport === 'native' && ($preview['native_mod_drift_schema'] ?? null) !== \Arcturus\ModpackManager\Native\ModDrift::SCHEMA)
                         <p class="mt-2 text-sm">Compare files again to check for alternate installed mod JARs before updating.</p>
+                    @endif
+                    @if($this->canChooseCrucibleRuntime())
+                        <x-filament::button color="gray" wire:click="mountAction('crucibleRuntime')" class="mt-4">{{ $record->keep_existing_crucible_runtime ? 'Clear Crucible runtime selection' : 'Keep existing Crucible runtime' }}</x-filament::button>
                     @endif
                     <x-filament::button color="danger" wire:click="mountAction('applyUpdate')" :disabled="!$this->canApplyUpdate()" class="mt-4">Update with backup</x-filament::button>
                 </x-filament::section>
