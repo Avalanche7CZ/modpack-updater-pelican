@@ -9,7 +9,7 @@ use Arcturus\ModpackManager\Services\SafetyPaths;
 /** Filename hints select reads only. Only embedded identity can bind a live JAR to a mod. */
 final class ModDrift
 {
-    public const SCHEMA = 'native-mod-drift-v1';
+    public const SCHEMA = 'native-mod-drift-v2';
 
     public static function targets(array $base, array $target, array $local, array $protected, array $disabled): array
     {
@@ -18,7 +18,11 @@ final class ModDrift
             foreach ($manifest['files'] as $path => $hash) {
                 if (! self::isTopLevelJar($path)) { continue; }
                 $meta = $manifest['metadata'][$path] ?? null;
-                $id = ModUpgradePlanner::verifiedIdentity($hash, $manifest['identities'][$path] ?? null, $meta);
+                $mapped = $manifest['identities'][$path] ?? null;
+                $id = ModUpgradePlanner::verifiedIdentity($hash, $mapped, $meta);
+                if ($id === null && $side === 'base') {
+                    $id = self::legacyBaselineHint($mapped, $hash, $meta);
+                }
                 if ($id !== null) { $groups[$id][$side][$path] = $meta['loader']; }
             }
         }
@@ -37,6 +41,26 @@ final class ModDrift
         }
         ksort($result);
         return $result;
+    }
+
+    /** A saved upstream ID or explicit mapping can select a read, but never verifies the live JAR. */
+    private static function legacyBaselineHint(?string $hint, string $hash, mixed $meta): ?string
+    {
+        if (! is_array($meta) || isset($meta['source']) || ! in_array($meta['loader'] ?? null, ['forge', 'neoforge'], true) ||
+            $hint === null || strlen($hint) > 1024 ||
+            (isset($meta['identity']) && $meta['identity'] !== $hint) ||
+            (isset($meta['sha256']) && $meta['sha256'] !== strtolower($hash))) { return null; }
+        $parts = explode('+', $hint);
+        if (count($parts) > 256 || count(array_unique($parts)) !== count($parts)) { return null; }
+        foreach ($parts as $part) { if (! preg_match('/^[a-z0-9_.-]{1,128}$/D', $part)) { return null; } }
+        if (isset($meta['ids'])) {
+            if (! is_array($meta['ids']) || ! array_is_list($meta['ids'])) { return null; }
+            $ids = $meta['ids'];
+            foreach ($ids as $id) { if (! is_string($id)) { return null; } }
+            sort($ids, SORT_STRING); sort($parts, SORT_STRING);
+            if ($ids !== $parts) { return null; }
+        }
+        return $hint;
     }
 
     public static function candidates(array $rows, array $targets, array $explicitMappings): array

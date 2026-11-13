@@ -70,6 +70,7 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false)
                 $item['identities'][$p] = $mod;
                 $item['metadata'][$p] = ['identity' => $mod, 'ids' => [$mod], 'version' => $v,
                     'source' => 'META-INF/mods.toml', 'loader' => 'forge', 'sha256' => $item['files'][$p]];
+                if ($old && $mod === 'almanac') { $item['metadata'][$p] = ['loader' => 'forge', 'version' => $v]; }
             }
         }
         unset($item);
