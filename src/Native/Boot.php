@@ -30,7 +30,12 @@ final class Boot
             $state = $power->state($server);
             if (in_array($state, ['exited', 'dead'], true)) { throw new RuntimeException('Minecraft exited during native startup verification.'); }
             if ($files->stat($log) === null) { continue; }
-            $text = $files->read($log, 4194304);
+            try { $text = $files->read($log, 4194304); }
+            catch (TextChangedDuringInspection) {
+                // Minecraft is writing this log. Discard the read and retry on the
+                // next poll, within the same deadline and after checking power again.
+                continue;
+            }
             if ($state !== 'running' || ! preg_match('/\bDone \([\d.]+s\)!/i', $text)) { continue; }
             $observed = (new RuntimeInspector)->fromStartupLog($text);
             foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {

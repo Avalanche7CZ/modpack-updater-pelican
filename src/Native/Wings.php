@@ -128,7 +128,8 @@ final class Wings implements Files
                 if (strlen($data) > $limit) { throw new RuntimeException('Wings text file grew beyond its limit.'); }
             }
         } finally { $stream->close(); }
-        if (strlen($data) !== $before['size'] || $this->regular($path) !== $before) { throw new RuntimeException('Native text changed during inspection.'); }
+        if ($this->regular($path) !== $before) { throw new TextChangedDuringInspection('Native text changed during inspection: '.$path); }
+        if (strlen($data) !== $before['size']) { throw new RuntimeException('Wings text transfer length did not match file metadata: '.$path); }
         return $data;
     }
 

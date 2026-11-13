@@ -63,7 +63,7 @@ $make = function (bool $migration, bool $installer = false) use (&$systems, &$st
         'configuration' => ['invocation' => $startup, 'container' => ['image' => 'fixture:java_21'], 'suspended' => false, 'crash_detection_enabled' => true]];
     return $managed;
 };
-Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $bootLog) {
+$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $bootLog) {
     $url = $request->url(); preg_match('~/api/servers/([a-f0-9-]+)~', $url, $m); $uuid = $m[1] ?? ''; check(isset($systems[$uuid]), 'Unexpected native fixture server');
     $sys = &$systems[$uuid]; $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
     $path = parse_url($url, PHP_URL_PATH); parse_str(parse_url($url, PHP_URL_QUERY) ?? '', $q);
@@ -82,7 +82,15 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
         }
         return Http::response(array_values($rows), 200, $headers);
     }
-    if (str_ends_with($path, '/files/contents')) { $file = ltrim($q['file'], '/'); check(! str_starts_with($file, 'world/'), 'Plugin attempted to read world data'); return Http::response($sys['data'][$file], 200, $headers); }
+    if (str_ends_with($path, '/files/contents')) {
+        $file = ltrim($q['file'], '/'); check(! str_starts_with($file, 'world/'), 'Plugin attempted to read world data');
+        $contents = $sys['data'][$file];
+        if ($file === 'logs/latest.log' && isset($sys['pending_boot_log'])) {
+            $sys['data'][$file] = $sys['pending_boot_log']; unset($sys['pending_boot_log']);
+            $sys['boot_log_races'] = ($sys['boot_log_races'] ?? 0) + 1;
+        }
+        return Http::response($contents, 200, $headers);
+    }
     if (str_ends_with($path, '/files/create-directory')) { $sys['dirs'][] = ltrim($request['path'].'/'.$request['name'], '/'); return Http::response([], 204, $headers); }
     if (str_ends_with($path, '/files/write')) {
         check($sys['state'] === 'offline' && $sys['configuration']['suspended'] && ! $sys['configuration']['crash_detection_enabled'], 'Upload not guarded/offline');
@@ -114,12 +122,17 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
     if (str_ends_with($path, '/power')) {
         if ($request['action'] === 'stop') { $sys['state'] = 'offline'; }
         else {
-            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot', 'root_args_failed_boot'], true) && $sys['starts'] === 1;
+            $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot', 'root_args_failed_boot', 'rollback_log_grows'], true) && $sys['starts'] === 1;
             $sys['state'] = $fail ? 'offline' : 'running';
             if ($fail) { $sys['data']['world/region/new-failed-boot.mca'] = 'must disappear on full recovery'; }
             else {
                 $server = Server::where('uuid', $uuid)->firstOrFail(); $new = str_contains($server->startup, '/26.1.2.121/');
-                $sys['data']['logs/latest.log'] = $bootLog($new ? '26.1.2' : '1.21.1', $new ? '26.1.2.121' : '21.1.1', str_contains($server->image, '25') ? 25 : 21);
+                $log = $bootLog($new ? '26.1.2' : '1.21.1', $new ? '26.1.2.121' : '21.1.1', str_contains($server->image, '25') ? 25 : 21);
+                if (in_array($mode, ['target_log_grows', 'rollback_log_grows', 'recovery_log_grows'], true)) {
+                    $sys['pending_boot_log'] = $log;
+                    $log = substr($log, 0, strpos($log, '[Server thread/INFO]'));
+                }
+                $sys['data']['logs/latest.log'] = $log;
             }
         }
         return Http::response([], 202, $headers);
@@ -147,9 +160,18 @@ Http::fake(function ($request) use (&$systems, &$snapshots, &$requests, &$mode, 
         return Http::response([], 202, $headers);
     }
     return Http::response(['state' => $sys['state'], 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => 60000]], 200, $headers);
-});
+};
 try {
-    foreach ([['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'], ['runtime/image rollback', true, 'failed_boot'], ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'], ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'], ['disabled destination collision', false, 'disable_collision'], ['missing implicit runtime dependency', true, 'missing_core'], ['root args migration', true, 'root_args_success'], ['root args migration rollback', true, 'root_args_failed_boot']] as [$label, $migration, $scenario]) {
+    foreach ([
+        ['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'],
+        ['runtime/image rollback', true, 'failed_boot'], ['target boot with growing log', true, 'target_log_grows'], ['rollback boot with growing log', true, 'rollback_log_grows'],
+        ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'],
+        ['installer runtime rollback', true, 'installer_failed_boot'], ['disabled mod', false, 'disable_success'], ['disabled mod rollback', false, 'disable_failed_boot'],
+        ['disabled destination collision', false, 'disable_collision'], ['missing implicit runtime dependency', true, 'missing_core'],
+        ['root args migration', true, 'root_args_success'], ['root args migration rollback', true, 'root_args_failed_boot'],
+    ] as [$label, $migration, $scenario]) {
+        // Keep only one scenario's HTTP recordings and stream responses in memory.
+        Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
         $mode = $scenario; Auth::guard()->setUser($adminUser); $managed = $make($migration, str_starts_with($scenario, 'installer_')); $uuid = $managed->pelican_server_uuid; $originalStartup = $managed->pelicanServer->startup;
         if (str_starts_with($scenario, 'disable_')) {
             $managed->update(['file_rules' => [...$managed->file_rules, ['scope' => 'exact', 'pattern' => 'mods/local-disable.jar', 'mode' => 'disable', 'priority' => 100, 'enabled' => true]]]);
@@ -276,12 +298,18 @@ try {
         if (in_array($scenario, ['failed_restore', 'interrupted'], true)) {
             check($operation->phase === 'manual_intervention' && $systems[$uuid]['state'] === 'offline' && $managed->active_operation_id === $operation->id,
                 'Interrupted/unverified operation was released: '.$operation->error);
-            $mode = 'success'; Auth::guard()->setUser($adminUser);
+            $mode = $scenario === 'failed_restore' ? 'recovery_log_grows' : 'success'; Auth::guard()->setUser($adminUser);
             app(DeploymentApproval::class)->verifyRecovery($managed);
             Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
             $operation->refresh(); $managed->refresh();
         }
-        if (in_array($scenario, ['success', 'installer_success', 'disable_success', 'root_args_success'], true)) {
+        if (in_array($scenario, ['target_log_grows', 'rollback_log_grows', 'failed_restore'], true)) {
+            check(($systems[$uuid]['boot_log_races'] ?? 0) === 1, 'Growing startup log fixture did not exercise the read race');
+        }
+        if ($scenario === 'rollback_log_grows') {
+            check($systems[$uuid]['starts'] === 2 && str_contains($operation->error ?? '', 'Minecraft exited during native startup verification'), 'Real target exit was not rolled back');
+        }
+        if (in_array($scenario, ['success', 'installer_success', 'disable_success', 'root_args_success', 'target_log_grows'], true)) {
             check($operation->phase === 'completed' && $managed->installed_version === '2', $label.' did not complete: '.$operation->error);
             if ($migration) { check(str_contains($managed->pelicanServer->startup, '/26.1.2.121/') && $managed->pelicanServer->image === 'fixture:java_25', 'Runtime startup/image migration was not committed'); }
         } else {

@@ -13,16 +13,17 @@ $node = new Node; $node->forceFill(['scheme' => 'https', 'fqdn' => 'wings.fixtur
 $server = new Server; $server->forceFill(['uuid' => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']); $server->setRelation('node', $node);
 $data = ['candidate.jar' => "PK\x00\x01binary\xff"];
 $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
-$noopRename = false; $truncated = false; $symlink = false; $writes = 0;
+$noopRename = false; $truncated = false; $growText = false; $symlink = false; $writes = 0;
 Http::preventStrayRequests();
-Http::fake(function ($request, array $options) use (&$data, &$noopRename, &$truncated, &$symlink, &$writes, $headers) {
+Http::fake(function ($request, array $options) use (&$data, &$noopRename, &$truncated, &$growText, &$symlink, &$writes, $headers) {
     parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
     $path = parse_url($request->url(), PHP_URL_PATH);
     if (str_ends_with($path, '/files/list-directory')) {
         return Http::response(array_map(fn ($name) => ['name' => $name, 'file' => true, 'directory' => false, 'symlink' => $symlink && $name === 'candidate.jar', 'size' => strlen($data[$name])], array_keys($data)), 200, $headers);
     }
     if (str_ends_with($path, '/files/contents')) {
-        $value = $data[ltrim($query['file'], '/')];
+        $file = ltrim($query['file'], '/'); $value = $data[$file];
+        if ($growText && $file === 'runtime.txt') { $data[$file] .= "new line\n"; }
         return Http::response($truncated ? substr($value, 0, 3) : $value, 200, $headers);
     }
     if (str_ends_with($path, '/files/write')) {
@@ -49,6 +50,18 @@ Http::fake(function ($request, array $options) use (&$data, &$noopRename, &$trun
 $files = new Wings($server, app(DaemonFileRepository::class));
 check($files->hash('candidate.jar') === hash('sha256', $data['candidate.jar']), 'Binary candidate was not streamed correctly');
 check($files->hash('absent.jar') === null, 'Absent candidate was invented');
+$data['runtime.txt'] = "first line\n";
+$growText = true;
+try { $files->read('runtime.txt'); throw new RuntimeException('Changed text was accepted'); }
+catch (\Arcturus\ModpackManager\Native\TextChangedDuringInspection $e) {
+    check(str_contains($e->getMessage(), 'runtime.txt'), 'Changed text diagnostic omitted the path');
+}
+$growText = false;
+check($files->read('runtime.txt') === $data['runtime.txt'], 'Stable text did not pass strict inspection');
+$truncated = true;
+try { $files->read('runtime.txt'); throw new RuntimeException('Truncated text was accepted'); }
+catch (RuntimeException $e) { check(str_contains($e->getMessage(), 'transfer length'), 'Stable but truncated text was mislabeled as a concurrent change'); }
+$truncated = false;
 $temp = tempnam(sys_get_temp_dir(), 'arcturus-binary-'); file_put_contents($temp, str_repeat("\xff\x00", 65536));
 try {
     $files->upload($temp, 'uploaded.jar', hash_file('sha256', $temp));
