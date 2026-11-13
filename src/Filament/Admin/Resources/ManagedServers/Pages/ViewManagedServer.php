@@ -497,6 +497,42 @@ final class ViewManagedServer extends ViewRecord
             });
     }
 
+    public function canChooseCrucibleRuntime(): bool
+    {
+        $record = $this->getRecord();
+
+        return Access::admin() && $this->tab === 'updates' && $record->transport === 'native'
+            && $record->provider === 'gtnh' && $record->source === 'gtnh'
+            && $record->baseline_status === 'verified' && $record->target_manifest_path !== null
+            && ! $record->active_operation_id;
+    }
+
+    public function crucibleRuntimeAction(): Action
+    {
+        $label = fn () => $this->getRecord()->keep_existing_crucible_runtime
+            ? 'Clear Crucible runtime selection' : 'Keep existing Crucible runtime';
+
+        return Action::make('crucibleRuntime')->label($label)->color('gray')
+            ->visible(fn () => $this->canChooseCrucibleRuntime())
+            ->requiresConfirmation()->modalHeading($label)
+            ->modalDescription('Refreshes comparison with the existing staged GTNH pack and keeps your file decisions. It does not stop Minecraft or start the update.')
+            ->fillForm(fn () => ['revision' => $this->getRecord()->policy_revision, 'keep' => ! $this->getRecord()->keep_existing_crucible_runtime])
+            ->schema([Hidden::make('revision'), Hidden::make('keep')])
+            ->action(function (array $data): void {
+                Access::requireAdmin();
+                if (! $this->canChooseCrucibleRuntime()) { return; }
+                $record = $this->getRecord();
+                try {
+                    app(ServerPolicyService::class)->save($record, $record->file_rules ?? [], $record->disabled_mods ?? [],
+                        (int) $data['revision'], ['keep_existing_crucible_runtime' => (bool) $data['keep']]);
+                    $this->recompare();
+                } catch (\Throwable $error) {
+                    Notification::make()->title('Runtime choice was not saved')->body(get_class($error) === \RuntimeException::class
+                        ? $error->getMessage() : 'Reload this server before changing the runtime selection.')->danger()->send();
+                }
+            });
+    }
+
     public function canApplyUpdate(): bool
     {
         if (! Access::admin()) { return false; }

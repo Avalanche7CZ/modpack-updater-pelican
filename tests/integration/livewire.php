@@ -93,6 +93,18 @@ $test->call('mountAction', 'baseline')->call('callMountedAction');
 check(Bus::dispatched(PrepareUpdate::class)->isEmpty() && ! $record->refresh()->active_operation_id, 'Missing local mapping queued a doomed job through native UI');
 $test->call('mountAction', 'filesystemBackend')->set('mountedActions.0.data.transport', 'wings')->call('callMountedAction');
 check($record->refresh()->transport === 'wings', 'Native remote backend selection failed');
+$gtnh = ManagedServer::create([
+    'label' => 'Official GTNH · Crucible', 'pelican_server_uuid' => (string) Str::uuid(), 'provider' => 'gtnh', 'source' => 'gtnh',
+    'transport' => 'native', 'installed_version' => '2.8.1', 'selected_version' => '2.9.0', 'baseline_status' => 'verified', 'adopted_at' => now(),
+    'base_manifest_path' => 'fixture baseline', 'target_manifest_path' => 'fixture target',
+    'file_rules' => [['scope' => 'exact', 'pattern' => 'java9args.txt', 'mode' => 'protect', 'priority' => 0, 'enabled' => true, 'classification' => null, 'comment' => '']],
+    'disabled_mods' => ['archaicfix'],
+]);
+$gtUi = Livewire\Livewire::test(ViewManagedServer::class, ['record' => $gtnh->id])->call('selectTab', 'updates');
+check(str_contains($gtUi->html(), 'Keep existing Crucible runtime'), 'The official native GTNH runtime selection was missing');
+$gtUi->call('mountAction', 'crucibleRuntime')->call('callMountedAction');
+check($gtnh->refresh()->keep_existing_crucible_runtime && $gtnh->policy_revision === 1, 'The GTNH runtime action did not save the opt-in');
+check($gtnh->file_rules[0]['mode'] === 'protect' && $gtnh->disabled_mods === ['archaicfix'], 'The GTNH runtime action overwrote file policies');
 rmdir($localDir.'/stage'); rmdir($localDir.'/live'); rmdir($localDir);
 $progressOperation = Operation::create([
     'id' => (string) Str::uuid(), 'managed_server_id' => $record->id, 'kind' => 'baseline',

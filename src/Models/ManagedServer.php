@@ -79,7 +79,7 @@ final class ManagedServer extends Model
             'approved_at' => 'datetime', 'last_check_attempt_at' => 'datetime',
             'enabled' => 'boolean',
             'discord_enabled' => 'boolean', 'discord_webhook' => 'encrypted', 'discord_notify_events' => 'array',
-            'deploy_enabled' => 'boolean', 'restart_when_current' => 'boolean', 'automation_actor_id' => 'integer',
+            'keep_existing_crucible_runtime' => 'boolean', 'deploy_enabled' => 'boolean', 'restart_when_current' => 'boolean', 'automation_actor_id' => 'integer',
             'directory_decisions' => 'array', 'file_rules' => 'array', 'file_inventory' => 'array', 'policy_revision' => 'integer',
             'backup_excluded_directories' => 'array',
             'preview_summary' => 'array',
@@ -92,10 +92,15 @@ final class ManagedServer extends Model
     protected static function booted(): void
     {
         self::updating(function (self $server): void {
+            if ($server->keep_existing_crucible_runtime &&
+                (($server->isDirty('transport') && $server->transport !== 'native') ||
+                ($server->isDirty('baseline_status') && $server->baseline_status !== 'verified'))) {
+                $server->keep_existing_crucible_runtime = false;
+            }
             if ($server->isDirty(['base_manifest_path', 'provider', 'source', 'installed_version'])) {
                 $server->forceFill(['comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'adoption_report' => null]);
             }
-            if ($server->isDirty(['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'policy', 'directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories'])) {
+            if ($server->isDirty(['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'policy', 'directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime'])) {
                 (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->normalize($server->directory_decisions ?? []);
                 (new UpdatePlanner)->plan([], [], [], $server->file_rules ?? [], [], $server->disabled_mods ?? []);
                 $server->forceFill(['approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null,
@@ -104,7 +109,7 @@ final class ManagedServer extends Model
         });
         self::updated(function (self $server): void {
             if ($server->wasChanged('policy_revision')) {
-                $fields = array_intersect_key($server->getChanges(), array_flip(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories']));
+                $fields = array_intersect_key($server->getChanges(), array_flip(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime']));
                 $before = [];
                 $after = [];
                 foreach ($fields as $key => $value) {

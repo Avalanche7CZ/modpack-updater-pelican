@@ -132,6 +132,15 @@ final class Wings implements Files
         return $this->streamHash($path, $limit, 60, $sink) ?? throw new RuntimeException('Native mod inspection candidate disappeared: '.$path);
     }
 
+    public function copyCrucibleForInspection(string $path, $sink): string
+    {
+        if (! preg_match('~^Crucible(?:-[A-Za-z0-9_.+-]+)?\.jar$~iD', $path) || ! is_resource($sink)) {
+            throw new RuntimeException('Invalid Crucible launcher inspection request.');
+        }
+
+        return $this->streamHash($path, 67108864, 60, $sink) ?? throw new RuntimeException('The active Crucible JAR is missing: '.$path);
+    }
+
     private function streamHash(string $path, int $limit, int $timeout, $sink = null): ?string
     {
         $before = $this->regular($path);

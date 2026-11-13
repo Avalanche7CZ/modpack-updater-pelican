@@ -63,6 +63,7 @@ final class RecoveryVerification
                 (new Transaction($files))->verify($critical);
                 app(Runtime::class)->requireSnapshot($server, $original);
             }
+            CrucibleRuntime::verify($files, $operation->context['native_retained_launcher'] ?? []);
             $attempt = (int) ($operation->context['native_recovery_attempt'] ?? 0) + 1;
             $operation->update(['phase' => 'recovery_starting', 'context' => [...$operation->context, 'native_recovery_attempt' => $attempt]]);
             app(Runtime::class)->syncAndRequire($server, $original);

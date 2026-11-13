@@ -26,7 +26,7 @@ final class Qualification
         return (new Preparation($server))->stage($prepared['node_operation_id'], $prepared['manifest_sha256']);
     }
 
-    public function qualify(ManagedServer $server, array $target, array $plan, ?\Closure $heartbeat = null): array
+    public function qualify(ManagedServer $server, array $target, array $plan, ?\Closure $heartbeat = null, array $base = []): array
     {
         if (! app(\App\Services\Servers\ServerConfigurationStructureService::class) instanceof \Arcturus\ModpackManager\Services\Pelican\GuardedServerConfiguration) { throw new RuntimeException('Restart Panel/queue workers after plugin update; the native deployment guard is not bound.'); }
         $pelican = $server->pelicanServer;
@@ -65,7 +65,7 @@ final class Qualification
         $current = [...($server->runtime_report ?? []), 'loader_confidence' => 'verified_boot', 'startup' => $pelican->startup, 'image' => $pelican->image];
         $boot = (new RuntimeInspector)->fromStartupLog($files->read('logs/latest.log', 4194304));
         if ($boot['minecraft'] === null || $boot['loader'] === null || ($boot['loader_version'] === null && $boot['loader'] !== 'crucible')) { throw new RuntimeException('The current boot log does not prove the active Minecraft and loader runtime.'); }
-        foreach (['minecraft', 'loader', 'loader_version'] as $key) { if ($boot[$key] !== null) { $current[$key] = $boot[$key]; } }
+        foreach (['minecraft', 'loader', 'loader_version'] as $key) { $current[$key] = $boot[$key]; }
         if ($boot['java'] !== null) { $current['java'] = $boot['java']; $current['java_confidence'] = 'verified'; }
         else { $current['java_confidence'] = 'unknown'; }
         $texts = [];
@@ -79,7 +79,14 @@ final class Qualification
         }
         $requested = (new RuntimeInspector)->inspect($runtimePaths, $texts, '', '');
         $requested = array_replace($requested, array_filter($target['runtime'] ?? [], fn ($v) => $v !== null));
-        $runtime = (new Runtime)->plan($pelican, $current, $requested, $target['files'], $stage, $target['runtime_build'] ?? null);
+        if ($server->keep_existing_crucible_runtime) {
+            $runtime = (new CrucibleRuntime)->plan($pelican, $files, $current, $requested, $base, $target, $scope['after']);
+        } else {
+            if ($current['loader'] === 'crucible' && CrucibleRuntime::matchesUpstream($base) && CrucibleRuntime::matchesUpstream($target)) {
+                throw new RuntimeException('GTNH ships a Forge launcher, but this server is running Crucible. Select Keep existing Crucible runtime to compare without migrating the launcher.');
+            }
+            $runtime = (new Runtime)->plan($pelican, $current, $requested, $target['files'], $stage, $target['runtime_build'] ?? null);
+        }
         $willInstall = array_flip($paths);
         foreach ($runtime['dependency_hashes'] as $path => $hash) {
             if (! isset($willInstall[$path]) && $files->hash($path) !== $hash) { throw new RuntimeException('A required target runtime dependency is protected, absent or locally different: '.$path.'. Resolve its policy before migrating.'); }

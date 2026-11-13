@@ -82,6 +82,7 @@ final class Deployment
             $stage = app(Qualification::class)->stage($managed);
             $target = app(ReleaseStore::class)->load($managed->target_manifest_path);
             $runtime = $preview['qualification']['runtime_plan'];
+            $retainedLauncher = $runtime['retained_launcher_files'] ?? [];
             $original = $operation->context['panel_snapshot'];
             $expected = [...$original, 'startup' => $runtime['startup'], 'image' => $runtime['image']];
             app(Runtime::class)->requireSnapshot($server, $original);
@@ -89,10 +90,12 @@ final class Deployment
             $before = $scope['before']; $after = $scope['after']; $moves = $scope['moves'];
             $excluded = BackupExclusions::normalize($managed->backup_excluded_directories ?? BackupExclusions::DEFAULT_FOLDERS);
             $phase('stopping', 'Stopping Minecraft and confirming the native Wings maintenance guard', ['native_before' => $before, 'native_after' => $after, 'native_disabled_mod_moves' => $moves,
-                'native_world_properties_sha256' => $preview['qualification']['properties_sha256'], 'runtime_original' => $original, 'runtime_expected' => $expected, 'native_original_runtime' => $preview['qualification']['current'], 'excluded_directories' => $excluded]);
+                'native_world_properties_sha256' => $preview['qualification']['properties_sha256'], 'runtime_original' => $original, 'runtime_expected' => $expected, 'native_original_runtime' => $preview['qualification']['current'],
+                'native_retained_launcher' => $retainedLauncher, 'excluded_directories' => $excluded]);
             $stopped = true;
             $power->guardAndStop($server, $heartbeat);
             $transaction->verify($before);
+            CrucibleRuntime::verify($files, $retainedLauncher);
             if ($files->hash('server.properties') !== $preview['qualification']['properties_sha256']) { throw new RuntimeException('World properties changed after approval; compare again.'); }
             // Capture a small independent recovery receipt, never worlds or a full inventory.
             $critical = $before;
@@ -104,13 +107,16 @@ final class Deployment
             $backups->awaitSuccessful($backup, $excluded, (int) config('arcturus-modpack-manager.deployment_backup_timeout', 3600), $heartbeat);
             $backupComplete = true;
             $transaction->verify($critical);
+            CrucibleRuntime::verify($files, $retainedLauncher);
             app(Runtime::class)->requireSnapshot($server, $original);
             $phase('applying', 'Transferring and verifying approved candidate files through Wings', ['backup_complete' => true, 'native_writes_started' => true]);
             $changed = true;
             $filesTotal = count($after);
             $transaction->apply($operation->id, $stage, $before, $after, $preview['policy_context']['safety_roots'] ?? [], $checkpoint, $moves);
             $transaction->verify($runtime['dependency_hashes']);
-            app(Runtime::class)->installSettings($server, $original, $runtime);
+            CrucibleRuntime::verify($files, $retainedLauncher);
+            if ($expected !== $original) { app(Runtime::class)->installSettings($server, $original, $runtime); }
+            else { app(Runtime::class)->requireSnapshot($server, $original); }
             app(Runtime::class)->syncAndRequire($server, $expected);
             $phase('starting', 'Verifying a fresh Minecraft boot and the exact target runtime');
             $power->deploymentGuard($server, true);
@@ -153,6 +159,7 @@ final class Deployment
                         $backups->restoreNativeAndWait($server, $backup, $excluded, $files, $checkpoint,
                             (int) config('arcturus-modpack-manager.deployment_restore_timeout', 3600), $heartbeat);
                         $transaction->verify($critical);
+                        CrucibleRuntime::verify($files, $retainedLauncher);
                         app(Runtime::class)->restoreSettings($server, $original, $blocked);
                         app(Runtime::class)->syncAndRequire($server, $original);
                         $phase('restarting_original', 'Verifying the original installation after confirmed native restore');

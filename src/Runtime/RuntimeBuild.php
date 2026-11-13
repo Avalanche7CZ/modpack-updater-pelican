@@ -33,6 +33,11 @@ final class RuntimeBuild
         if (! in_array($target['loader'] ?? null, ['forge', 'neoforge'], true) || empty($target['minecraft']) || empty($target['loader_version'])) { return ['manifest' => $manifest, 'node_id' => $nodeId, 'manifest_sha256' => $manifestDigest]; }
         $files = new Wings($server->pelicanServer, app(DaemonFileRepository::class), $heartbeat);
         $current = (new RuntimeInspector)->fromStartupLog($files->read('logs/latest.log', 4194304));
+        if (($current['loader'] ?? null) === 'crucible' && \Arcturus\ModpackManager\Native\CrucibleRuntime::matchesUpstream($manifest)) {
+            // A pack-only update never needs an isolated installation of the bundled legacy Forge runtime.
+            // Qualification still requires an opt-in and verifies the active launcher and both manifests.
+            return ['manifest' => $manifest, 'node_id' => $nodeId, 'manifest_sha256' => $manifestDigest];
+        }
         $same = true; foreach (['minecraft', 'loader', 'loader_version'] as $key) { if ($current[$key] !== $target[$key]) { $same = false; } }
         if ($same) { return ['manifest' => $manifest, 'node_id' => $nodeId, 'manifest_sha256' => $manifestDigest]; }
         $coordinate = $target['loader'] === 'forge' ? 'minecraftforge/forge/'.$target['minecraft'].'-'.$target['loader_version'] : 'neoforged/neoforge/'.$target['loader_version'];
