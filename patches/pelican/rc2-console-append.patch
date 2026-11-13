@@ -1,0 +1,39 @@
+diff --git a/resources/views/filament/components/server-console.blade.php b/resources/views/filament/components/server-console.blade.php
+index 3a0b9e5..9d98ea5 100644
+--- a/resources/views/filament/components/server-console.blade.php
++++ b/resources/views/filament/components/server-console.blade.php
+@@ -139,6 +139,26 @@
+         let reconnectTimer = null;
+         let tornDown = false;
+         let authenticated = false;
++        // Optional append-only extension API. This exposes no terminal, socket, reset or command handle.
++        const appendCursors = new Map();
++        const consoleAppendHook = Object.freeze({
++            version: 1,
++            serverUuid: @js($this->server->uuid),
++            append: ({ serverUuid, source, id, text } = {}) => {
++                if (tornDown || serverUuid !== @js($this->server->uuid) ||
++                    typeof source !== 'string' || !/^[a-z0-9-]{1,64}$/.test(source) ||
++                    !Number.isSafeInteger(id) || id < 0 || typeof text !== 'string') return false;
++                if (id <= (appendCursors.get(source) ?? -1)) return true;
++                // Plain text only: extensions cannot inject terminal escapes, newlines or bidi controls.
++                const plain = text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, 512);
++                terminal.writeln(plain + '\u001b[0m');
++                appendCursors.set(source, id);
++                return true;
++            },
++        });
++        window.PelicanConsoleAppend = consoleAppendHook;
++        window.dispatchEvent(new CustomEvent('pelican:console-ready', { detail: consoleAppendHook }));
++
+         const pendingActions = [];
+ 
+         window.ServerStats.configure({
+@@ -330,6 +350,7 @@
+         // socket (and any pending reconnect) or it keeps feeding the next page's widgets.
+         document.addEventListener('livewire:navigating', () => {
+             tornDown = true;
++            if (window.PelicanConsoleAppend === consoleAppendHook) delete window.PelicanConsoleAppend;
+             clearTimeout(reconnectTimer);
+             stopListeningForServerState();
+             stopReplayingOnWidgetLoad();

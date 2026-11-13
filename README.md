@@ -126,3 +126,6 @@ The public release ZIP and `update.json` are available to Pelican's native updat
 ## Discord notifications
 
 Each managed server has a compact **Discord Notifications** section on Edit: enable toggle, encrypted webhook override (global fallback), optional role ID, event selection and a test action without pings. Successful updates send one Czech/English embed only after startup verification. Queued delivery is deduplicated and recorded in History; Discord errors never trigger rollback. See [setup, queue requirements and ambiguous-delivery handling](docs/discord-notifications.md).
+## Console integration
+
+Console now offers **Update** to existing authorized administrators on managed servers. It opens the normal Updates review flow. Optional live updater lines in the existing xterm require the small, separately applied RC2 Panel patch; the plugin never patches core files during installation. See [console integration and test steps](docs/console-integration.md).

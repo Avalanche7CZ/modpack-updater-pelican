@@ -38,6 +38,9 @@ final class ModpackManagerPlugin implements HasPluginSettings, Plugin
             plugin_path($this->getId(), "src/Filament/$id/Pages"),
             "Arcturus\\ModpackManager\\Filament\\$id\\Pages"
         );
+        if ($panel->getId() === 'server') {
+            \Arcturus\ModpackManager\ConsoleIntegration\ConsoleIntegration::register($panel);
+        }
         if ($panel->getId() !== 'admin') {
             return;
         }

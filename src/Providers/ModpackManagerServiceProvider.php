@@ -45,6 +45,7 @@ final class ModpackManagerServiceProvider extends ServiceProvider
                 }
             }
         });
+        $this->loadRoutesFrom(plugin_path('arcturus-modpack-manager', 'resources/console-routes.php'));
         $this->loadViewsFrom(plugin_path('arcturus-modpack-manager', 'resources/views'), 'arcturus-modpack-manager');
         // Configuration is refreshed on each job in long-lived workers as well as web requests.
         $loadSettings = function (): void {

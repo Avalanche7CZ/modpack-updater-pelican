@@ -184,6 +184,9 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
     }
     if (str_ends_with($path, '/backup')) {
         check($sys['state'] === 'offline' && $sys['configuration']['suspended'], 'Backup not offline/guarded');
+        $consoleManaged = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
+        $consoleLines = \Arcturus\ModpackManager\ConsoleIntegration\ConsoleHistory::read($consoleManaged->id, null)['lines'];
+        check(str_contains(end($consoleLines)['text'], 'locked Pelican backup'), 'Native backup phase not visible while Minecraft is offline');
         $backup = Backup::where('uuid', $request['uuid'])->firstOrFail();
         check($backup->is_locked && $backup->ignored_files === ['/backups/'], 'Backup identity/protection differs');
         $snapshots[$backup->uuid] = array_filter($sys['data'], fn ($p) => ! str_starts_with($p, 'backups/') && ! isset($sys['links'][$p]), ARRAY_FILTER_USE_KEY);
@@ -388,6 +391,8 @@ try {
         if (in_array($scenario, ['failed_restore', 'interrupted'], true)) {
             check($operation->phase === 'manual_intervention' && $systems[$uuid]['state'] === 'offline' && $managed->active_operation_id === $operation->id,
                 'Interrupted/unverified operation was released: '.$operation->error);
+            $consoleLines = \Arcturus\ModpackManager\ConsoleIntegration\ConsoleHistory::read($managed->id, null)['lines'];
+            check(str_contains(end($consoleLines)['text'], 'Recovery unverified') && ! str_contains(json_encode($consoleLines), 'Rollback verified'), 'Unverified recovery was announced as successful');
             $mode = $scenario === 'failed_restore' ? 'recovery_log_grows' : 'success'; Auth::guard()->setUser($adminUser);
             app(DeploymentApproval::class)->verifyRecovery($managed);
             Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
@@ -411,6 +416,11 @@ try {
             check($managed->pelicanServer->startup === $originalStartup && $managed->pelicanServer->image === 'fixture:java_21', 'Original runtime settings were not restored');
             check($systems[$uuid]['data']['config/options.cfg'] === 'old' && ! isset($systems[$uuid]['data']['config/added.cfg']) && ! isset($systems[$uuid]['data']['world/region/new-failed-boot.mca']), 'Full recovery left new config/world files');
         }
+        $consoleLines = \Arcturus\ModpackManager\ConsoleIntegration\ConsoleHistory::read($managed->id, null)['lines'];
+        $consoleText = implode("\n", array_column($consoleLines, 'text'));
+        check(str_contains($consoleText, 'locked Pelican backup') && str_contains($consoleText, 'Applying and verifying'), 'Native phase history missing');
+        check(str_contains(end($consoleLines)['text'], $operation->phase === 'completed' ? 'Minecraft startup verified' : 'Rollback verified'), 'Native final console state disagrees with verified receipt');
+        check(! str_contains($consoleText, 'Target launcher failed') && ! str_contains($consoleText, 'token='), 'Private boot diagnostics leaked into the terminal');
         if (str_starts_with($scenario, 'disable_')) {
             $active = $scenario === 'disable_success' ? 'mods/local-disable.jar.disabled' : 'mods/local-disable.jar';
             $absent = $scenario === 'disable_success' ? 'mods/local-disable.jar' : 'mods/local-disable.jar.disabled';

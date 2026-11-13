@@ -5,6 +5,7 @@ for test in tests/*.php; do
   [[ "$test" == tests/bootstrap.php ]] && continue
   php "$test"
 done
+node tests/console_output.mjs
 python3 tests/node_worker.py
 python3 tests/local_worker.py
 python3 tests/setup_local_node.py

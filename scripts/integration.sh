@@ -8,6 +8,9 @@ echo "Disposable Pelican source: $TEST_PANEL (retained for diagnostics)"
 git clone --depth=1 --branch "$PANEL_REF" https://github.com/pelican-dev/panel.git "$TEST_PANEL"
 composer install --working-dir="$TEST_PANEL" --no-dev --no-scripts --no-interaction --prefer-dist
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/pelican.php
+PELICAN_SOURCE="$TEST_PANEL" php tests/integration/console.php
+PELICAN_SOURCE="$TEST_PANEL" node tests/console_output.mjs
+git -C "$TEST_PANEL" apply --check "$PWD/patches/pelican/rc2-console-append.patch"
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/filament.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/livewire.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/adoption.php

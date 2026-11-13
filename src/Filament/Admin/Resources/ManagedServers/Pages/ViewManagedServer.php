@@ -40,6 +40,7 @@ final class ViewManagedServer extends ViewRecord
 
     protected string $view = 'arcturus-modpack-manager::managed-server';
 
+    #[\Livewire\Attributes\Url]
     public string $tab = 'overview';
 
     public string $pathSearch = '';

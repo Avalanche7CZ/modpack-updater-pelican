@@ -53,6 +53,8 @@ foreach (['index', 'create', 'view', 'edit'] as $page) {
 app('view')->addNamespace('arcturus-modpack-manager', $source.'/resources/views');
 $record = ManagedServer::create(['label' => 'Customized GTNH · Crucible', 'pelican_server_uuid' => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'provider' => 'github', 'source' => 'GTNewHorizons/GT-New-Horizons-Modpack', 'installed_version' => '2.8.0', 'available_version' => '2.9.0', 'baseline_status' => 'verified', 'adopted_at' => now(), 'runtime_report' => ['loader' => 'crucible', 'minecraft' => '1.7.10', 'java' => 17, 'image' => 'ghcr.io/example/java:17', 'startup' => 'bash startserver.sh', 'observed_at' => now()->toIso8601String()], 'release_metadata' => ['name' => 'GTNH 2.9.0', 'notes' => 'Fixture release notes. Review migration requirements.'], 'preview_summary' => ['from' => '2.8.0', 'to' => '2.9.0', 'counts' => ['add' => 10, 'update' => 128, 'remove' => 4, 'preserve_local_change' => 32, 'skip_disabled' => 3, 'conflict' => 2], 'changes' => [['path' => 'config/Paradigm/'.str_repeat('long-path-', 12).'/server.properties', 'action' => 'conflict', 'classification' => 'merge_conflict', 'blocked' => true, 'base_sha256' => str_repeat('a', 64), 'local_sha256' => str_repeat('b', 64), 'target_sha256' => str_repeat('c', 64)]]]]);
 $test = Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]);
+$directUpdates = Livewire\Livewire::withQueryParams(['tab' => 'updates'])->test(ViewManagedServer::class, ['record' => $record->id]);
+check($directUpdates->get('tab') === 'updates', 'Console deep link did not open the Updates tab');
 $snapshotDir = getenv('ARCTURUS_UI_SNAPSHOTS');
 if ($snapshotDir && ! is_dir($snapshotDir)) {
     mkdir($snapshotDir, 0700, true);

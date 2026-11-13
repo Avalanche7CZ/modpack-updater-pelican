@@ -38,8 +38,13 @@ final class Deployment
             if ($fresh->completed_at || ($execution !== null && ($fresh->context['native_execution_id'] ?? null) !== $execution)) { throw new RuntimeException('Native deployment receipt closed; retain its checkpoint.'); }
             $operation->update(['heartbeat_at' => now()]);
         };
-        $checkpoint = function (array $row) use (&$operation, $heartbeat): void {
+        $filesDone = 0; $filesTotal = null;
+        $checkpoint = function (array $row) use (&$operation, $heartbeat, &$filesDone, &$filesTotal): void {
             $heartbeat();
+            if ($operation->phase === 'applying' && $filesTotal !== null && in_array($row['step'] ?? '', ['file_verified', 'disable_verified'], true)) {
+                $filesDone += $row['step'] === 'disable_verified' ? 2 : 1;
+                $operation->update(['progress' => ['files_done' => $filesDone, 'files_total' => $filesTotal]]);
+            }
             $operation->update(['context' => [...$operation->context, ...(array_key_exists('link_stash', $row) ? ['native_link_stash' => $row['link_stash']] : []), 'native_checkpoint' => $row,
                 'native_checkpoint_sequence' => (int) ($operation->context['native_checkpoint_sequence'] ?? 0) + 1]]);
         };
@@ -102,6 +107,7 @@ final class Deployment
             app(Runtime::class)->requireSnapshot($server, $original);
             $phase('applying', 'Transferring and verifying approved candidate files through Wings', ['backup_complete' => true, 'native_writes_started' => true]);
             $changed = true;
+            $filesTotal = count($after);
             $transaction->apply($operation->id, $stage, $before, $after, $preview['policy_context']['safety_roots'] ?? [], $checkpoint, $moves);
             $transaction->verify($runtime['dependency_hashes']);
             app(Runtime::class)->installSettings($server, $original, $runtime);

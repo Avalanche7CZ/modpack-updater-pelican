@@ -46,6 +46,9 @@ jobs:
           PELICAN_SOURCE: /tmp/arcturus-panel
         run: |
           php tests/integration/pelican.php
+          php tests/integration/console.php
+          node tests/console_output.mjs
+          git -C "$PELICAN_SOURCE" apply --check "$GITHUB_WORKSPACE/patches/pelican/rc2-console-append.patch"
           php tests/integration/filament.php
           php tests/integration/livewire.php
           php tests/integration/adoption.php
@@ -63,6 +66,13 @@ jobs:
           php tests/integration/discord.php
           php tests/integration/discord_deployment.php
           php tests/integration/deployment.php
+      - name: Render updater and native game output in the same xterm
+        run: |
+          npm install --prefix /tmp/arcturus-console-browser --ignore-scripts --no-audit --no-fund playwright@1.58.2 @xterm/xterm@6.0.0
+          /tmp/arcturus-console-browser/node_modules/.bin/playwright install --with-deps chromium
+          PLAYWRIGHT_MODULE=/tmp/arcturus-console-browser/node_modules/playwright/index.mjs \
+          XTERM_SCRIPT=/tmp/arcturus-console-browser/node_modules/@xterm/xterm/lib/xterm.js \
+          PELICAN_SOURCE=/tmp/arcturus-panel node tests/console_browser.mjs
   package:
     needs: [regression, pelican]
     runs-on: ubuntu-latest

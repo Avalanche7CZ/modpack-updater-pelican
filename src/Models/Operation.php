@@ -18,6 +18,12 @@ final class Operation extends Model
 
     protected static function booted(): void
     {
+        static::saved(function (self $operation): void {
+            if ($operation->getRawOriginal('id') !== null && ! $operation->wasChanged(['phase', 'progress'])) { return; }
+            // An optional display projection must never interfere with recovery or a deployment.
+            try { app(\Arcturus\ModpackManager\ConsoleIntegration\ConsoleHistory::class)->record($operation); }
+            catch (\Throwable $error) { report($error); }
+        });
         static::saving(function (self $operation): void {
             // Fail BEFORE SQL on an incompletely migrated node, even when MySQL
             // runs without strict mode and would otherwise silently truncate.
