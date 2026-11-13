@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Filament\Admin\Pages;
 
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\ManagedServerResource;
+use Arcturus\ModpackManager\Filament\Forms\ReleaseSourceFields;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Security\Access;
 use Filament\Actions\Action;
@@ -67,8 +68,7 @@ final class Overview extends Page implements HasTable
             TextColumn::make('backup_mode')->label('Backup'),
             TextColumn::make('last_checked_at')->label('Last successful check')->since()->placeholder('Never'),
             TextColumn::make('failure_summary')->label('Failure / blocked')->limit(80)->wrap()->placeholder('—'),
-        ])->filters([SelectFilter::make('provider')->options(['ftb' => 'FTB', 'github' => 'GitHub',
-            'modrinth' => 'Modrinth', 'curseforge' => 'CurseForge', 'atlauncher' => 'ATLauncher', 'custom' => 'Custom'])])
+        ])->filters([SelectFilter::make('provider')->options(ReleaseSourceFields::PROVIDERS)])
             ->recordUrl(fn ($record) => ManagedServerResource::getUrl('view', ['record' => $record]))
             ->defaultSort('label')->poll('15s');
     }

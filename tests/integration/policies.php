@@ -333,8 +333,26 @@ $record->refresh();
 check($record->provider === 'modrinth' && $record->source === 'reviewed-pack' && $record->installed_version === '0.13.5' && $record->label === 'Edited fixture', 'Editable release association did not persist');
 check($record->baseline_status === 'unverified' && ! $record->base_manifest_path && ! $record->target_manifest_path && ! $record->selected_version && ! $record->preview_summary && ! $record->deploy_enabled, 'Changed source retained stale evidence or enabled deployment');
 check($record->file_rules === $priorRules, 'Source edit changed protection policies');
+$edit->set('data.provider', 'gtnh')->set('data.gtnh_variant', 'java17plus')->set('data.installed_version', '2.8.1')
+    ->call('mountAction', 'saveChanges')->call('callMountedAction');
+check($edit->instance()->getErrorBag()->isEmpty(), 'Native GTNH source edit returned validation errors');
+$record->refresh();
+check($record->provider === 'gtnh' && $record->source === 'gtnh' && $record->asset_pattern === 'java17plus' &&
+    $record->installed_version === '2.8.1' && $record->baseline_status === 'unverified' && $record->file_rules === $priorRules, 'GTNH source edit lost fixed source, variant, or policies');
+$reopened = Livewire\Livewire::test(\Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\EditManagedServer::class, ['record' => $record->id]);
+check($reopened->get('data.gtnh_variant') === 'java17plus', 'GTNH variant was not restored in the edit form');
 rejects(fn () => app(ServerPolicyService::class)->save($record, $priorRules, [], $record->policy_revision, ['pelican_server_uuid' => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc']), 'Unknown Pelican server binding accepted');
 DB::table('servers')->insert(['uuid' => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'name' => 'New binding fixture']);
+$gtnhWizard = Livewire\Livewire::test(CreateManagedServer::class)->set('data.label', 'GTNH official draft')
+    ->set('data.pelican_server_uuid', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc')->set('data.provider', 'gtnh')->set('data.installed_version', '2.8.1');
+$gtnhWizard->call('create');
+check($gtnhWizard->instance()->getErrorBag()->has('data.gtnh_variant'), 'GTNH adoption accepted a missing Java variant');
+$gtnhWizard->set('data.gtnh_variant', 'java17plus')->call('create');
+check($gtnhWizard->instance()->getErrorBag()->isEmpty(), 'Native GTNH adoption returned validation errors');
+$gtnhDraft = ManagedServer::where('label', 'GTNH official draft')->firstOrFail();
+check($gtnhDraft->provider === 'gtnh' && $gtnhDraft->source === 'gtnh' && $gtnhDraft->asset_pattern === 'java17plus' &&
+    $gtnhDraft->baseline_status === 'unverified' && ! $gtnhDraft->deploy_enabled, 'GTNH adoption did not persist the fixed source, exact variant or safe defaults');
+$gtnhDraft->delete();
 $record->update(['local_root' => '/fixture/old-live', 'staging_parent' => '/fixture/old-stage', 'last_backup_uuid' => 'old-backup', 'runtime_report' => ['state' => 'running']]);
 app(ServerPolicyService::class)->save($record, $priorRules, [], $record->policy_revision, ['pelican_server_uuid' => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc']);
 $record->refresh();

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages;
 
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\ManagedServerResource;
+use Arcturus\ModpackManager\Filament\Forms\ReleaseSourceFields;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\BackupExclusions;
 use Arcturus\ModpackManager\Services\DiscordSettings;
@@ -34,12 +35,17 @@ final class EditManagedServer extends EditRecord
         $data['discord_webhook'] = $this->record->discord_webhook;
         $data['clear_discord_webhook'] = false;
         $data['file_rules'] = (new ProtectionPolicy)->normalize($data['file_rules'] ?? []);
+        if (($data['provider'] ?? null) === 'gtnh') {
+            $data['gtnh_variant'] = $data['asset_pattern'] ?? null;
+            $data['asset_pattern'] = null;
+        }
 
         return $data;
     }
 
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
+        $data = ReleaseSourceFields::normalize($data);
         $attributes = array_intersect_key($data, array_flip(['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport']));
         $attributes += array_intersect_key($data, array_flip(DiscordSettings::FIELDS));
         try {

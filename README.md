@@ -58,7 +58,8 @@ These are **starting templates**, not immutable rules in the update planner. The
 | Provider | Source | Preparation behavior |
 | --- | --- | --- |
 | FTB | Numeric pack ID | Official exact server file manifest, supported hashes, targets and permitted dependency downloads; generated loader runtime requires separate qualification |
-| GitHub / GTNH | `owner/repository` | Exact tag and one explicitly selected server ZIP with GitHub SHA-256 digest; otherwise use a pinned custom recipe |
+| GTNH | Official catalog, selected automatically | Java 8 or Java 17+ server ZIP with a reviewed SHA-256 pin; currently 2.8.1 and 2.9.0 |
+| GitHub Releases | `owner/repository` | Exact tag and one explicitly selected server ZIP with GitHub SHA-256 digest; otherwise use a pinned custom recipe |
 | Modrinth | Project slug/ID | `.mrpack`, index checksums, server environments and server overrides; optional files require explicit normalization |
 | CurseForge | Numeric project ID | API key required; official server packs and checkpointed client-manifest resolution with complete verified downloads; unknown server runtime remains blocked |
 | ATLauncher | Pack safe name | Metadata and permitted checksummed mods; unsigned config archives, browser-only downloads and bot protection fail closed |

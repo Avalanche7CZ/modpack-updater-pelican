@@ -20,6 +20,13 @@ final class Runtime
         foreach (['minecraft', 'loader'] as $key) { if (empty($current[$key]) || empty($target[$key])) { throw new RuntimeException('Installed or target '.$key.' is unknown; inspect the active runtime and verified server pack.'); } }
         if (($current['java_confidence'] ?? '') !== 'verified' || ! is_int($current['java'] ?? null)) { throw new RuntimeException('Actual Java is not verified in the current boot log; an image name is only a hint.'); }
         $minimum = max(RuntimePlan::minimumJava($target['minecraft']), (int) ($target['java'] ?? 0));
+        $maximum = $target['java_max'] ?? null;
+        if ($maximum !== null) {
+            if (! is_int($maximum) || $maximum < $minimum) { throw new RuntimeException('The selected server pack declares an invalid Java range.'); }
+            if ($current['java'] < $minimum || $current['java'] > $maximum) {
+                throw new RuntimeException('The selected server pack requires Java '.$minimum.'–'.$maximum.'; the current verified runtime is Java '.$current['java'].'. Check the selected archive variant and the egg before updating.');
+            }
+        }
         $java = $current['java'] >= $minimum ? $current['java'] : $minimum;
         $image = $server->image;
         if ($java !== $current['java']) {

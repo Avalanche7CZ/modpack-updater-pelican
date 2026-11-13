@@ -8,11 +8,19 @@ Use the official numeric pack ID and exact version ID. The current manifest API 
 
 Files are staged without running FTB's installer. The native backend can then prepare supported modern Forge/NeoForge libraries using the exact official loader installer in a private sandbox, before plan approval; see [native runtime requirements](native-deployment.md). Missing sandbox capabilities or unsupported profiles produce a runtime blocker. Java Docker images must still be approved by the server's egg. Staging alone does not prove Minecraft startup.
 
-## GitHub / GTNH
+## GTNH official downloads
+
+In **Adopt Existing Server**, choose **GTNH · Official downloads**, select the variant the installation came from (**Java 8** or **Java 17+**, including Java 25), and enter the currently installed release, e.g. `2.8.1`. No GitHub repository, ZIP glob or custom recipe is needed. The same choices are available when editing an existing association; switching from GitHub or Custom requires preparing a new baseline and does not edit live files.
+
+The adapter reads the [official GTNH release index](https://downloads.gtnewhorizons.com/versions.json), takes the matching server ZIP, and only promotes stable releases in automatic checks. It does not construct a client download or switch to a different Java variant. Native deployment checks the verified Java runtime against the advertised range and still verifies the loader and existing startup independently. In particular, the provider does not convert an upstream Forge launcher to Crucible or approve a custom Crucible startup by itself. Review the world migration separately.
+
+The official index does not provide archive SHA-256 digests. The plugin ships independently measured pins (SHA-256 and exact size) for the official Java 8 and Java 17+ ZIPs of **2.8.1** and **2.9.0**. The worker verifies the pin before extraction. A newer release without a reviewed pin remains visible but cannot be prepared until a plugin update adds a pin or an operator supplies an independently verified custom recipe. Do not substitute a multipart ETag or hash a live server to generate a pin. Legacy node workers additionally need `downloads.gtnewhorizons.com` in their exact host allowlist.
+
+## GitHub Releases
 
 Source is `owner/repository`; installed version is an exact tag. Select a server ZIP asset explicitly, for example `*Server*Java17*.zip`, based on the **existing** launcher and Java variant. Zero or multiple matches block staging. The stable checker uses GitHub's `/releases/latest` and a bounded history fallback, excluding obvious nightly/snapshot/prerelease tags even when a publisher mislabeled them as normal releases. Exact older tags can always be supplied during adoption.
 
-The GitHub asset's `sha256:` digest is required. If the release supplies a separate checksum file but no API digest, the current adapter requires an operator-reviewed custom recipe containing the independently verified checksum. It does not guess which sidecar file or client/server Java variant is correct. GTNH/Crucible launchers, scripts and image choices stay preserved; review migration notes and worlds separately.
+The GitHub asset's `sha256:` digest is required. If the release supplies a separate checksum file but no API digest, the current adapter requires an operator-reviewed custom recipe containing the independently verified checksum. It does not guess which sidecar file or client/server Java variant is correct.
 
 ## Modrinth
 

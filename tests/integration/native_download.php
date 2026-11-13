@@ -37,7 +37,8 @@ try {
             'provider' => 'custom', 'project' => 'native-download-fixture', 'version' => '2', 'format' => 'zip',
             'downloads' => [['url' => $url, 'archive' => true, 'hashes' => ['sha256' => $hash ?? $route['sha256']]]]]]);
     };
-    foreach (['https://github.com/archive', 'https://github.com/redirect', 'https://files.feed-the-beast.com/archive', 'https://cdn.modrinth.com/archive'] as $url) {
+    foreach (['https://github.com/archive', 'https://github.com/redirect', 'https://files.feed-the-beast.com/archive', 'https://cdn.modrinth.com/archive',
+        'https://downloads.gtnewhorizons.com/ServerPacks/fixture.zip'] as $url) {
         $result = $prepare($url);
         check($result['state'] === 'completed', 'Official native download failed: '.json_encode($result));
         $manifest = $worker->request('manifest', ['operation_id' => $result['operation_id']]);

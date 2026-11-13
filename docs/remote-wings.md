@@ -30,7 +30,7 @@ Requirements: Linux, Python **3.11+** (stdlib only, including `tomllib`), a dedi
       "allowed_hosts": [
         "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
         "cdn.modrinth.com", "files.feed-the-beast.com",
-        "edge.forgecdn.net", "mediafilez.forgecdn.net", "download.nodecdn.net"
+        "edge.forgecdn.net", "mediafilez.forgecdn.net", "download.nodecdn.net", "downloads.gtnewhorizons.com"
       ],
       "artifacts": {
         "reviewed-server-pack": "/srv/arcturus-trusted-artifacts/server-pack.zip"

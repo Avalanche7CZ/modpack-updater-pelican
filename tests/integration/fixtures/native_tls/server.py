@@ -10,7 +10,7 @@ import sys
 import zipfile
 
 root = Path(sys.argv[1])
-hosts = ['github.com', 'release-assets.githubusercontent.com', 'cdn.modrinth.com', 'files.feed-the-beast.com', 'edge.forgecdn.net', 'mediafilez.forgecdn.net', 'custom.example.test', 'private.example.test']
+hosts = ['github.com', 'release-assets.githubusercontent.com', 'cdn.modrinth.com', 'files.feed-the-beast.com', 'edge.forgecdn.net', 'mediafilez.forgecdn.net', 'downloads.gtnewhorizons.com', 'custom.example.test', 'private.example.test']
 subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=github.com',
                 '-addext', 'subjectAltName=' + ','.join('DNS:' + h for h in hosts), '-keyout', str(root / 'key.pem'), '-out', str(root / 'cert.pem')], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 buffer = io.BytesIO()

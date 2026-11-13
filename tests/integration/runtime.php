@@ -7,9 +7,19 @@ $app = require __DIR__.'/bootstrap.php';
 use App\Models\Egg;
 use App\Models\Node;
 use App\Models\Server;
+use Arcturus\ModpackManager\Native\Runtime;
 use Arcturus\ModpackManager\Services\AdoptionService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Http\Client\Factory;
+
+$legacy = new Server;
+$legacy->forceFill(['startup' => 'java @java9args.txt -jar lwjgl3ify-forgePatches.jar nogui', 'image' => 'java_25']);
+$currentLegacy = ['minecraft' => '1.7.10', 'loader' => 'forge', 'loader_version' => '10.13.4.1614', 'java' => 25, 'java_confidence' => 'verified'];
+$modernVariant = [...$currentLegacy, 'java' => 17, 'java_max' => 26];
+$legacyPlan = (new Runtime)->plan($legacy, $currentLegacy, $modernVariant, [], '/unused');
+check($legacyPlan['target']['java'] === 25 && $legacyPlan['image'] === 'java_25' && $legacyPlan['startup'] === $legacy->startup, 'GTNH Java range rewrote a compatible runtime');
+rejects(fn () => (new Runtime)->plan($legacy, $currentLegacy, [...$modernVariant, 'java' => 8, 'java_max' => 8], [], '/unused'), 'GTNH Java 8 archive was accepted for Java 25');
+rejects(fn () => (new Runtime)->plan($legacy, [...$currentLegacy, 'java' => 27], $modernVariant, [], '/unused'), 'Java above the GTNH range was accepted');
 
 $node = new Node;
 $node->forceFill(['scheme' => 'https', 'fqdn' => 'wings.fixture.test', 'daemon_connect' => 8080,

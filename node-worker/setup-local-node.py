@@ -23,7 +23,7 @@ PROTECTED = frozenset(('world', 'world_nether', 'world_the_end', 'saves', 'dimen
 WORLD_MARKERS = frozenset(('region', 'playerdata', 'entities', 'poi', 'level.dat', 'level.dat_old', 'session.lock', '.env', '.ssh', '.aws', '.git', 'secrets', 'credentials', 'tokens', 'passwords'))
 HOSTS = ['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com',
     'cdn.modrinth.com', 'files.feed-the-beast.com', 'edge.forgecdn.net', 'mediafilez.forgecdn.net',
-    'download.nodecdn.net']
+    'download.nodecdn.net', 'downloads.gtnewhorizons.com']
 UUID = re.compile(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}')
 
 

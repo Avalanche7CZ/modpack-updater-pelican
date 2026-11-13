@@ -7,6 +7,7 @@ use Arcturus\ModpackManager\Modpacks\Providers\CurseForgeProvider;
 use Arcturus\ModpackManager\Modpacks\Providers\CustomProvider;
 use Arcturus\ModpackManager\Modpacks\Providers\FtbProvider;
 use Arcturus\ModpackManager\Modpacks\Providers\GitHubProvider;
+use Arcturus\ModpackManager\Modpacks\Providers\GtnhProvider;
 use Arcturus\ModpackManager\Modpacks\Providers\ModrinthProvider;
 use Arcturus\ModpackManager\Modpacks\Release;
 
@@ -40,6 +41,41 @@ check($r->canPrepare() && $r->bytes() === 123, 'Exact server asset not resolved'
 $http->responses[$releaseUrl]['assets'][] = $asset;
 check(! $github->release('GTNewHorizons/GT-New-Horizons-Modpack', '2.8.0', '*Server*')->canPrepare(), 'Ambiguous GitHub assets accepted');
 rejects(fn () => $github->project('../escape'), 'Invalid repository accepted');
+
+$gtnh = new GtnhProvider($http);
+$gtnhEntry = static function (string $version, int $maxJava, string $title = 'Stable release', string $prefix = ''): array {
+    $url = 'https://downloads.gtnewhorizons.com/ServerPacks/'.$prefix.'GT_New_Horizons_'.$version.'_Server_Java_';
+    return ['title' => $title, 'maxJavaVersion' => $maxJava, 'server' => ['java8Url' => $url.'8.zip', 'java17_2XUrl' => $url.'17-'.$maxJava.'.zip']];
+};
+$catalog = ['2.8.1' => $gtnhEntry('2.8.1', 25), '3.0.0-RC-1' => $gtnhEntry('3.0.0-RC-1', 26, 'Stable release', 'betas/'),
+    '2.9.0' => $gtnhEntry('2.9.0', 26), '2.9.1' => $gtnhEntry('2.9.1', 26, 'Beta release', 'betas/')];
+$http->responses[GtnhProvider::INDEX] = $catalog;
+$start = count($http->requests);
+$target = $gtnh->latest('gtnh', 'java17plus');
+check(array_slice($http->requests, $start) === [GtnhProvider::INDEX], 'GTNH latest did not use a single official catalog request');
+$base = $gtnh->release('gtnh', '2.8.1', 'java17plus');
+check($base->canPrepare() && $target->canPrepare() && $target->version === '2.9.0', 'GTNH stable selection or exact baseline is incorrect');
+check(str_ends_with($base->downloads[0]['url'], '_Server_Java_17-25.zip') && str_ends_with($target->downloads[0]['url'], '_Server_Java_17-26.zip') &&
+    $target->runtime['java'] === 17 && $target->runtime['java_max'] === 26 && $target->bytes() === 568348402, 'GTNH lost its modern Java variant or artifact pin');
+foreach (['2.8.1', '2.9.0'] as $version) {
+    $oldJava = $gtnh->release('gtnh', $version, 'java8');
+    check($oldJava->canPrepare() && str_ends_with($oldJava->downloads[0]['url'], '_Server_Java_8.zip') && $oldJava->runtime['java_max'] === 8, 'GTNH lost its Java 8 variant');
+}
+rejects(fn () => $gtnh->release('https://untrusted.example/index.json', '2.8.1', 'java17plus'), 'GTNH accepted arbitrary index URL');
+rejects(fn () => $gtnh->release('gtnh', '2.8.1'), 'GTNH guessed the installed Java variant');
+rejects(fn () => $gtnh->release('gtnh', '2.8.10', 'java17plus'), 'GTNH accepted a nonexistent exact version');
+$future = $gtnhEntry('3.0.0', 27);
+$http->responses[GtnhProvider::INDEX] = ['versions' => ['3.0.0' => $future] + $catalog];
+$unverified = $gtnh->latest('gtnh', 'java17plus');
+check($unverified->version === '3.0.0' && ! $unverified->canPrepare() && $unverified->downloads[0]['hashes'] === [], 'GTNH hid a new stable version or silently trusted unpinned bytes');
+foreach (['https://github.com/ServerPacks/GT_New_Horizons_2.8.1_Server_Java_17-25.zip',
+    'https://downloads.gtnewhorizons.com/Multi_mc_downloads/GT_New_Horizons_2.8.1_Server_Java_17-25.zip',
+    $catalog['2.8.1']['server']['java8Url'], null] as $wrong) {
+    $http->responses[GtnhProvider::INDEX] = $catalog;
+    $http->responses[GtnhProvider::INDEX]['2.8.1']['server']['java17_2XUrl'] = $wrong;
+    $release = $gtnh->release('gtnh', '2.8.1', 'java17plus');
+    check(! $release->canPrepare() && $release->downloads === [], 'GTNH accepted an untrusted, client, wrong-Java or missing archive');
+}
 
 $cf = new CurseForgeProvider($http);
 rejects(fn () => $cf->versions('123'), 'Missing API credential accepted');

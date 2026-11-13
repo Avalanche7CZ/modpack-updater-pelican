@@ -11,6 +11,7 @@ use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ListMa
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer;
 use Arcturus\ModpackManager\Filament\Forms\DiscordFields;
 use Arcturus\ModpackManager\Filament\Forms\PolicyFields;
+use Arcturus\ModpackManager\Filament\Forms\ReleaseSourceFields;
 use Arcturus\ModpackManager\Jobs\CheckRelease;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Security\Access;
@@ -112,24 +113,7 @@ final class ManagedServerResource extends Resource
                             ])->all())
                         ->helperText('This binds an existing server. It does not create or reinstall it.')
                         ->unique(ignoreRecord: true)->exists('servers', 'uuid'),
-                    Select::make('provider')->label('Provider')->required()
-                        ->options([
-                            'ftb' => 'FTB · Feed The Beast',
-                            'github' => 'GitHub Releases · GTNH / TFG / custom',
-                            'modrinth' => 'Modrinth',
-                            'curseforge' => 'CurseForge (API key required)',
-                            'atlauncher' => 'ATLauncher',
-                            'custom' => 'Custom verified recipe',
-                        ])->default('github')->native(false),
-                    TextInput::make('source')->label('Pack ID / owner/repo')
-                        ->helperText('FTB/CurseForge: numeric ID · GitHub: owner/repo · Modrinth: slug · Custom: verified recipe HTTPS URL')
-                        ->maxLength(255)->required(),
-                    TextInput::make('asset_pattern')->label('Server ZIP filename pattern')
-                        ->helperText('GitHub only. Example: *Server*Java17*.zip — one matching file is required.')
-                        ->maxLength(160),
-                    TextInput::make('installed_version')->label('Installed upstream version')
-                        ->helperText('Set the version you verified is currently installed.')
-                        ->maxLength(120)->required(),
+                    ...ReleaseSourceFields::fields(),
                 ]),
             Section::make('Filesystem backend')->visible(fn ($record) => $record !== null)->schema([
                 Select::make('transport')->label('Update backend')->required()->native(false)
@@ -205,8 +189,7 @@ final class ManagedServerResource extends Resource
             IconColumn::make('enabled')->boolean(),
             TextColumn::make('last_checked_at')->label('Checked')->since()->placeholder('Never'),
         ])->filters([
-            SelectFilter::make('provider')->options(['github' => 'GitHub', 'ftb' => 'FTB', 'modrinth' => 'Modrinth',
-                'curseforge' => 'CurseForge', 'atlauncher' => 'ATLauncher', 'custom' => 'Custom']),
+            SelectFilter::make('provider')->options(ReleaseSourceFields::PROVIDERS),
             SelectFilter::make('baseline_status')->options(['verified' => 'Upstream verified', 'unverified' => 'Upstream unverified']),
             TernaryFilter::make('enabled'),
         ])->toolbarActions([

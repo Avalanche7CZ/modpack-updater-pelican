@@ -14,7 +14,7 @@ final class DownloadPolicy
         'api.feed-the-beast.com', 'files.feed-the-beast.com', 'api.modpacks.ch', 'piston-meta.mojang.com',
         'piston-data.mojang.com', 'libraries.minecraft.net', 'api.curseforge.com',
         'edge.forgecdn.net', 'mediafilez.forgecdn.net', 'api.atlauncher.com',
-        'download.nodecdn.net'];
+        'download.nodecdn.net', 'downloads.gtnewhorizons.com'];
 
     public function validate(string $url, array $hosts = self::HOSTS): string
     {

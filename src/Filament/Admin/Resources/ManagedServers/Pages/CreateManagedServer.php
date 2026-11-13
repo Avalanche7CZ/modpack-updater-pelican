@@ -8,6 +8,8 @@ use App\Models\Server;
 use Arcturus\ModpackManager\Local\LocalNode;
 use Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\ManagedServerResource;
 use Arcturus\ModpackManager\Filament\Forms\PolicyFields;
+use Arcturus\ModpackManager\Filament\Forms\ReleaseSourceFields;
+use Arcturus\ModpackManager\Modpacks\Providers\GtnhProvider;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\AdoptionService;
 use Arcturus\ModpackManager\Services\BackupExclusions;
@@ -71,16 +73,7 @@ final class CreateManagedServer extends CreateRecord
                 Text::make(fn () => $this->inspection && ! empty($this->inspection['warnings'])
                     ? 'Inspection warning: '.$this->inspection['warnings'][0] : ''),
             ]),
-            Step::make('Exact upstream release')->schema([
-                Select::make('provider')->options(['ftb' => 'FTB', 'github' => 'GitHub / GTNH',
-                    'modrinth' => 'Modrinth', 'curseforge' => 'CurseForge', 'atlauncher' => 'ATLauncher', 'custom' => 'Custom recipe'])
-                    ->required()->default('github'),
-                TextInput::make('source')->label('Project ID, owner/repository or approved recipe')->required()->maxLength(255),
-                TextInput::make('installed_version')->label('Exact installed release ID / tag')->required()->maxLength(120)
-                    ->helperText('FTB and CurseForge use numeric file/version IDs. Modrinth uses its immutable version ID. GitHub uses the tag.'),
-                TextInput::make('asset_pattern')->label('Explicit server ZIP asset pattern')->maxLength(160)
-                    ->helperText('GTNH: select the server asset matching the existing Java/Crucible variant.'),
-            ]),
+            Step::make('Exact upstream release')->schema(ReleaseSourceFields::fields()),
             Step::make('Protection and backup')->schema([
                 TagsInput::make('backup_excluded_directories')->label('Excluded top-level backup folders')
                     ->default(fn () => config('arcturus-modpack-manager.default_backup_exclusions', ['backup', 'backups'])),
@@ -107,7 +100,9 @@ final class CreateManagedServer extends CreateRecord
 
         return ['summary' => [
             'Server' => Server::where('uuid', $get('pelican_server_uuid'))->value('name') ?? 'Select a server',
-            'Managed name' => $get('label') ?? '', 'Provider / project' => ($get('provider') ?? '').' / '.($get('source') ?? ''),
+            'Managed name' => $get('label') ?? '', 'Provider / project' => $get('provider') === 'gtnh'
+                ? 'GTNH · '.(GtnhProvider::VARIANTS[$get('gtnh_variant') ?? ''] ?? 'Select Java variant')
+                : ($get('provider') ?? '').' / '.($get('source') ?? ''),
             'Installed release' => $get('installed_version') ?? '', 'Backup backend' => $get('backup_mode') ?? 'pelican',
             'Preparation backend' => $get('filesystem_backend') ?? 'default',
             'Backup exclusions' => implode(', ', $get('backup_excluded_directories') ?? []) ?: 'None',
@@ -153,6 +148,7 @@ final class CreateManagedServer extends CreateRecord
     protected function handleRecordCreation(array $data): Model
     {
         Access::requireAdmin();
+        $data = ReleaseSourceFields::normalize($data);
         $server = Server::where('uuid', $data['pelican_server_uuid'])->firstOrFail();
         try {
             $backend = app(LocalNode::class)->adoptionAttributes($server->uuid, $data['filesystem_backend'] ?? 'default');
