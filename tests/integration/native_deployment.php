@@ -96,7 +96,7 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false,
         unset($item);
     }
     $startup = $migration ? 'java -Xms128M @'.$oldArgs.' nogui' : 'java -Xms128M @unix_args.txt nogui';
-    if ($crucible) { $startup = 'java -Xms128M -XX:MaxRAMPercentage=95.0 -jar @java9args.txt -jar Crucible-1.7.10-server.jar nogui'; }
+    if ($crucible) { $startup = rtrim(file_get_contents(__DIR__.'/../fixtures/gtnh-crucible/startup.txt'), "\r\n"); }
     $image = $crucible ? 'fixture:java_25' : 'fixture:java_21';
     DB::table('servers')->insert(['uuid' => $uuid, 'name' => 'Native fixture', 'node_id' => 1, 'owner_id' => 1, 'startup' => $startup, 'image' => $image, 'created_at' => now()->subMinutes(2), 'updated_at' => now()->subMinutes(2)]);
     $managed = ManagedServer::create(['label' => 'Native fixture', 'pelican_server_uuid' => $uuid, 'provider' => $baseManifest['provider'], 'source' => $baseManifest['project'], 'transport' => 'native',
@@ -121,7 +121,7 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false,
     }
     if ($crucible) {
         $systems[$uuid]['data']['Crucible-1.7.10-server.jar'] = $crucibleJar();
-        $systems[$uuid]['data']['java9args.txt'] = "-Dcrucible.weAreJava9=true\n--add-opens\njava.base/java.io=ALL-UNNAMED\n";
+        $systems[$uuid]['data']['java9args.txt'] = file_get_contents(__DIR__.'/../fixtures/gtnh-crucible/java9args.txt');
         $systems[$uuid]['data']['logs/latest.log'] = $crucibleBootLog();
     }
     return $managed;
@@ -401,7 +401,7 @@ try {
                 $systems[$uuid]['data']['Crucible-1.7.10-server.jar'] = $originalData['Crucible-1.7.10-server.jar'];
                 $systems[$uuid]['data']['java9args.txt'] = '@nested.txt';
                 $nested = app(PreviewService::class)->generate($managed);
-                check(! $nested['applicable'] && str_contains(implode(' ', $nested['capability_blockers']), 'direct java command'), 'Nested Java argfile was accepted');
+                check(! $nested['applicable'] && str_contains(implode(' ', $nested['capability_blockers']), 'JVM argument file java9args.txt'), 'Nested Java argfile was accepted');
                 $systems[$uuid]['data']['java9args.txt'] = $originalData['java9args.txt'];
             }
         }

@@ -55,7 +55,7 @@ final class CrucibleRuntime
         foreach ($argFiles as $path) {
             // Do not expand nested argfiles or accept an argfile that selects a different launcher/classpath.
             $text = $files->read($path, 65536);
-            self::checkJvmOptions(self::tokens($text, true));
+            self::checkJvmOptions(self::tokens($text, $path), $path);
             $retained[$path] = ['sha256' => hash('sha256', $text), 'mode' => $files->permissions($path)];
         }
         ksort($retained);
@@ -71,10 +71,13 @@ final class CrucibleRuntime
         ];
     }
 
-    /** Parse only the direct Java launcher forms we can prove. Never evaluate a command. */
+    /** Parse only the Java launcher forms we can prove. Never evaluate a command. */
     public static function launcher(string $startup): array
     {
-        $tokens = self::tokens($startup);
+        // This exact prelude only creates the server's logs directory. Leave the
+        // original invocation intact in the plan and reject other shell commands.
+        $java = preg_replace('~^[ \t]*(?:mkdir[ \t]+-p[ \t]+logs[ \t]*;[ \t]*exec[ \t]+|exec[ \t]+)(?=java[ \t])~', '', $startup);
+        $tokens = self::tokens($java);
         if (array_shift($tokens) !== 'java') { throw self::unsupportedLauncher(); }
         $argFiles = []; $jvm = [];
         for ($i = 0; $i < count($tokens); $i++) {
@@ -105,35 +108,42 @@ final class CrucibleRuntime
         throw self::unsupportedLauncher();
     }
 
-    private static function tokens(string $text, bool $argFile = false): array
+    private static function tokens(string $text, ?string $argFile = null): array
     {
-        if ($argFile) { $text = preg_replace('/^[ \t]*#[^\r\n]*/m', '', $text); }
-        if (! preg_match($argFile ? '~^[A-Za-z0-9_.,:/=+%\- \t\r\n]*$~D' : '~^[A-Za-z0-9_.,:/=@+%\- \t]+$~D', $text)) {
-            throw self::unsupportedLauncher();
+        if ($argFile !== null) { $text = preg_replace('/^[ \t]*#[^\r\n]*/m', '', $text); }
+        if (! preg_match($argFile !== null ? '~^[A-Za-z0-9_.,:/=+%*\- \t\r\n]*$~D' : '~^[A-Za-z0-9_.,:/=@+%*\- \t]+$~D', $text)) {
+            throw self::unsupportedLauncher($argFile);
         }
 
         return preg_split('/[ \t\r\n]+/', trim($text), -1, PREG_SPLIT_NO_EMPTY);
     }
 
-    private static function checkJvmOptions(array $tokens): void
+    private static function checkJvmOptions(array $tokens, ?string $argFile = null): void
     {
         $access = '(?:add-opens|add-exports|add-reads)';
         $package = '[A-Za-z0-9_.]+(?:/[A-Za-z0-9_.]+)?=[A-Za-z0-9_.,-]+';
         for ($i = 0; $i < count($tokens); $i++) {
             $token = $tokens[$i];
             if (preg_match('/^--'.$access.'$/D', $token)) {
-                if (! preg_match('~^'.$package.'$~D', $tokens[++$i] ?? '')) { throw self::unsupportedLauncher(); }
+                if (! preg_match('~^'.$package.'$~D', $tokens[++$i] ?? '')) { throw self::unsupportedLauncher($argFile); }
+                continue;
+            }
+            // A GC selector may contain *, but no other option gains glob support.
+            // File output stays under the protected logs directory, with no extra path segments.
+            if (preg_match('~^-Xlog:gc\*?(?:=(?:trace|debug|info|warning|error|off))?:file=logs/[A-Za-z0-9_][A-Za-z0-9_.-]*\.log(?::(?:time|uptime|level|tags)(?:,(?:time|uptime|level|tags))*(?::filecount=[0-9]+,filesize=[0-9]+[kKmMgG]?)?)?$~D', $token)) {
                 continue;
             }
             if (! preg_match('~^(?:-D[A-Za-z0-9_.-]+(?:=[A-Za-z0-9_.,+%-]*)?|-X(?:ms|mx|ss)[0-9]+[kKmMgG]?|-XX:[A-Za-z0-9_.,=+%-]+|--illegal-access=(?:warn|permit|deny|debug)|--'.$access.'='.$package.')$~D', $token)) {
-                throw self::unsupportedLauncher();
+                throw self::unsupportedLauncher($argFile);
             }
         }
     }
 
-    private static function unsupportedLauncher(): RuntimeException
+    private static function unsupportedLauncher(?string $argFile = null): RuntimeException
     {
-        return new RuntimeException('Keeping Crucible requires a direct java command with one root Crucible JAR and simple JVM options or root JVM argument files. Inspect the active startup; custom wrappers or classpaths are not qualified.');
+        return new RuntimeException($argFile !== null
+            ? 'Keeping Crucible: JVM argument file '.$argFile.' has unsupported options or syntax. Nested argument files, launchers and custom classpaths are not qualified.'
+            : 'Keeping Crucible: the Panel startup must launch one root Crucible JAR using java, exec java, or mkdir -p logs; exec java, with supported JVM options. Other shell commands and custom classpaths are not qualified.');
     }
 
     private function inspectJar(Wings $files, string $path): string
