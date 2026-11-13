@@ -209,6 +209,12 @@ foreach (['verifying_before_backup' => 'Verifying files before backup', 'verifyi
     $statusHtml = view('arcturus-modpack-manager::deployment-status', ['operation' => $statusOperation, 'context' => [], 'receiptReadable' => true])->render();
     check(str_contains($statusHtml, $label) && str_contains($statusHtml, '8 870 / 9 208'), 'Verification phase/counts missing from deployment UI');
 }
+foreach (\Arcturus\ModpackManager\Services\ApplyProgress::STEPS as $step => $label) {
+    $statusOperation = new Operation;
+    $statusOperation->forceFill(['id' => (string) Str::uuid(), 'phase' => 'applying', 'progress' => ['step' => $step, 'message' => $label, 'files_done' => 1, 'files_total' => 3], 'heartbeat_at' => now()]);
+    $statusHtml = view('arcturus-modpack-manager::deployment-status', ['operation' => $statusOperation, 'context' => [], 'receiptReadable' => true])->render();
+    check(str_contains($statusHtml, $label) && str_contains($statusHtml, '1 / 3') && str_contains($statusHtml, 'confirmed for this step'), 'Applying substep UI counts missing');
+}
 // Corrupt/unreadable encrypted evidence must not crash the deployment status UI.
 $brokenDeployment = Operation::create(['id' => (string) Str::uuid(), 'managed_server_id' => $record->id,
     'kind' => 'deploy', 'phase' => 'verifying', 'context' => ['from' => 'old', 'to' => 'new'], 'heartbeat_at' => now()]);

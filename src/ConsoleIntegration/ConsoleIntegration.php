@@ -13,7 +13,6 @@ use Arcturus\ModpackManager\Security\Access;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Panel;
-use Filament\View\PanelsRenderHook;
 
 final class ConsoleIntegration
 {
@@ -48,7 +47,6 @@ final class ConsoleIntegration
     public static function register(Panel $panel): void
     {
         Console::registerCustomHeaderActions(HeaderActionPosition::After, self::action());
-        $panel->renderHook(PanelsRenderHook::PAGE_END,
-            fn () => view('arcturus-modpack-manager::console-output'), scopes: [Console::class]);
+        Console::registerCustomWidgets(\App\Enums\ConsoleWidgetPosition::AboveConsole, [ConsoleOutput::class]);
     }
 }

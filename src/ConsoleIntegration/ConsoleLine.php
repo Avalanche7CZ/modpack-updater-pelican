@@ -55,6 +55,14 @@ final class ConsoleLine
         if (in_array($phase, ['verifying_before_backup', 'verifying_after_backup'], true) && self::counts($progress['files_done'] ?? null, $progress['files_total'] ?? null)) {
             $message .= ' · '.number_format($progress['files_done'], 0, '.', ' ').' / '.number_format($progress['files_total'], 0, '.', ' ').' paths';
         }
+        $applyStep = $phase === 'applying' ? ($progress['step'] ?? '') : '';
+        if (isset(\Arcturus\ModpackManager\Services\ApplyProgress::STEPS[$applyStep])) {
+            $message = \Arcturus\ModpackManager\Services\ApplyProgress::STEPS[$applyStep];
+            if (self::counts($progress['files_done'] ?? null, $progress['files_total'] ?? null) || (($progress['files_done'] ?? null) === 0 && ($progress['files_total'] ?? null) === 0)) {
+                $message .= ' · '.$progress['files_done'].' / '.$progress['files_total'];
+            }
+            $phase .= ':'.$applyStep;
+        }
         if ($phase === 'applying' && self::counts($progress['files_done'] ?? null, $progress['files_total'] ?? null)) {
             $message = 'Applying and verifying '.$progress['files_done'].' / '.$progress['files_total'].' files';
         }

@@ -9,7 +9,7 @@ use Arcturus\ModpackManager\Services\UpdatePlanner;
 use RuntimeException;
 
 /** Pelican rc.2 authenticated binary streams; no client token and no host-volume access. */
-final class Wings implements BatchFiles
+final class Wings implements MutationBatches
 {
     public const MAX_FILE_BYTES = 2147483648;
 
@@ -176,41 +176,43 @@ final class Wings implements BatchFiles
     public function hashBatch(array $paths): array
     {
         if (count($paths) > 32 || ! array_is_list($paths)) { throw new RuntimeException('Native hash batch must contain at most 32 explicit paths.'); }
-        $snapshot = function () use ($paths): array {
-            $directories = []; $metadata = []; $ancestors = [];
-            foreach ($paths as $path) {
-                UpdatePlanner::assertPath($path);
-                $parent = ''; $parts = explode('/', $path);
-                foreach ($parts as $index => $part) {
-                    if (! array_key_exists($parent, $directories)) {
-                        $directories[$parent] = array_column($this->listing($parent), null, 'name');
-                    }
-                    $row = $directories[$parent][$part] ?? null;
-                    $next = $parent === '' ? $part : $parent.'/'.$part;
-                    if ($row === null) { $metadata[$path] = null; break; }
-                    if ($row['symlink']) { throw new SymlinkPath($next); }
-                    if (! is_string($row['modified'] ?? null) || $row['modified'] === '') { throw new RuntimeException('Wings batch metadata lacks a modification timestamp.'); }
-                    if ($index === count($parts) - 1) {
-                        if (! $row['file'] || $row['directory'] || ! is_int($row['size'] ?? null) || $row['size'] < 0 || $row['size'] > self::MAX_FILE_BYTES) {
-                            throw new RuntimeException('Native batch candidate is not a regular bounded file.');
-                        }
-                        $metadata[$path] = $row;
-                    } else {
-                        if (! $row['directory'] || $row['file']) { throw new RuntimeException('Native batch ancestor is not a regular directory.'); }
-                        $ancestors[$next] = $row;
-                        $parent = $next;
-                    }
-                }
-                $this->heartbeat?->__invoke();
-            }
-            return [$metadata, $ancestors];
-        };
-        $before = $snapshot(); $hashes = [];
+        $before = $this->batchMetadata($paths); $hashes = [];
         foreach ($paths as $path) {
             $hashes[$path] = $before[0][$path] === null ? null : $this->streamHash($path, self::MAX_FILE_BYTES, 600, null, $before[0][$path]);
         }
-        if ($snapshot() !== $before) { throw new RuntimeException('Native batch file or ancestor changed during verification.'); }
+        if ($this->batchMetadata($paths) !== $before) { throw new RuntimeException('Native batch file or ancestor changed during verification.'); }
         return $hashes;
+    }
+
+    private function batchMetadata(array $paths): array
+    {
+        $directories = []; $metadata = []; $ancestors = [];
+        foreach ($paths as $path) {
+            UpdatePlanner::assertPath($path);
+            $parent = ''; $parts = explode('/', $path);
+            foreach ($parts as $index => $part) {
+                if (! array_key_exists($parent, $directories)) {
+                    $directories[$parent] = array_column($this->listing($parent), null, 'name');
+                }
+                $row = $directories[$parent][$part] ?? null;
+                $next = $parent === '' ? $part : $parent.'/'.$part;
+                if ($row === null) { $metadata[$path] = null; break; }
+                if ($row['symlink']) { throw new SymlinkPath($next); }
+                if (! is_string($row['modified'] ?? null) || $row['modified'] === '') { throw new RuntimeException('Wings batch metadata lacks a modification timestamp.'); }
+                if ($index === count($parts) - 1) {
+                    if (! $row['file'] || $row['directory'] || ! is_int($row['size'] ?? null) || $row['size'] < 0 || $row['size'] > self::MAX_FILE_BYTES) {
+                        throw new RuntimeException('Native batch candidate is not a regular bounded file.');
+                    }
+                    $metadata[$path] = $row;
+                } else {
+                    if (! $row['directory'] || $row['file']) { throw new RuntimeException('Native batch ancestor is not a regular directory.'); }
+                    $ancestors[$next] = $row;
+                    $parent = $next;
+                }
+            }
+            $this->heartbeat?->__invoke();
+        }
+        return [$metadata, $ancestors];
     }
 
     public function read(string $path, int $limit = 1048576): string
@@ -267,6 +269,59 @@ final class Wings implements BatchFiles
         $this->repo()->chmodFiles('/', [['file' => $path, 'mode' => decoct($mode)]])->throw();
         if ($this->permissions($path) !== $mode) { throw new RuntimeException('Wings did not retain the existing file permissions.'); }
         return $mode;
+    }
+
+    public function permissionsBatch(array $paths): array
+    {
+        if (count($paths) > 32 || ! array_is_list($paths)) { throw new RuntimeException('Invalid permission batch.'); }
+        $before = $this->batchMetadata($paths); $modes = [];
+        foreach ($before[0] as $path => $meta) {
+            if ($meta === null || ! is_string($meta['mode_bits'] ?? null) || ! preg_match('/^[0-7]{1,3}$/D', $meta['mode_bits'])) { throw new RuntimeException('Missing regular file permissions.'); }
+            $modes[$path] = octdec($meta['mode_bits']);
+        }
+        if ($this->batchMetadata($paths) !== $before) { throw new RuntimeException('Permissions changed during batch inspection.'); }
+        return $modes;
+    }
+
+    public function chmodBatch(array $modes): void
+    {
+        $this->permissionsBatch(array_keys($modes));
+        $rows = [];
+        foreach ($modes as $path => $mode) {
+            if (! is_int($mode) || $mode < 0 || $mode > 0777) { throw new RuntimeException('Invalid ordinary permission bits.'); }
+            $rows[] = ['file' => $path, 'mode' => decoct($mode)];
+        }
+        if ($rows === []) { return; }
+        $this->repo()->chmodFiles('/', $rows)->throw();
+        if ($this->permissionsBatch(array_keys($modes)) !== $modes) { throw new RuntimeException('Wings chmod batch was incomplete; do not replay it.'); }
+    }
+
+    public function renameBatch(array $moves): void
+    {
+        if (count($moves) > 16) { throw new RuntimeException('Native rename batch exceeds 16 independent moves.'); }
+        $paths = [...array_keys($moves), ...array_values($moves)];
+        if (count(array_unique($paths)) !== count($paths)) { throw new RuntimeException('Dependent or overlapping rename batch.'); }
+        foreach ($paths as $path) {
+            foreach ($paths as $other) {
+                if ($path !== $other && str_starts_with($path, $other.'/')) { throw new RuntimeException('Ancestor-dependent rename batch.'); }
+            }
+        }
+        $before = $this->batchMetadata($paths); $rows = [];
+        foreach ($moves as $from => $to) {
+            if ($before[0][$from] === null || $before[0][$to] !== null) { throw new RuntimeException('Rename batch source/destination changed.'); }
+            $rows[] = ['from' => $from, 'to' => $to];
+        }
+        if ($rows === []) { return; }
+        // One request only. An error/timeout is ambiguous and must enter existing backup recovery.
+        $this->repo()->renameFiles('/', $rows)->throw();
+        $after = $this->batchMetadata($paths);
+        foreach ($moves as $from => $to) {
+            $old = $before[0][$from]; $new = $after[0][$to];
+            if ($after[0][$from] !== null || $new === null) { throw new RuntimeException('Wings rename batch incomplete; do not replay it.'); }
+            foreach (['size', 'modified', 'mode_bits'] as $key) {
+                if (! array_key_exists($key, $old) || ($new[$key] ?? null) !== $old[$key]) { throw new RuntimeException('Renamed file metadata differs.'); }
+            }
+        }
     }
 
     public function mkdir(string $path): void

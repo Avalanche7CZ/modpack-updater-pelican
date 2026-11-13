@@ -12,6 +12,7 @@ const hook = additions.slice(0, additions.indexOf('            if (window.Pelica
 const client = fs.readFileSync(new URL('../resources/js/console-output.js', import.meta.url), 'utf8');
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH });
 try {
+    for (const hasHook of [false, true]) {
     const page = await browser.newPage();
     page.on('pageerror', error => { throw error; });
     const rows = [{ id: 1, text: '[Modpack] Waiting for the locked Pelican backup' }];
@@ -20,36 +21,49 @@ try {
             const after = Number(new URL(route.request().url()).searchParams.get('after') ?? -1);
             return route.fulfill({ json: { lines: rows.filter(row => row.id > after), cursor: rows.at(-1)?.id ?? 0 } });
         }
-        return route.fulfill({ contentType: 'text/html', body: '<div id="terminal"></div>' });
+        return route.fulfill({ contentType: 'text/html', body: '<section id="arcturus-modpack-output-server-a"><strong>Modpack update</strong><p data-status></p><ol data-lines></ol></section><div id="terminal"></div>' });
     });
-    await page.goto('https://panel.fixture/');
-    await page.addScriptTag({ path: process.env.XTERM_SCRIPT });
-    await page.addScriptTag({ content: `
-        const terminal = new Terminal({ rows: 30, cols: 160, allowProposedApi: true });
-        terminal.open(document.getElementById('terminal'));
-        let tornDown = false;
-        const TERMINAL_PRELUDE = 'panel@fixture ~ ';
-        ${nativeHandler}
-        window.fixtureGameOutput = handleConsoleOutput;
-        window.fixtureBuffer = () => Array.from({ length: terminal.buffer.active.length }, (_, i) => terminal.buffer.active.getLine(i).translateToString(true)).join('\\n');
-        (() => { ${hook} })();
-        (() => { const serverUuid = 'server-a'; const endpoint = 'https://panel.fixture/feed'; ${client} })();
-    ` });
-    await page.waitForFunction(() => window.fixtureBuffer().includes('locked Pelican backup'));
+    const initialize = async () => {
+        await page.addScriptTag({ path: process.env.XTERM_SCRIPT });
+        await page.addScriptTag({ content: `
+            const terminal = new Terminal({ rows: 30, cols: 160, allowProposedApi: true });
+            terminal.open(document.getElementById('terminal'));
+            let tornDown = false;
+            const TERMINAL_PRELUDE = 'panel@fixture ~ ';
+            ${nativeHandler}
+            window.fixtureGameOutput = handleConsoleOutput;
+            window.fixtureBuffer = () => Array.from({ length: terminal.buffer.active.length }, (_, i) => terminal.buffer.active.getLine(i).translateToString(true)).join('\\n');
+            window.fixtureOutput = () => ${hasHook} ? window.fixtureBuffer() : document.querySelector('[data-lines]').textContent;
+            ${hasHook ? `(() => { ${hook} })();` : ''}
+            (() => { const serverUuid = 'server-a'; const endpoint = 'https://panel.fixture/feed'; ${client} })();
+        ` });
+    };
+    await page.goto('https://panel.fixture/'); await initialize();
+    await page.waitForFunction(() => window.fixtureOutput().includes('locked Pelican backup'));
+    assert.equal(await page.locator('#arcturus-modpack-output-server-a').evaluate(el => el.hidden), hasHook);
     await page.evaluate(() => window.fixtureGameOutput('[Server thread/INFO]: Minecraft game output\n'));
-    rows.push({ id: 2, text: '[Modpack] Starting Minecraft · waiting for verified startup' });
+    rows.push({ id: 2, text: '[Modpack] Uploading and verifying Wings staging files · 112 / 340' });
     rows.push({ id: 3, text: '[Modpack] Update completed · Minecraft startup verified' });
-    await page.waitForFunction(() => window.fixtureBuffer().includes('Minecraft startup verified'));
+    await page.waitForFunction(() => window.fixtureOutput().includes('Minecraft startup verified'));
     rows.push({ id: 4, text: '[Modpack] Update failed · restoring and verifying the pre-update backup' });
     rows.push({ id: 5, text: '[Modpack] Restore completed · waiting for verified original Minecraft startup' });
     rows.push({ id: 6, text: '[Modpack] Rollback verified · original Minecraft startup verified' });
-    await page.waitForFunction(() => window.fixtureBuffer().includes('Rollback verified'));
-    await page.evaluate(() => window.fixtureGameOutput('[Server thread/INFO]: Original Minecraft game output\n'));
-    await page.waitForFunction(() => window.fixtureBuffer().includes('Original Minecraft game output'));
-    const output = await page.evaluate(() => window.fixtureBuffer());
-    assert.ok(output.includes('[Server thread/INFO]: Minecraft game output'));
-    assert.equal(output.split('locked Pelican backup').length - 1, 1, 'Polling duplicated xterm output');
+    await page.waitForFunction(() => window.fixtureOutput().includes('Rollback verified'));
+    assert.ok((await page.evaluate(() => window.fixtureBuffer())).includes('Minecraft game output'));
+    let output = await page.evaluate(() => window.fixtureOutput());
+    assert.equal(output.split('locked Pelican backup').length - 1, 1);
     assert.ok(output.indexOf('Restore completed') < output.indexOf('Rollback verified'));
-    await page.screenshot({ path: '/tmp/arcturus-console-xterm.png' });
-    console.log('Chromium + real xterm 6: offline backup feed, native game output, verified success and rollback interleaving passed');
+    await page.reload(); await initialize();
+    await page.waitForFunction(() => window.fixtureOutput().includes('Rollback verified'));
+    output = await page.evaluate(() => window.fixtureOutput());
+    assert.equal(output.split('Rollback verified').length - 1, 1, 'Refresh duplicated history');
+    if (!hasHook) {
+        await page.addScriptTag({ content: `(() => { ${hook} })();` });
+        await page.waitForFunction(() => window.fixtureBuffer().includes('Rollback verified'));
+        assert.equal(await page.locator('#arcturus-modpack-output-server-a').evaluate(el => el.hidden), true);
+    }
+    await page.screenshot({ path: '/tmp/arcturus-console-' + (hasHook ? 'xterm' : 'fallback') + '.png' });
+    await page.close();
+    }
+    console.log('Chromium + xterm/fallback: offline feed, counts, native output, rollback, refresh and late hook passed');
 } finally { await browser.close(); }

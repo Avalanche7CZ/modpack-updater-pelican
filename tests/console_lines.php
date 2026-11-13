@@ -27,3 +27,8 @@ echo "Console vocabulary, real measurements, secret exclusion and verified recov
 
 $verification = ConsoleLine::make('deploy', 'verifying_before_backup', ['files_done' => 8870, 'files_total' => 9208], []);
 check(str_contains($verification['message'], '8 870 / 9 208'), 'Real verification progress missing');
+
+foreach (\Arcturus\ModpackManager\Services\ApplyProgress::STEPS as $step => $label) {
+    $line = ConsoleLine::make('deploy', 'applying', ['step' => $step, 'files_done' => 1, 'files_total' => 3], []);
+    check($line['phase'] === 'applying:'.$step && str_contains($line['message'], $label.' · 1 / 3'), 'Applying console step/count missing');
+}

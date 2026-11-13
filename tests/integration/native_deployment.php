@@ -172,7 +172,10 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
     }
     if (str_ends_with($path, '/files/chmod')) { foreach ($request['files'] as $file) { $sys['modes'][$file['file']] = octdec($file['mode']); } return Http::response([], 204, $headers); }
     if (str_ends_with($path, '/files/rename')) {
-        foreach ($request['files'] as $move) {
+        if ($mode === 'batch_noop') { $mode = 'success'; return Http::response([], 204, $headers); }
+        $partialBatch = $mode === 'batch_partial' && count($request['files']) > 1;
+        foreach ($request['files'] as $index => $move) {
+            if ($partialBatch && $index === 1) { $mode = 'success'; return Http::response([], 204, $headers); }
             if ($mode === 'partial_write' && $move['to'] === 'config/options.cfg') { $mode = 'success'; return Http::response(['error' => 'fixture write failure'], 500, $headers); }
             $sys['modes'][$move['to']] = $sys['modes'][$move['from']] ?? 0644; unset($sys['modes'][$move['from']]);
             $sys['data'][$move['to']] = $sys['data'][$move['from']]; unset($sys['data'][$move['from']]);
@@ -254,6 +257,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, $b
 try {
     foreach ([
         ['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'],
+        ['partial batch 204 rollback', false, 'batch_partial'], ['no-op batch 204 rollback', false, 'batch_noop'],
         ['runtime/image rollback', true, 'failed_boot'], ['target boot with growing log', true, 'target_log_grows'], ['rollback boot with growing log', true, 'rollback_log_grows'],
         ['rollback with console API failure', false, 'diagnostic_unavailable'], ['rollback with stale console', false, 'stale_console'],
         ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'],

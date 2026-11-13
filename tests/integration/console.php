@@ -73,6 +73,15 @@ $op = $tracker->create($ma, 'deploy');
 Route::getRoutes()->refreshNameLookups();
 $url = ConsoleIntegration::updateUrl($a);
 check(str_contains($url, (string) $ma->id) && str_contains($url, 'tab=updates'), 'Console link lost server or Updates tab');
+$source = dirname(__DIR__, 2);
+app('view')->addNamespace('arcturus-modpack-manager', $source.'/resources/views');
+$pluginPath = plugin_path('arcturus-modpack-manager');
+if (!is_dir(dirname($pluginPath))) { mkdir(dirname($pluginPath), 0700, true); }
+if (!file_exists($pluginPath)) { symlink($source, $pluginPath); }
+check(realpath($pluginPath) === $source, 'Disposable plugin path points elsewhere');
+check(\Arcturus\ModpackManager\ConsoleIntegration\ConsoleOutput::canView(), 'Authorized account cannot see fallback');
+$widget = Livewire\Livewire::test(\Arcturus\ModpackManager\ConsoleIntegration\ConsoleOutput::class);
+check(str_contains($widget->html(), 'Modpack update') && str_contains($widget->html(), 'arcturus-modpack-output-'.$a->uuid), 'Native fallback widget did not render for this server');
 $invoke($redirect);
 check($redirect->url === $url, 'Backend action did not redirect into the existing review flow');
 check(Operation::count() === 1 && $ma->fresh()->active_operation_id === $op->id, 'Opening Update created another operation');
@@ -103,6 +112,15 @@ check(count(ConsoleHistory::read($ma->id, null)['lines']) === $count, 'Per-file 
 $op->update(['progress' => ['files_done' => 112, 'files_total' => 340]]);
 check(str_contains(end($read($a)['lines'])['text'], '112 / 340'), 'Throttled real progress missing');
 \Illuminate\Support\Carbon::setTestNow();
+$contextBefore = $op->getRawOriginal('context');
+$applyReport = app(\Arcturus\ModpackManager\Services\ApplyProgress::class)->reporter($op);
+$applyReport('stage_verification', 0, 3);
+check($op->fresh()->progress['step'] === 'stage_verification', 'Initial Applying step missing before checkpoint');
+$applyReport('stage_verification', 1, 3);
+check($op->fresh()->progress['files_done'] === 0, 'Progress was persisted per file');
+$applyReport('upload', 0, 2); $applyReport('upload', 2, 2);
+check($op->fresh()->progress['files_done'] === 2 && $op->fresh()->progress['files_total'] === 2, 'Confirmed upload counts missing');
+check($op->fresh()->getRawOriginal('context') === $contextBefore, 'Display progress rewrote recovery receipt');
 $tracker->transition($op, 'manual_intervention');
 check($ma->fresh()->active_operation_id === $op->id && str_contains(end($read($a)['lines'])['text'], 'Recovery unverified'), 'Console changed recovery safety state');
 $refreshed = $read($a);

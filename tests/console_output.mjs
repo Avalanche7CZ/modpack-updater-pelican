@@ -36,7 +36,7 @@ function environment() {
 }
 const e = environment();
 e.load(); await flush();
-assert.equal(e.requests.length, 0, 'Unpatched Panel must make no feed requests');
+assert.equal(e.requests.length, 1, 'Unpatched Panel must poll the authorized fallback feed');
 e.reply({ lines: [{ id: 1, text: '[Modpack] Waiting for the locked Pelican backup' }], cursor: 1 });
 e.hook(); await flush();
 assert.equal(e.lines.length, 1, 'Offline Minecraft must not block the Panel feed');

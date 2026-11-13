@@ -1,0 +1,114 @@
+{
+  "uploads": 1024,
+  "paths": 1056,
+  "results": {
+    "8d3a107": {
+      "requests": {
+        "initial": {
+          "list-directory": 1
+        },
+        "live_verification": {
+          "list-directory": 198,
+          "contents": 1056
+        },
+        "permissions": {
+          "list-directory": 3168
+        },
+        "stage_setup": {
+          "list-directory": 11,
+          "create-directory": 3
+        },
+        "upload": {
+          "list-directory": 15360,
+          "write": 1024,
+          "contents": 1024,
+          "chmod": 1024
+        },
+        "live_recheck": {
+          "list-directory": 198,
+          "contents": 1056
+        },
+        "deploy": {
+          "list-directory": 50112,
+          "contents": 3136,
+          "rename": 2080
+        },
+        "final_verification": {
+          "list-directory": 200,
+          "contents": 1024,
+          "delete": 1
+        }
+      },
+      "seconds": {
+        "initial": 0.056597072,
+        "deploy": 73.165984888,
+        "stage_verification": 0.024909517,
+        "live_verification": 0.766068527,
+        "permissions": 5.892533852,
+        "stage_setup": 0.005436959,
+        "upload": 15.424097839,
+        "live_recheck": 0.500966116,
+        "final_verification": 0.601288857
+      }
+    },
+    "current": {
+      "requests": {
+        "initial": {
+          "list-directory": 1
+        },
+        "live_verification": {
+          "list-directory": 198,
+          "contents": 1056
+        },
+        "permissions": {
+          "list-directory": 198
+        },
+        "stage_setup": {
+          "list-directory": 11,
+          "create-directory": 3
+        },
+        "upload": {
+          "list-directory": 9216,
+          "write": 1024,
+          "contents": 1024
+        },
+        "stage_permissions": {
+          "list-directory": 384,
+          "chmod": 32
+        },
+        "live_recheck": {
+          "list-directory": 198,
+          "contents": 1056
+        },
+        "deploy": {
+          "list-directory": 3844,
+          "contents": 4160,
+          "rename": 130
+        },
+        "final_verification": {
+          "list-directory": 200,
+          "contents": 1024,
+          "delete": 1
+        }
+      },
+      "seconds": {
+        "initial": 0.003113487,
+        "stage_verification": 0.029427002999999965,
+        "live_verification": 0.556206845,
+        "permissions": 0.36069055399999994,
+        "stage_setup": 0.007057458,
+        "upload": 9.469000201999997,
+        "stage_permissions": 0.453520763,
+        "live_recheck": 0.501372439,
+        "deploy": 6.583452763000001,
+        "final_verification": 0.5582796820000001
+      }
+    }
+  },
+  "environment": {
+    "php": "8.5.9",
+    "panel": "v1.0.0-rc.2",
+    "boundary": "in-memory HTTP fixtures, no artificial latency; no production DB or network",
+    "baseline": "8d3a107"
+  }
+}

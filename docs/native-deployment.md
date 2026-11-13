@@ -107,3 +107,5 @@ settings before any recovery decision. Never clear the lock or replay deployment
 merely because the schema migration succeeded.
 
 See [bounded native verification](native-batch-verification.md) for directory-sharing batches, verification phases, measured fixture request counts and deferred staging/batch-mutation work.
+
+See [Applying progress and Wings mutation batches](native-applying.md) for step-specific counts, bounded chmod/rename, partial-batch recovery and remaining per-file upload work.

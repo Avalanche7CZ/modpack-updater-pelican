@@ -52,6 +52,12 @@ try {
     check($files->data['mods/custom.jar'] === 'custom' && $files->data['world/region/r.0.0.mca'] === 'world', 'Custom/world data changed');
     check(! array_filter($files->hashes, fn ($p) => str_starts_with($p, 'world/')), 'World data entered hashing scope');
     check(end($journal)['step'] === 'files_verified', 'Durable completion checkpoint missing');
+    file_put_contents($stage.'/config/a.cfg', 'bad'); $badProgress = []; $badJournal = [];
+    rejects(function () use ($stage, $before, $after, &$badJournal, &$badProgress) { (new Transaction(new NativeFixture))->apply(str_repeat('9', 32), $stage, $before, $after, [],
+        function ($row) use (&$badJournal) { $badJournal[] = $row; }, [],
+        function ($step, $done, $total) use (&$badProgress) { $badProgress[] = [$step, $done, $total]; }); }, 'Unverified local candidate accepted');
+    check($badJournal === [] && $badProgress !== [] && ! array_filter($badProgress, fn ($row) => $row[1] !== 0), 'Invalid local hashes counted as confirmed progress or reached a write checkpoint');
+    file_put_contents($stage.'/config/a.cfg', 'new');
     $files = new NativeFixture; $snapshot = $files->data; $files->fail = 'config/b.cfg';
     rejects(fn () => (new Transaction($files))->apply(str_repeat('b', 32), $stage, $before, $after, [], $log), 'Partial file failure went unreported');
     check($files->permissions('config/a.cfg') === 0755, 'Replacement lost existing executable permission bits');

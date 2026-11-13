@@ -4,9 +4,9 @@ The plugin adds **Update** after the native Start / Restart / Stop header action
 
 ## Optional Panel patch
 
-Audited upstream tag: [`v1.0.0-rc.2`, commit `f64a167eea349bfbb89cda8732eacf682a82a4b3`](https://github.com/pelican-dev/panel/tree/f64a167eea349bfbb89cda8732eacf682a82a4b3). Its [Console page](https://github.com/pelican-dev/panel/blob/f64a167eea349bfbb89cda8732eacf682a82a4b3/app/Filament/Server/Pages/Console.php) has header actions and widget registration; the existing [xterm component](https://github.com/pelican-dev/panel/blob/f64a167eea349bfbb89cda8732eacf682a82a4b3/resources/views/filament/components/server-console.blade.php) keeps its terminal private and offers no append hook. No widget, cloned component or DOM manipulation is used here.
+Audited upstream tag: [`v1.0.0-rc.2`, commit `f64a167eea349bfbb89cda8732eacf682a82a4b3`](https://github.com/pelican-dev/panel/tree/f64a167eea349bfbb89cda8732eacf682a82a4b3). Its [Console page](https://github.com/pelican-dev/panel/blob/f64a167eea349bfbb89cda8732eacf682a82a4b3/app/Filament/Server/Pages/Console.php) has header actions and widget registration; the existing [xterm component](https://github.com/pelican-dev/panel/blob/f64a167eea349bfbb89cda8732eacf682a82a4b3/resources/views/filament/components/server-console.blade.php) keeps its terminal private and offers no append hook. The optional append API is still required to write into xterm. A small native Console widget now provides status when that API is unavailable; no console component is cloned or rewritten.
 
-The standalone [`patches/pelican/rc2-console-append.patch`](../patches/pelican/rc2-console-append.patch) adds only an append interface to that Blade component. Obtain the patch from this repository separately from the plugin package. The plugin installer **never applies it or overwrites Panel files**. Without it, Update and all normal updater pages continue working; no terminal feed is started.
+The standalone [`patches/pelican/rc2-console-append.patch`](../patches/pelican/rc2-console-append.patch) adds only an append interface to that Blade component. Obtain the patch from this repository separately from the plugin package. The plugin installer **never applies it or overwrites Panel files**. Without it, Update and all normal updater pages continue working; the same authorized feed now drives a small **Modpack update** widget above the console. When the hook connects, that fallback hides and history is replayed into xterm without duplicates.
 
 On a **test Panel** checkout at the exact RC2 tag, first inspect the patch and run from the Panel root (replace the example patch path):
 
@@ -60,3 +60,12 @@ PELICAN_SOURCE=/tmp/disposable-panel node tests/console_browser.mjs
 ```
 
 `CHROMIUM_PATH` can select an already installed compatible Chromium. This test runs the actual RC2 game-output handler, patch hook and plugin client in Chromium with a real xterm buffer and fixture feed. It verifies interleaved game, backup, success and rollback lines, and saves `/tmp/arcturus-console-xterm.png`. It is a rendering smoke test, not a full authenticated Panel browser or live-server test.
+
+
+## Applying progress and fallback
+
+The native AboveConsole widget extension registers `ConsoleOutput`. Its view starts the same server-authorized feed regardless of hook availability. Without a matching v1 hook it shows the last eight recorded lines, using text-only rendering and an explicit connection-error state. With a working hook it hides the fallback and appends into the existing terminal. A late hook aborts the fallback poll and replays recent history to the new terminal; terminal IDs prevent duplicates. Navigation aborts the request and removes the listener. Neither display errors nor widget visibility grants deployment authority.
+
+Applying stays the same operation phase; `progress.step` distinguishes prepared-file hashing, live verification, permission inspection, confirmed staging uploads, staging chmod, a separate post-upload live recheck, verified deployment paths and final verification. These fields are display state and contain no filenames/secrets. Upload totals count only installed candidate files; deployment totals include removals and both paths of an approved disabled-mod move. Step changes and final counters persist immediately, ordinary updates at most every five seconds. Console history uses the step in its phase identity so transitions are not swallowed by the existing 15-second same-step throttle.
+
+The optional Chromium test now exercises both hook and fallback modes, refresh, native game output, offline progress and late hook attachment. Run it as documented above. No Panel patch is installed automatically.
