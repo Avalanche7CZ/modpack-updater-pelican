@@ -347,11 +347,14 @@ $gtnhWizard = Livewire\Livewire::test(CreateManagedServer::class)->set('data.lab
     ->set('data.pelican_server_uuid', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc')->set('data.provider', 'gtnh')->set('data.installed_version', '2.8.1');
 $gtnhWizard->call('create');
 check($gtnhWizard->instance()->getErrorBag()->has('data.gtnh_variant'), 'GTNH adoption accepted a missing Java variant');
-$gtnhWizard->set('data.gtnh_variant', 'java17plus')->call('create');
+check(($gtnhWizard->instance()->getSchema('form')->getComponent('policy_template')->getOptions()['gtnh_arcturus'] ?? null)
+    === 'GTNH / Crucible + Arcturus Network', 'Combined GTNH preset was not available in the wizard');
+$gtnhWizard->set('data.gtnh_variant', 'java17plus')->set('data.policy_template', 'gtnh_arcturus')->call('create');
 check($gtnhWizard->instance()->getErrorBag()->isEmpty(), 'Native GTNH adoption returned validation errors');
 $gtnhDraft = ManagedServer::where('label', 'GTNH official draft')->firstOrFail();
 check($gtnhDraft->provider === 'gtnh' && $gtnhDraft->source === 'gtnh' && $gtnhDraft->asset_pattern === 'java17plus' &&
     $gtnhDraft->baseline_status === 'unverified' && ! $gtnhDraft->deploy_enabled, 'GTNH adoption did not persist the fixed source, exact variant or safe defaults');
+check($gtnhDraft->file_rules === (new \Arcturus\ModpackManager\Services\ProtectionPolicy)->template('gtnh_arcturus'), 'Selecting the combined GTNH preset did not persist its rules');
 $gtnhDraft->delete();
 $record->update(['local_root' => '/fixture/old-live', 'staging_parent' => '/fixture/old-stage', 'last_backup_uuid' => 'old-backup', 'runtime_report' => ['state' => 'running']]);
 app(ServerPolicyService::class)->save($record, $priorRules, [], $record->policy_revision, ['pelican_server_uuid' => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc']);

@@ -51,6 +51,8 @@ The **Adopt Existing Server** wizard now defaults to the editable **Arcturus Net
 
 The Arcturus presets add **Keep local** for the common `Paradigm`/`paradigm` and `ArcturusTokens` JAR filename variants, the `config/paradigm/`, `config/Paradigm/`, `config/paradigminsights/`, `config/paradigmvote/` and `config/arcturustokens/` directories, and the exact file `config/arcturustokens.properties`. TFG presets treat `kubejs/` as upstream-owned: unchanged baseline files update automatically in the plan, new files are added, and unchanged obsolete upstream files are removed. Local-only scripts and protected files are preserved; files changed both locally and upstream require Keep local / Use upstream, with a bounded read-only text diff where supported. No scripts or recipes are merged.
 
+For the Arcturus GTNH server, select **GTNH / Crucible + Arcturus Network**. It includes the existing Crucible JAR review and Arcturus mod protections, and always keeps the local `config/WarpTheory.cfg`, `config/hodgepodge.cfg` and root `Crucible.yml` (also `crucible.yml`).
+
 These are **starting templates**, not immutable rules in the update planner. The filename globs are case-sensitive; check exact installed JAR names after baseline comparison. Matching by verified mod ID is stronger when JARs are renamed between releases. New template defaults do **not** automatically change policies already saved on adopted servers. Selecting a template in the wizard replaces the *unsaved* rule list; inspect your edits first.
 
 ## Providers

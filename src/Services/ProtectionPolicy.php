@@ -95,7 +95,8 @@ final class ProtectionPolicy
     {
         return ['empty' => 'Empty', 'conservative' => 'Conservative', 'upstream' => 'Mostly upstream-managed',
             'custom' => 'Custom mod-heavy', 'gtnh' => 'GTNH / Crucible', 'tfg' => 'TFG Modern',
-            'arcturus' => 'Arcturus Network — custom mods', 'tfg_arcturus' => 'TFG Modern + Arcturus Network'];
+            'arcturus' => 'Arcturus Network — custom mods', 'gtnh_arcturus' => 'GTNH / Crucible + Arcturus Network',
+            'tfg_arcturus' => 'TFG Modern + Arcturus Network'];
     }
 
     public function template(string $name): array
@@ -125,14 +126,20 @@ final class ProtectionPolicy
         if ($name === 'custom') {
             $rules[] = ['scope' => 'directory', 'pattern' => 'mods', 'classification' => 'local_only', 'mode' => 'ignore'];
         }
-        if ($name === 'gtnh') {
+        if (in_array($name, ['gtnh', 'gtnh_arcturus'], true)) {
             $rules[] = ['scope' => 'glob', 'pattern' => '*Crucible*.jar', 'mode' => 'review'];
+        }
+        if ($name === 'gtnh_arcturus') {
+            // Crucible's default filename is capitalized; keep lowercase installations too.
+            foreach (['config/WarpTheory.cfg', 'config/hodgepodge.cfg', 'Crucible.yml', 'crucible.yml'] as $path) {
+                $rules[] = ['scope' => 'exact', 'pattern' => $path, 'mode' => 'protect', 'comment' => 'Arcturus GTNH server configuration'];
+            }
         }
         if (in_array($name, ['tfg', 'tfg_arcturus'], true)) {
             // Obsolete upstream-owned KubeJS files follow the same hash checks as updates.
             $rules[] = ['scope' => 'directory', 'pattern' => 'kubejs', 'classification' => 'removed_upstream', 'mode' => 'follow'];
         }
-        if (in_array($name, ['arcturus', 'tfg_arcturus'], true)) {
+        if (in_array($name, ['arcturus', 'gtnh_arcturus', 'tfg_arcturus'], true)) {
             // Editable presets only: none of these names are global invariant
             // protections. Do not put these in the core update planner.
             // Glob matching is case-sensitive; preserve both common jar cases.

@@ -64,6 +64,7 @@ foreach (['../escape', '/world', 'C:/data', 'config//x'] as $unsafe) {
 // Optional Arcturus presets must retain real network mods and directories
 // without reintroducing any hardcoded protection into UpdatePlanner.
 $arcturus = $policy->template('arcturus');
+$gtnhArcturus = $policy->template('gtnh_arcturus');
 $tfgArcturus = $policy->template('tfg_arcturus');
 foreach ([
     'mods/paradigm-2.3.jar',
@@ -78,7 +79,7 @@ foreach ([
     'config/arcturustokens/example.toml',
     'config/arcturustokens.properties',
 ] as $customPath) {
-    foreach (['arcturus' => $arcturus, 'tfg_arcturus' => $tfgArcturus] as $preset => $rules) {
+    foreach (['arcturus' => $arcturus, 'gtnh_arcturus' => $gtnhArcturus, 'tfg_arcturus' => $tfgArcturus] as $preset => $rules) {
         check($policy->effective($customPath, $rules)['mode'] === 'protect',
             $preset.' failed to protect Arcturus mod/config: '.$customPath);
         $diff = $p->plan([$customPath => $hash('old')], [$customPath => $hash('old')],
@@ -87,6 +88,19 @@ foreach ([
             $preset.' would overwrite protected custom data: '.$customPath);
     }
 }
+foreach (['config/WarpTheory.cfg', 'config/hodgepodge.cfg', 'Crucible.yml', 'crucible.yml'] as $gtnhPath) {
+    $base = [$gtnhPath => $hash('old')];
+    $local = [$gtnhPath => $hash('ours')];
+    $target = [$gtnhPath => $hash('new')];
+    foreach ([[$base, $local, $target], [$base, $base, $target], [$base, $local, []], [[], [], $target]] as [$from, $live, $to]) {
+        $change = $p->plan($from, $live, $to, $gtnhArcturus)['changes'][0];
+        check($change['action'] === 'preserve' && $change['rule'] === 'protect' && ! $change['blocked'],
+            'GTNH + Arcturus did not keep the local state for '.$gtnhPath);
+    }
+    check($policy->effective($gtnhPath, $policy->template('gtnh'))['mode'] === null, 'Generic GTNH inherited an Arcturus-only rule');
+}
+check($policy->effective('Crucible-1.7.10-server.jar', $gtnhArcturus)['mode'] === 'review', 'GTNH + Arcturus lost the Crucible JAR review rule');
+check($policy->effective('config/ThaumcraftMobAspects/WarpTheory.cfg', $gtnhArcturus)['mode'] === null, 'GTNH WarpTheory protection was not exact-path scoped');
 check($policy->effective('kubejs/server_scripts/test.js', $tfgArcturus)['mode'] === null,
     'TFG + Arcturus preset still forces all KubeJS changes into review');
 check($policy->effective('mods/unrelated-upstream.jar', $arcturus)['mode'] === null,
