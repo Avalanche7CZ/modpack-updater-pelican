@@ -29,12 +29,13 @@ final class Wings implements MutationBatches
     private function repo(): DaemonFileRepository { return $this->daemon->setServer($this->server); }
 
     /** Read Docker stdout/stderr via Wings, including for a stopped container. */
-    public function consoleTail(): array
+    public function consoleTail(int $linesLimit = 60): array
     {
+        if ($linesLimit < 1 || $linesLimit > 100) { throw new RuntimeException('Invalid bounded Wings console line limit.'); }
         $deadline = hrtime(true) + 3_000_000_000;
         $response = $this->client()->connectTimeout(1)->timeout(3)->withOptions([
             'stream' => true, 'read_timeout' => 1, 'allow_redirects' => false,
-        ])->get('/api/servers/'.$this->server->uuid.'/logs', ['size' => 60]);
+        ])->get('/api/servers/'.$this->server->uuid.'/logs', ['size' => $linesLimit]);
         $stream = $response->toPsrResponse()->getBody(); $data = ''; $limit = 524288;
         try {
             if ($response->status() !== 200) { throw new RuntimeException('Wings console is unavailable.'); }
@@ -49,7 +50,7 @@ final class Wings implements MutationBatches
         $decoded = json_decode($data, true, 8, JSON_THROW_ON_ERROR);
         if (! is_array($decoded) || ! array_key_exists('data', $decoded)) { throw new RuntimeException('Invalid Wings console response.'); }
         $lines = $decoded['data'] ?? []; // Wings encodes an empty Go slice as null.
-        if (! is_array($lines) || ! array_is_list($lines) || count($lines) > 60) { throw new RuntimeException('Invalid Wings console lines.'); }
+        if (! is_array($lines) || ! array_is_list($lines) || count($lines) > $linesLimit) { throw new RuntimeException('Invalid Wings console lines.'); }
         foreach ($lines as $line) {
             if (! is_string($line)) { throw new RuntimeException('Invalid Wings console line.'); }
         }

@@ -132,7 +132,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     $path = parse_url($url, PHP_URL_PATH); parse_str(parse_url($url, PHP_URL_QUERY) ?? '', $q);
     $requests[] = [$request->method(), $path, $q];
     if (str_ends_with($path, '/logs')) {
-        check($request->method() === 'GET' && ($q['size'] ?? '') === '60', 'Console was not queried with a bounded read');
+        check($request->method() === 'GET' && in_array($q['size'] ?? '', ['60','100'], true), 'Console was not queried with a bounded read');
         if ($mode === 'diagnostic_unavailable' && $sys['starts'] > 0) { return Http::response(['error' => 'private remote failure body'], 500, $headers); }
         return Http::response(['data' => $sys['console'] ?? ['Original console before the update']], 200, $headers);
     }
@@ -590,6 +590,52 @@ try {
         $result=$verifier->run($orphanOp->id,true,1);
         check($result['applied'] && $orphanOp->fresh()->phase==='restored' && $orphan->fresh()->active_operation_id===null && !$systems[$ouuid]['configuration']['suspended'], 'Running original did not release modpack suspension');
         check(!$forbidden(array_slice($requests,$start)), 'Finalization issued power/restore/file writes');
+    }
+    // GTNH latest.log can retain Done/game output without the startup-only FML/Java stdout.
+    $resetOrphan(); $savedLog=$systems[$ouuid]['data']['logs/latest.log'];
+    $systems[$ouuid]['data']['logs/latest.log']="[Server thread/INFO]: Done (1.0s)!\nPlayer connected\n";
+    rejects(fn()=>$verifier->run($orphanOp->id), 'Headerless game log accepted without attributable startup proof');
+    $evidenceDir=sys_get_temp_dir().'/arcturus-native-docker-'.bin2hex(random_bytes(8)); mkdir($evidenceDir,0700);
+    $makeEvidence = function () use ($evidenceDir,$orphanOp,$ouuid,&$systems,$crucibleBootLog): array {
+        $format=fn($t)=>gmdate('Y-m-d\TH:i:s',(int)$t).sprintf('.%06dZ',(int)(($t-floor($t))*1000000));
+        $started=$systems[$ouuid]['boot_started'];
+        $container=['Id'=>str_repeat('a',64),'Name'=>'/'.$ouuid,'State'=>['Running'=>true,'StartedAt'=>$format($started),'Pid'=>1234],'RestartCount'=>0];
+        $log=''; foreach(explode("\n",rtrim($crucibleBootLog(),"\n")) as $line) { $log.=$format($started+0.01).' '.$line."\n"; }
+        $metadata=['schema'=>1,'operation_id'=>$orphanOp->id,'server_uuid'=>$ouuid,'inspect_before'=>$container,'inspect_after'=>$container,'collected_at'=>$format(microtime(true)),'log_sha256'=>hash('sha256',$log)];
+        file_put_contents($evidenceDir.'/console.log',$log); file_put_contents($evidenceDir.'/metadata.json',json_encode($metadata));
+        chmod($evidenceDir.'/console.log',0600); chmod($evidenceDir.'/metadata.json',0600);
+        return $metadata;
+    };
+    try {
+        $metadata=$makeEvidence(); $start=count($requests); $ctx=$orphanOp->getRawOriginal('context');
+        rejects(fn()=>$verifier->run($orphanOp->id,true,1,false,$evidenceDir), 'Operator apply skipped the audited dry run');
+        rejects(fn()=>$verifier->run($orphanOp->id,false,null,false,$evidenceDir), 'Docker import accepted no root actor');
+        $app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(new \Arcturus\ModpackManager\Console\Commands\VerifyRunningOriginal);
+        $args=['operation'=>$orphanOp->id,'--docker-evidence'=>$evidenceDir,'--actor'=>1];
+        check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:verify-running-original',$args)===0,'CLI operator evidence dry run failed');
+        check($orphanOp->fresh()->getRawOriginal('context')===$ctx && $orphan->fresh()->active_operation_id===$orphanOp->id, 'Operator dry run changed recovery ownership/context');
+        $audit=$orphan->events()->where('kind','running_original_evidence')->latest('id')->first();
+        check($audit && $audit->details['actor_id']===1 && $audit->details['evidence']['container_id']===$metadata['inspect_before']['Id'], 'Operator dry run was not audited');
+        check(!array_filter(array_slice($requests,$start),fn($r)=>$r[0]!=='GET'), 'Operator dry run mutated Wings');
+        check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:verify-running-original',[...$args,'--apply'=>true])===0,'Audited Docker --apply failed');
+        check($orphanOp->fresh()->phase==='restored' && $orphan->fresh()->active_operation_id===null && !$systems[$ouuid]['configuration']['suspended'] && !$forbidden(array_slice($requests,$start)), 'Docker finalization restarted/restored/wrote or failed to release suspension');
+        check($orphanOp->fresh()->context['running_original_verification']['startup_evidence']['dry_run_event_id']===$audit->id,'Apply lost its successful dry-run audit binding');
+        // The source must survive a failed sync and retry without re-import, restart or latest.log headers.
+        $resetOrphan(); $makeEvidence(); $verifier->run($orphanOp->id,false,1,false,$evidenceDir); $syncFail=true; $start=count($requests);
+        rejects(fn()=>$verifier->run($orphanOp->id,true,1,false,$evidenceDir),'Failed Docker-proof sync unexpectedly succeeded');
+        $syncFail=false; $retry=$verifier->run($orphanOp->id,true,1,true);
+        check($retry['applied'] && !$orphanOp->fresh()->context['running_original_sync_pending'] && !$forbidden(array_slice($requests,$start)), 'Docker-proof sync retry required another log import or mutated the server');
+        // Same state transition, but using facts captured automatically by Boot during this exact attempt.
+        $resetOrphan(); $ctx=$orphanOp->context; $bootId=$orphanOp->id.'-old'; $facts=new \Arcturus\ModpackManager\Native\StartupEvidence;
+        foreach(explode("\n",$crucibleBootLog()) as $line) $facts->line($line);
+        $boot=$ctx['native_boot_attempts'][$bootId];
+        $ctx['native_boot_attempts'][$bootId]['console']=[...$facts->proof(),'source'=>'wings_console','first_observed_at'=>$boot['accepted_at']+0.01,'last_observed_at'=>$boot['accepted_at']+0.02,'instance'=>$boot['instance']];
+        $orphanOp->update(['context'=>$ctx]); $start=count($requests);
+        check($verifier->run($orphanOp->id)['verified'] && $verifier->run($orphanOp->id,true,1)['applied'] && !$forbidden(array_slice($requests,$start)), 'Retained Wings boot evidence did not survive missing latest.log header');
+        echo "GTNH headerless latest.log: audited operator dry run/apply, retained Wings proof and safe sync retry passed\n";
+    } finally {
+        $syncFail=false; $systems[$ouuid]['data']['logs/latest.log']=$savedLog;
+        unlink($evidenceDir.'/metadata.json'); unlink($evidenceDir.'/console.log'); rmdir($evidenceDir);
     }
     // Several HTTP requests return the same resource sample, including immediately after sync.
     $resetOrphan(); $start=count($requests);

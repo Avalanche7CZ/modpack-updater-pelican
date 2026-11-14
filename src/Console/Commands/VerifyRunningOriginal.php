@@ -8,14 +8,14 @@ use Illuminate\Console\Command;
 
 final class VerifyRunningOriginal extends Command
 {
-    protected $signature = 'arcturus-modpack:verify-running-original {operation} {--apply : Close verified recovery and sync Wings} {--actor= : Root administrator user ID for apply} {--sync-only : Retry a previously verified configuration release}';
+    protected $signature = 'arcturus-modpack:verify-running-original {operation} {--apply : Close verified recovery and sync Wings} {--actor= : Root administrator user ID for apply} {--sync-only : Retry a previously verified configuration release} {--docker-evidence= : Private operator evidence directory; requires --actor and audited dry run before apply}';
     protected $description = 'Inspect a running original installation without power, restore or volume writes; explicit --apply releases verified recovery';
 
     public function handle(RunningOriginal $verifier): int
     {
         try {
             $result = $verifier->run((string)$this->argument('operation'), (bool)$this->option('apply'),
-                $this->option('actor') ? (int)$this->option('actor') : null, (bool)$this->option('sync-only'));
+                $this->option('actor') ? (int)$this->option('actor') : null, (bool)$this->option('sync-only'), $this->option('docker-evidence') !== null ? (string)$this->option('docker-evidence') : null);
             $this->info($result['message']); return self::SUCCESS;
         } catch (\Throwable $error) {
             report($error);

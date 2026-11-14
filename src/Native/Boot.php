@@ -25,6 +25,7 @@ final class Boot
         if ($files->stat($log) !== null) { $files->rename($log, $saved); }
         if ($files->stat($log) !== null) { throw new RuntimeException('Old startup log was not retired.'); }
         $retiredHash = $files->hash($saved);
+        $console = new BootConsoleEvidence($files);
         $capture = $onFailure === null ? null : new BootFailureEvidence($files);
         $ackSeconds = max(1, (int) config('arcturus-modpack-manager.deployment_start_ack_timeout', 60));
         $proof = ['id' => $id, 'requested_at' => microtime(true), 'log_absent' => true, 'saved' => $saved, 'target' => $target, 'ack_seconds' => $ackSeconds];
@@ -33,6 +34,7 @@ final class Boot
             GuardedDaemonServerRepository::controlledStart($server->uuid, fn () => app(DaemonServerRepository::class)->setServer($server)->power('start')->throw());
             $proof['accepted_at'] = microtime(true);
             $journal(['step' => 'boot_start_accepted', 'boot_attempt' => $proof]);
+            $console->poll(); // Capture launcher/FML stdout immediately, before the first state wait.
             $seenStart = false; $staleSeen = false; $instance = null;
             $deadline = microtime(true) + (int) config('arcturus-modpack-manager.deployment_start_timeout', 900);
             while (microtime(true) < $deadline) {
@@ -54,24 +56,39 @@ final class Boot
                 }
                 if (!$seenStart && $receivedAt >= $proof['accepted_at'] + $ackSeconds) { throw new RuntimeException('Wings never observed the requested start before the acknowledgement timeout.'); }
                 if ($state === 'running') { $capture?->observedRunning(); }
-                if ($files->stat($log) === null) { continue; }
-                try { $logEvidence = $files->bootLogEvidence(); $text = $logEvidence['text']; }
-                catch (TextChangedDuringInspection) {
-                    // Discard the raced read and poll again within the same deadline.
-                    continue;
+                if ($seenStart) { $console->poll(); }
+                $consoleSample = $console->proof();
+                if ($consoleSample['lines'] > 0 && ($consoleSample['runtime'] !== ($proof['console']['runtime'] ?? null) || $consoleSample['done'] !== ($proof['console']['done'] ?? null) || $consoleSample['valid'] !== ($proof['console']['valid'] ?? null) || ($instance !== null && empty($proof['console']['instance'])))) {
+                    $proof['console'] = [...$consoleSample, 'instance'=>$instance];
+                    // Preserve boot facts now, even if the worker later times out or latest.log loses its header.
+                    $journal(['step'=>'boot_console_evidence', 'boot_attempt'=>$proof]);
                 }
-                $capture?->sample($text);
-                if ($retiredHash !== null && $logEvidence['sha256'] === $retiredHash) { $staleSeen = true; continue; }
-                if ($state !== 'running' || !$logEvidence['done']) { continue; }
-                $observed = (new RuntimeInspector)->fromStartupLog($text);
-                foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
-                    if (isset($target[$key]) && $observed[$key] !== $target[$key]) { throw new RuntimeException('Fresh Minecraft boot did not confirm target '.$key.'. Keep this runtime blocked until its boot evidence can be verified.'); }
+                if ($state !== 'running' || $instance === null) { continue; }
+                $observed = null; $logEvidence = null; $source = null;
+                if ($files->stat($log) !== null) {
+                    try { $logEvidence = $files->bootLogEvidence(); $text = $logEvidence['text']; }
+                    catch (TextChangedDuringInspection) { continue; }
+                    $capture?->sample($text);
+                    if ($retiredHash !== null && $logEvidence['sha256'] === $retiredHash) { $staleSeen = true; }
+                    elseif ($logEvidence['done']) {
+                        $candidate = (new RuntimeInspector)->fromStartupLog($text); $complete = true;
+                        foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
+                            if (isset($target[$key]) && $candidate[$key] !== null && $candidate[$key] !== $target[$key]) { throw new RuntimeException('Fresh Minecraft boot did not confirm target '.$key.'. Keep this runtime blocked until its boot evidence can be verified.'); }
+                            if (isset($target[$key]) && $candidate[$key] === null) { $complete = false; }
+                        }
+                        if ($complete) { $observed = $candidate; $source = 'startup_log'; }
+                    }
                 }
+                if ($observed === null && StartupEvidence::matches($proof['console'] ?? [], $target)) {
+                    $observed = $proof['console']['runtime']; $source = 'wings_console';
+                }
+                if ($observed === null) { continue; }
                 [, $instance] = RunningInstance::confirm($instance, function () use ($power, $server): array {
                     $before = microtime(true); $details = $power->details($server);
                     return [$details, RunningInstance::sample($details, $before, microtime(true))];
                 }, $deadline, $heartbeat);
-                $proof['instance'] = $instance; $proof['log_sha256'] = $logEvidence['sha256'];
+                $proof['instance'] = $instance; $proof['evidence_source'] = $source;
+                if ($source === 'startup_log') { $proof['log_sha256'] = $logEvidence['sha256']; }
                 $journal(['step' => 'boot_verified', 'runtime' => $observed, 'boot_attempt' => $proof]);
                 return [...$target, ...$observed, 'java_confidence' => 'verified'];
             }

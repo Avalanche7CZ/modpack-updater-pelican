@@ -19,10 +19,11 @@ use RuntimeException;
 /** Read-only evidence collection; only explicit apply may close a verified recovery and sync configuration. */
 final class RunningOriginal
 {
-    public function run(string $id, bool $apply = false, ?int $actor = null, bool $syncOnly = false): array
+    public function run(string $id, bool $apply = false, ?int $actor = null, bool $syncOnly = false, ?string $dockerEvidence = null): array
     {
+        $verificationStartedAt = microtime(true);
         if (!\Illuminate\Support\Str::isUuid($id)) { throw new RuntimeException('Invalid operation UUID.'); }
-        if ($apply && (!$actor || !User::find($actor)?->isRootAdmin())) { throw new RuntimeException('Apply requires an identified root administrator (--actor).'); }
+        if (($apply || $dockerEvidence !== null) && (!$actor || !User::find($actor)?->isRootAdmin())) { throw new RuntimeException('Apply/operator evidence requires an identified root administrator (--actor).'); }
         $operation = Operation::findOrFail($id);
         $managed = ManagedServer::lightweight()->findOrFail($operation->managed_server_id);
         $lease = Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id, 14400);
@@ -76,17 +77,53 @@ final class RunningOriginal
                 if (isset($attempt['instance'])) { $instance = RunningInstance::same($instance, RunningInstance::receipt($attempt['instance'])); }
                 $proof = ['server_uuid' => $server->uuid, 'server_id' => $server->id, 'operation_id' => $operation->id, 'backup_uuid' => $confirmation['backup_uuid'], 'restore' => $confirmation, 'boot_id' => $attempt['id'], 'instance' => $instance, 'actor_id' => $actor];
             }
-            try { $evidence = $files->bootLogEvidence(); }
-            catch (TextChangedDuringInspection) { throw new RuntimeException('Current startup log changed during inspection. Retry the read-only check; no release was attempted.'); }
-            $text = $evidence['text'];
-            if (!$retry && ($attempt['retired_log_sha256'] ?? null) === $evidence['sha256']) { throw new RuntimeException('Current log matches retired bytes; freshness is unproven.'); }
-            if (!$evidence['done']) { throw new RuntimeException('Current log lacks a fresh completed Minecraft startup.'); }
-            $observed = (new \Arcturus\ModpackManager\Services\RuntimeInspector)->fromStartupLog($text);
-            foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
-                if (!array_key_exists($key, $runtime) || ($observed[$key] ?? null) !== $runtime[$key]) { throw new RuntimeException('Running original log does not confirm '.$key.'.'); }
+            $startup = null;
+            if ($dockerEvidence !== null) {
+                if ($retry) { throw new RuntimeException('Sync-only uses the retained verified startup proof, not a new Docker import.'); }
+                $startup = OperatorBootEvidence::read($dockerEvidence, $id, $server->uuid, $instance, $runtime, $verificationStartedAt, $apply);
+                $instance = $startup['instance'];
+                $proof['startup_evidence'] = [...$startup, 'actor_id'=>$actor];
+            } elseif ($retry && in_array($proof['startup_evidence']['source'] ?? '', ['operator_docker','wings_console'], true)) {
+                $startup = $proof['startup_evidence'];
+                if (!StartupEvidence::matches($startup, $runtime)) { throw new RuntimeException('Retained startup evidence no longer matches the original runtime.'); }
+            } elseif (!$retry && isset($attempt['console']) && StartupEvidence::matches($attempt['console'], $runtime)) {
+                $startup = $attempt['console'];
+                if (($startup['source'] ?? '') !== 'wings_console' || ($startup['first_observed_at'] ?? 0) < ($attempt['accepted_at'] ?? INF) || empty($startup['instance'])) { throw new RuntimeException('Retained Wings startup evidence is not attributable to this accepted attempt.'); }
+                $instance = RunningInstance::same($instance, RunningInstance::receipt($startup['instance']));
+                $proof['startup_evidence'] = $startup;
+            }
+            if ($startup === null) {
+                try { $evidence = $files->bootLogEvidence(); }
+                catch (TextChangedDuringInspection) { throw new RuntimeException('Current startup log changed during inspection. Retry the read-only check; no release was attempted.'); }
+                $text = $evidence['text'];
+                if (!$retry && ($attempt['retired_log_sha256'] ?? null) === $evidence['sha256']) { throw new RuntimeException('Current log matches retired bytes; freshness is unproven.'); }
+                if (!$evidence['done']) { throw new RuntimeException('Current log lacks a fresh completed Minecraft startup.'); }
+                $observed = (new \Arcturus\ModpackManager\Services\RuntimeInspector)->fromStartupLog($text);
+                foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
+                    if (!array_key_exists($key, $runtime) || ($observed[$key] ?? null) !== $runtime[$key]) { throw new RuntimeException('Running original log does not confirm '.$key.'. Use retained Wings boot evidence or an audited operator Docker import.'); }
+                }
+                $proof['log_sha256'] = $evidence['sha256'];
             }
             [, $proof['instance']] = RunningInstance::confirm($instance, $sample, microtime(true) + RunningInstance::observationTimeout(), $assertLease);
-            $proof['log_sha256'] = $evidence['sha256']; $proof['verified_at'] = microtime(true);
+            $proof['verified_at'] = microtime(true);
+            if ($dockerEvidence !== null) {
+                $assertLease();
+                if (!User::find($actor)?->isRootAdmin()) { throw new RuntimeException('Root administrator permission changed during evidence inspection.'); }
+                $audit = ['operation_id'=>$id, 'server_uuid'=>$server->uuid, 'actor_id'=>$actor, 'evidence'=>$proof['startup_evidence']];
+                if ($apply) {
+                    $prior = $managed->events()->where('kind','running_original_evidence')->where('status','verified')->where('created_at','>=',\Illuminate\Support\Carbon::createFromTimestamp($verificationStartedAt-900))->latest('id')->get()->first(fn ($event) =>
+                        ($event->details['operation_id'] ?? '') === $id && ($event->details['actor_id'] ?? null) === $actor &&
+                        ($event->details['evidence']['bundle_sha256'] ?? '') === $startup['bundle_sha256'] &&
+                        ($event->details['verified_at'] ?? 0) >= $verificationStartedAt-900);
+                    if (!$prior) { throw new RuntimeException('First run the read-only Docker evidence check with the same bundle and root actor; no successful recent audited dry run exists.'); }
+                    $proof['instance'] = RunningInstance::same($proof['instance'], RunningInstance::receipt($prior->details['evidence']['instance']));
+                    $proof['startup_evidence']['dry_run_event_id'] = $prior->id;
+                } else {
+                    $managed->events()->create(['kind'=>'running_original_evidence', 'status'=>'verified', 'message'=>'Root operator Docker startup evidence verified; no recovery/server changes',
+                        'details'=>[...$audit, 'verified_at'=>$proof['verified_at']]]);
+                }
+            }
+            if (!$apply && $dockerEvidence !== null) { return ['verified'=>true, 'applied'=>false, 'message'=>'Original installation verified from operator Docker evidence. Dry run audited; recovery and server unchanged. Repeat the same command with --apply within fifteen minutes.']; }
             if (!$apply) { return ['verified' => true, 'applied' => false, 'message' => $retry ? 'Pending sync verified for the same running instance. No changes made.' : 'Original restore, files, configuration and running startup verified. No changes made.']; }
             $assertLease();
             if (!User::find($actor)?->isRootAdmin()) { throw new RuntimeException('Root administrator permission changed during verification.'); }

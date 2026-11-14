@@ -11,6 +11,7 @@ python3 tests/local_worker.py
 python3 tests/setup_local_node.py
 python3 tests/tfg_managed_paths.py
 python3 tests/preparation_progress.py
+python3 tests/collect_running_original.py
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 mkdir -p "$TEMP_DIR/base/config" "$TEMP_DIR/target/config" "$TEMP_DIR/live/config"

@@ -31,6 +31,42 @@ php artisan arcturus-modpack:verify-running-original OPERATION_UUID --sync-only 
 
 The page exposes **Retry verified recovery sync** for that retained pending state. Retry refuses if a new operation owns the server, admin suspension is set, configuration drifted or the running instance no longer matches. `--sync-only` cannot close an unverified recovery. A failed inspection never sends power, restore, log rotation or file-write requests.
 
+## GTNH startup present only in Docker stdout
+
+When `logs/latest.log` lacks FML/Java startup headers, do not restart Minecraft to recreate them. A root operator can explicitly supply timestamped logs from the current container through the CLI. This is an operator attestation, not direct Docker access by PHP: standard Wings does not independently expose the pinned Docker container ID. The operator must collect from the actual Wings node for this server. The importer still verifies the original backup/restore, files, launcher, Panel/Wings runtime configuration, exact boot attempt and advancing Wings uptime. Container `StartedAt` must fit both that attempt and the current instance; `running` alone is insufficient.
+
+On the **Wings host**, manually run the bundled collector as OS root, using the stuck operation UUID and Pelican server UUID (the Docker container name):
+
+```sh
+sudo python3 /path/to/plugin/bin/collect-running-original-evidence.py OPERATION_UUID SERVER_UUID /root/arcturus-running-proof
+```
+
+It performs only Docker inspect/log reads, never power/exec/restore commands. It records the same full container ID, server name, `StartedAt`, running state, PID and restart count before and after log collection. A changed container leaves no completed manifest. `console.log` includes Docker timestamps, filtered since this exact start, and `metadata.json` binds its SHA-256 to the operation/server and inspections. Collection is bounded to 120 seconds and 512 MiB; oversized, failed or truncated input is refused. The collector never includes Docker environment/configuration secrets in its manifest. The raw log may contain private server output and remains in the operator's private bundle.
+
+Securely transfer the **whole directory** to a private location outside the Panel public/volume directories on the Panel host. Preserve directory mode `0700` and file mode `0600`; files must belong to root or the OS user executing Artisan. Use an absolute canonical path without symlinks. Do not give the web process Docker socket membership/access. The plugin does not launch the collector or Docker, and there is no web upload/import endpoint.
+
+Start the check within five minutes of collection, using an actual Pelican root administrator ID for audit attribution:
+
+```sh
+php artisan arcturus-modpack:verify-running-original OPERATION_UUID --actor=ROOT_ADMIN_USER_ID --docker-evidence=/private/arcturus-running-proof
+```
+
+This dry run writes a `running_original_evidence` audit event with the root actor, OS UID, operation/server, container ID/start, bundle/log digests, parsed runtime/Done and verified instance. It changes no recovery context/ownership, sends no sync/power/restore request and writes no game files. Raw log text, filenames and Docker environment are not stored in the audit or displayed in the console. Missing Done, mismatched Java/Minecraft/loader, an earlier container's log, changed identity, missing backup or a foreign worker lock still block release.
+
+After success, repeat with **the same bundle and root actor**, adding `--apply`. Begin within fifteen minutes of the successful dry run; the file checks may take longer. Apply repeats all checks and requires the exact successful audit digest, so an edited bundle cannot inherit approval:
+
+```sh
+php artisan arcturus-modpack:verify-running-original OPERATION_UUID --actor=ROOT_ADMIN_USER_ID --docker-evidence=/private/arcturus-running-proof --apply
+```
+
+The existing audited transition closes recovery as `restored`, releases the matching active operation and syncs Wings. It verifies advancing uptime across sync and suspension release without a restart, restore, log rotation, launcher change or volume write. A failed sync retains the verified evidence and `running_original_sync_pending`. Retry with `--sync-only --apply --actor=...` **without** `--docker-evidence`; neither another collection nor another restore/start is required. A changed instance still refuses that retry. A new imported bundle requires a new successful dry run.
+
+## Retained Wings startup evidence for new boots
+
+Boot now establishes a console boundary before sending its one start request, reads the standard Wings console immediately after acceptance and polls during `starting`/`running`. The endpoint supports at most 100 lines per read ([Wings handler](https://github.com/pelican/wings/blob/main/router/router_server.go)); this capture uses that bound rather than waiting hours to ask for the last 60 lines. Ordered overlap removes previously seen lines, including the pre-start tail. Unchanged old output cannot prove startup. Unavailable console reads do not break the existing file-log verification path.
+
+Only parsed Minecraft/loader/Java facts, ordered fresh Done, digests, observation times and instance bounds are persisted under the exact `native_boot_attempts[attempt].console` receipt. Facts are saved as they change, before final boot verification, so a later worker interruption does not erase them. They inherit the attempt's execution and restore callback binding. No arbitrary console text or credentials are copied into operation history. A completed fresh console proof can verify Boot and later running-original recovery when latest.log has lost its startup header. Partial, conflicting, unbound or stale evidence cannot release recovery. Polling is bounded and can miss bursts exceeding the tail window; it never invents missing facts. Such an attempt still needs the independently verified file log or the explicit operator import above.
+
 ## Evidence and old v0.5.84/v0.5.85 receipts
 
 Verification holds the same `arcturus-modpack-manager-deploy-{managed ID}` lease as deployment/recovery and checks it remains owned. It requires the same managed server, the exact completed successful checksummed locked backup with its original exclusions, no in-progress backup/restore and no other unfinished operation. `running`, a Discord notification, log mtime or a player's connection cannot satisfy these checks.
