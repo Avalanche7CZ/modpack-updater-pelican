@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 require __DIR__.'/fixtures/deployment-bootstrap.php';
+require __DIR__.'/fixtures/clock.php';
+use function Arcturus\ModpackManager\Native\microtime;
 
 use App\Models\Server;
 use App\Models\Node;

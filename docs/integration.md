@@ -40,6 +40,26 @@ Runtime inspection tests use the native Wings file repository with a remote FTB-
 
 Do not substitute a production Panel checkout, database, Wings node or server. Framework tests deliberately do not execute actual power, native backup, restore or provider installation requests.
 
+## Fast native fixtures
+
+`boot_race.php` and `native_deployment.php` advance a process-local fixture clock instead of waiting through real `sleep`/`usleep` calls. Mock Wings uptime, boot deadlines and Laravel audit timestamps share that clock; actual HTTP/socket timeouts and TLS fixture startup still use real time. The clock is required only by these two test drivers and is not installed with the plugin. Startup, timeout, locked backup, rollback, permission, exact-instance and sync checks remain enabled. The overlapping `console_split` scenario is covered by `console_rolled`, which also verifies partial facts were saved before the console tail rolled over.
+
+Routine batch verification still checks all 2,049 explicit paths, all 2,048 SHA-256 reads, expected absence, a maximum of 600 directory requests, corruption/symlink/permission failures and bounded 64 MiB streaming. It no longer reruns the historical one-file-at-a-time comparison by default. Request the comparison explicitly when working on performance:
+
+```sh
+WINGS_COMPARE_BASELINE=1 PELICAN_SOURCE=/tmp/disposable-panel php tests/integration/native_batch.php
+```
+
+Measured locally on the same disposable RC2 dependencies, including PHP/framework bootstrap:
+
+| Driver | Before | After |
+| --- | ---: | ---: |
+| Boot races | 46.08 s | 0.50 s |
+| Native deployment/recovery | 75.14 s | 24.47 s |
+| Batch verification | 5.95 s | 0.95 s |
+
+These are fixture measurements, not full hosted CI timings. Fresh dependency/browser installation and the remaining suites still contribute to CI duration. The offline runner, real network fixtures, PHP compatibility matrix and package validation remain unchanged.
+
 ## Full disposable Wings qualification still required
 
 Provision separate Panel/Wings containers/VMs, test-only keys and a small fixture server volume. Keep this completely isolated from production. The host used for development did not offer Docker access, so a live Wings environment was not available.

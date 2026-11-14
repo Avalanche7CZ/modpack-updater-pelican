@@ -22,6 +22,8 @@ PELICAN_SOURCE=/tmp/disposable-panel php tests/integration/livewire.php
 PELICAN_SOURCE=/tmp/disposable-panel php tests/integration/console.php
 ```
 
+Routine execution verifies the current request budget without repeating the historical serial implementation. Use `WINGS_COMPARE_BASELINE=1 PELICAN_SOURCE=/tmp/disposable-panel php tests/integration/native_batch.php` to reproduce both sides of the comparison.
+
 Local PHP 8.5.9 measurement: 2,048 small files across 16 shared nested directories plus one expected absence (2,049 explicit paths). Same fixture and client before/after, no artificial network latency:
 
 | Method | list-directory | contents | Wall time |
