@@ -17,7 +17,7 @@ $service = app(ManualStart::class);
 \Illuminate\Support\Facades\Schema::create('eggs', function (\Illuminate\Database\Schema\Blueprint $t): void {
     $t->id(); $t->string('uuid'); $t->boolean('force_outgoing_ip')->default(false); $t->json('file_denylist')->nullable(); $t->json('features')->nullable();
 });
-foreach ([false, true] as $placeholder) {
+foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as $placeholder) {
     Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings); Auth::guard()->setUser($adminUser); $mode = 'success';
     $managed = $make(false, false, false, true); $uuid = $managed->pelican_server_uuid;
     $store = app(ReleaseStore::class); $base = $store->load($managed->base_manifest_path); $target = $store->load($managed->target_manifest_path);
@@ -25,12 +25,19 @@ foreach ([false, true] as $placeholder) {
     $base['version'] = '2.8.1'; $target['version'] = '2.9.0';
     $base['files']['config/railcraft.cfg'] = $target['files']['config/railcraft.cfg'] = hash('sha256', 'upstream railcraft');
     file_put_contents($stage.'/config/railcraft.cfg', 'upstream railcraft');
+    if (getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY')) {
+        $configTargets = ['config/Botania.cfg' => "B:feature=true\n", 'config/Another.cfg' => "B:feature=true\n", 'config/binary.cfg' => "valid target text\n", 'config/runtime.cfg' => "required runtime text\n", 'config/strict.jar' => $crucibleJar()];
+        foreach ($configTargets as $configPath => $bytes) { $target['files'][$configPath] = hash('sha256', $bytes); file_put_contents($stage.'/'.$configPath, $bytes); }
+        $base['files']['config/removed.cfg'] = hash('sha256', 'old removed config');
+        $systems[$uuid]['data']['config/removed.cfg'] = 'old removed config';
+    }
     file_put_contents(dirname($stage).'/manifest.json', json_encode($target, JSON_THROW_ON_ERROR));
     $prepared = [...$managed->target_metadata['prepared'], 'manifest_sha256' => hash_file('sha256', dirname($stage).'/manifest.json')];
     file_put_contents(dirname($stage).'/operation.json', json_encode(['state' => 'completed', 'manifest_sha256' => $prepared['manifest_sha256']]));
     $managed->update(['installed_version' => '2.8.1', 'selected_version' => '2.9.0', 'base_manifest_path' => $store->put($base), 'target_manifest_path' => $store->put($target), 'target_metadata' => ['prepared' => $prepared]]);
     $systems[$uuid]['data']['config/railcraft.cfg'] = 'local railcraft repair';
     app(ServerPolicyService::class)->save($managed, [...$managed->file_rules,
+        ...(getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [['scope' => 'exact', 'pattern' => 'config/removed.cfg', 'mode' => 'remove']] : []),
         ['scope' => 'exact', 'pattern' => 'java9args.txt', 'mode' => 'protect'], ['scope' => 'exact', 'pattern' => 'lwjgl3ify-forgePatches.jar', 'mode' => 'protect']], [], $managed->policy_revision, ['keep_existing_crucible_runtime' => true]);
     $managed->refresh();
     DB::table('eggs')->insert(['id' => $managed->id + 1000, 'uuid' => 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'file_denylist' => '[]', 'features' => '[]']);
@@ -83,11 +90,12 @@ foreach ([false, true] as $placeholder) {
     $systems[$uuid]['state'] = 'running'; $systems[$uuid]['boot_started'] = microtime(true) - 120; $systems[$uuid]['omit_uptime'] = false;
     unset($systems[$uuid]['data']['logs/latest.log']); $systems[$uuid]['console'] = [];
     $beforeConfirmation = count($requests);
+    if (getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY')) { require __DIR__.'/config_acceptance.php'; continue; }
     rejects(fn () => $service->verify($operation->id, 1), 'Normal Verify fabricated missing boot evidence');
     rejects(fn () => $service->confirmRunningDeployment($operation->id, 999), 'Non-admin confirmed running deployment');
     $systems[$uuid]['data']['config/options.cfg'] = 'changed after deploy';
-    try { $service->confirmRunningDeployment($operation->id, 1); throw new LogicException('Changed deployed file was ignored'); }
-    catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'config/options.cfg') && str_contains($error->getMessage(), 'expected SHA-256'), 'Deployed hash mismatch omitted exact path/digests'); }
+    $blocked = $service->confirmRunningDeployment($operation->id, 1);
+    check(! $blocked['can_confirm'] && $blocked['differences'][0]['path'] === 'config/options.cfg' && $blocked['differences'][0]['expected_sha256'] !== $blocked['differences'][0]['actual_sha256'], 'Deployed hash mismatch omitted exact path/digests');
     $systems[$uuid]['data']['config/options.cfg'] = 'new';
     $systems[$uuid]['data']['config/railcraft.cfg'] = 'local railcraft repair still retained';
     $review = $service->confirmRunningDeployment($operation->id, 1, false, null, false, '2.9.0');

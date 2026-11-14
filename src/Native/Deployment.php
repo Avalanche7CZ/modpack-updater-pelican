@@ -264,7 +264,7 @@ final class Deployment
                 return $managed->events()->create(['kind' => 'deploy', 'status' => 'success', 'from_version' => $from, 'to_version' => $target['version'],
                     'message' => $startupVerified ? 'Native Wings update installed; fresh Minecraft runtime verified' : 'Běh nasazení potvrdil admin; boot nebyl automaticky ověřen', 'details' => ['backup_uuid' => $backup->uuid,
                         'modified' => array_keys($after), 'startup_verified' => $startupVerified, 'running_confirmed_by_admin' => ! $startupVerified,
-                        ...($startupVerified ? [] : ['actor_id' => $adminConfirmation['actor_id'], 'operation_id' => $operation->id, 'target_manifest_sha256' => $adminConfirmation['target_manifest_sha256']]), 'discord_notification_pending' => $startupVerified]]);
+                        ...($startupVerified ? [] : ['actor_id' => $adminConfirmation['actor_id'], 'operation_id' => $operation->id, 'target_manifest_sha256' => $adminConfirmation['target_manifest_sha256'], 'accepted_local_configs' => $adminConfirmation['accepted_local_configs'] ?? []]), 'discord_notification_pending' => $startupVerified]]);
             });
     }
 

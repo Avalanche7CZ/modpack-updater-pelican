@@ -8,7 +8,8 @@ use Illuminate\Console\Command;
 
 final class ManualStart extends Command
 {
-    protected $signature = 'arcturus-modpack:manual-start {operation} {--action=handoff : handoff, verify, confirm-running, observe, arm-start, diagnostics, lease-inspect, release-orphan or rollback}
+    protected $signature = 'arcturus-modpack:manual-start {operation} {--action=handoff : handoff, verify, confirm-running, review-config, accept-config, observe, arm-start, diagnostics, lease-inspect, release-orphan or rollback}
+        {--path= : One deployed text config path} {--sha256= : Exact observed config hash}
         {--admin-confirms-running : Explicitly attest having connected and confirmed the running target} {--target-version= : Expected target version for administrator confirmation}
         {--writers-quiesced : Attest all Panel/queue/Artisan writers quiesced and no pending Wings work} {--seconds=900 : Read-only console observation limit} {--actor= : Identified root administrator ID} {--apply : Apply the reviewed handoff or verification}
         {--confirm= : Exact proof printed by the read-only command} {--reference= : Successful original recovery UUID}
@@ -27,6 +28,8 @@ final class ManualStart extends Command
                 'lease-inspect' => $service->orphanLease($id, $actor, false, null, false, $this->option('reference')),
                 'release-orphan' => $service->orphanLease($id, $actor, (bool) $this->option('apply'), $this->option('confirm'), (bool) $this->option('writers-quiesced'), $this->option('reference')),
                 'handoff' => $service->handoff($id, $actor, (bool) $this->option('apply'), $this->option('confirm'), $this->option('reference')),
+                'review-config' => $service->deploymentConfigChange($id, $actor, (string) $this->option('path'), (string) $this->option('sha256'), false, null, $this->option('target-version')),
+                'accept-config' => $this->acceptConfig($service, $id, $actor),
                 'confirm-running' => $service->confirmRunningDeployment($id, $actor, (bool) $this->option('apply'), $this->option('confirm'), (bool) $this->option('admin-confirms-running'), $this->option('target-version')),
                 'verify' => $service->verify($id, $actor, (bool) $this->option('apply'), $this->option('confirm')),
                 'observe' => $service->observe($id, $actor, (int) $this->option('seconds')),
@@ -39,6 +42,12 @@ final class ManualStart extends Command
         } catch (\Throwable $error) {
             report($error); $this->error($error instanceof \RuntimeException ? $error->getMessage() : 'Manual start infrastructure unavailable; retain the checkpoint and inspect the private Panel log.'); return self::FAILURE;
         }
+    }
+
+    private function acceptConfig($service, string $id, int $actor): array
+    {
+        if (! $this->option('apply')) { throw new \RuntimeException('Accepting one local config hash requires --apply after reviewing its diff.'); }
+        return $service->deploymentConfigChange($id, $actor, (string) $this->option('path'), (string) $this->option('sha256'), true, $this->option('confirm'), $this->option('target-version'));
     }
 
     private function diagnostics(Operation $operation, int $actor): array

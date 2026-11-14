@@ -41,6 +41,13 @@
             @if($receiptReadable && $operation->phase === 'completed')
                 <p class="mt-2 text-sm">{{ ($context['running_confirmed_by_admin'] ?? false) === true ? 'Nasazení dokončeno. Běh potvrdil admin; boot nebyl automaticky ověřen.' : 'Update completed. Minecraft reached a fresh startup marker.' }}</p>
             @endif
+            @if($receiptReadable && $operation->phase === 'completed' && ($context['native_admin_running_confirmation']['accepted_local_configs'] ?? []))
+                <details class="mt-2 text-sm"><summary>Přijaté lokální configy: {{ count($context['native_admin_running_confirmation']['accepted_local_configs']) }}</summary>
+                    @foreach($context['native_admin_running_confirmation']['accepted_local_configs'] as $path => $acceptedConfig)
+                        <p class="break-all">{{ $path }} · upstream {{ $acceptedConfig['expected_sha256'] }} · místní {{ $acceptedConfig['actual_sha256'] }} · admin {{ $acceptedConfig['actor_id'] }}</p>
+                    @endforeach
+                </details>
+            @endif
             @if($receiptReadable && $operation->phase === 'restored')
                 <p class="mt-2 text-sm">{{ isset($context['native_manual_start_verification']) ? 'Recovery closed: restored managed files and a fresh original pack boot with administrator-approved launcher settings verified. Original receipt and manual repair audit retained.' : 'Update failed. Pelican confirmed the native restore; managed file hashes, original launcher settings and Minecraft startup were verified.' }}</p>
             @endif
@@ -49,9 +56,50 @@
                 <p class="mt-2 text-sm text-amber-600">{{ ($context['native_manual_start']['role'] ?? '') === 'deploy' ? 'Nasazeno, start neověřen.' : 'Soubory obnoveny, původní start neověřen.' }} Use normal Pelican power controls and launcher settings, then Verify running server. The active checkpoint and locked backup block another update. A manual crash does not initiate rollback.</p>
             @endif
             @if($canConfirmRunning ?? false)
+                <x-filament::button color="gray" wire:click="reviewRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled">Zkontrolovat všechny rozdíly nasazení</x-filament::button>
                 <x-filament::button color="warning" wire:click="confirmRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled"
                     wire:confirm="Potvrzuji, že jsem se připojil k tomuto serveru a ručně potvrdil běh cílové verze {{ $context['to'] ?? '' }}. Boot nebude označen za automaticky ověřený. Souborové nesoulady uzavření zablokují. Pokračovat?">Potvrdit běžící nasazení</x-filament::button>
                 <p class="mt-2 text-sm">Root-admin confirmation checks this exact running deployment, launcher and deployed files without power or restore. It records administrator attestation instead of automatic boot evidence.</p>
+            @endif
+            @if($canConfirmRunning ?? false)
+                @if(($deploymentReview ?? null) && ($deploymentReview['operation_id'] ?? null) === $operation->id)
+                    <div class="mt-3 overflow-x-auto">
+                        <p class="text-sm">Cílový manifest: <code>{{ $deploymentReview['target_manifest_sha256'] }}</code>. Přijetí mění pouze audit lokálního hashe, nikoli soubory nebo upstream baseline.</p>
+                        @if($deploymentReview['runtime_error'] ?? null)<p class="text-sm text-amber-600">{{ $deploymentReview['runtime_error'] }}</p>@endif
+                        <table class="mt-2 w-full text-left text-sm">
+                            <thead><tr><th>Cesta</th><th>Ověřený cíl SHA-256</th><th>Aktuální SHA-256</th><th>Stav / akce</th></tr></thead>
+                            <tbody>
+                                @forelse(($deploymentReview['differences'] ?? []) as $difference)
+                                    <tr>
+                                        <td class="break-all">{{ $difference['path'] }}</td>
+                                        <td class="break-all"><code>{{ $difference['expected_sha256'] ?? '[očekávána nepřítomnost]' }}</code></td>
+                                        <td class="break-all"><code>{{ $difference['actual_sha256'] ?? '[nepřítomný nebo nečitelný]' }}</code></td>
+                                        <td>
+                                            @if($difference['accepted'])
+                                                Přijato jako konkrétní lokální změna
+                                            @elseif($difference['reviewable'])
+                                                <x-filament::button color="gray" size="sm" wire:click="reviewDeploymentConfig(@js($operation->id), @js($difference['path']), @js($difference['actual_sha256']))">Ověřit text a zobrazit diff</x-filament::button>
+                                            @else
+                                                Striktní kontrola: {{ $difference['reason'] }}
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @empty
+                                    <tr><td colspan="4">Všechny nasazené cesty souhlasí.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+                @endif
+                @if(($configReview ?? null) && ($configReview['operation_id'] ?? null) === $operation->id)
+                    <div class="mt-3">
+                        <p class="font-medium break-all">{{ $configReview['path'] }}</p>
+                        <p class="text-sm break-all">Ověřený cíl: {{ $configReview['expected_sha256'] }}. Aktuální lokální hash: {{ $configReview['actual_sha256'] }}.</p>
+                        <pre class="mt-2 max-h-96 overflow-auto whitespace-pre text-xs">{{ $configReview['diff'] }}</pre>
+                        <x-filament::button color="warning" wire:click="acceptDeploymentConfig" wire:loading.attr="disabled"
+                            wire:confirm="Výslovně přijímám pouze {{ $configReview['path'] }} s aktuálním SHA-256 {{ $configReview['actual_sha256'] }} jako lokální změnu této operace a tohoto cílového manifestu. Živý config ani baseline se nepřepíší. Pokračovat?">Přijmout tuto cestu a hash jako lokální změnu</x-filament::button>
+                    </div>
+                @endif
             @endif
             @if($operation->error)<p class="mt-2 break-words text-sm">{{ $operation->error }}</p>@endif
             @if(isset($context['native_target_boot_failure']) || isset($context['native_rollback_boot_failure']) || isset($context['native_recovery_boot_failure']))
