@@ -77,6 +77,49 @@ $read=fn()=>OperatorBootEvidence::read($directory,$operation,$uuid,$sample,$targ
 try {
     $write($meta,$raw); $imported=$read();
     check($imported['container_id']===$container['Id'] && StartupEvidence::matches($imported,$target), 'Operator evidence did not bind container/runtime');
+    // Docker import retains the FIRST valid boot, even when later runtime output resets the live parser.
+    $lateCrucible=$time($started+2)." [Server thread/INFO]: Later Crucible runtime message\n";
+    $fullLog=$raw.$lateCrucible; $fullMeta=[...$meta,'log_sha256'=>hash('sha256',$fullLog)];
+    $write($fullMeta,$fullLog); $retained=$read();
+    check(StartupEvidence::matches($retained,$target) && $retained['sha256']===$imported['sha256'] && $retained['lines']===$imported['lines'], 'Post-Done Crucible output erased or replaced the first verified startup');
+    check($retained['log_sha256']===hash('sha256',$fullLog), 'Docker import hashed only the verified startup prefix');
+    $secondDone=$fullLog.$time($started+3)." Done (2.0s)!\n";
+    $write([...$meta,'log_sha256'=>hash('sha256',$secondDone)],$secondDone);
+    check($read()['sha256']===$imported['sha256'], 'A later valid Done replaced the first matching snapshot');
+    $liveParser=new StartupEvidence;
+    foreach ($lines as $line) $liveParser->line($line);
+    $liveParser->line('Later Crucible runtime message');
+    check(!$liveParser->proof()['done'], 'Docker snapshot handling changed the live Wings parser');
+    $rejectMessage=function(string $expected)use($read):void {
+        try { $read(); }
+        catch (RuntimeException $error) { check(str_contains($error->getMessage(),$expected), 'Docker import did not distinguish hash mismatch from missing valid startup evidence'); return; }
+        throw new RuntimeException('Invalid Docker evidence unexpectedly accepted');
+    };
+    foreach (['untimed','truncated','old_timestamp','future_timestamp','oversized','changed_tail'] as $badTail) {
+        $log=match($badTail) {
+            'untimed'=>$fullLog."Untimed footer\n",
+            'truncated'=>rtrim($fullLog,"\n"),
+            'old_timestamp'=>$fullLog.$time($started-1)." Old footer\n",
+            'future_timestamp'=>$fullLog.$time(microtime(true)+60)." Future footer\n",
+            'oversized'=>$fullLog.$time($started+3).' '.str_repeat('x',262145)."\n",
+            'changed_tail'=>str_replace('Later Crucible runtime message','Changed Crucible runtime message',$fullLog),
+        };
+        $metadata=$fullMeta;
+        if ($badTail!=='changed_tail') $metadata['log_sha256']=hash('sha256',$log);
+        $write($metadata,$log);
+        if ($badTail==='changed_tail') $rejectMessage('SHA-256');
+        else rejects($read,'Verified boot prefix bypassed invalid Docker log tail: '.$badTail);
+    }
+    foreach (['wrong_runtime','no_done','done_before_runtime'] as $missingBoot) {
+        $withoutDone=implode('',array_map(fn($line)=>$time($started+1).' '.$line."\n",array_slice($lines,0,-1)));
+        $log=match($missingBoot) {
+            'wrong_runtime'=>str_replace('version 25','version 21',$raw).$lateCrucible,
+            'no_done'=>$withoutDone.$lateCrucible,
+            'done_before_runtime'=>$time($started)." Done (1.0s)!\n".$withoutDone.$lateCrucible,
+        };
+        $write([...$meta,'log_sha256'=>hash('sha256',$log)],$log);
+        $rejectMessage('valid original-runtime startup evidence');
+    }
     foreach(['server','operation','container','start','pid','restart','running','runtime','hash','stale','future','old_line','truncated','untimed'] as $bad) {
         $changed=$meta; $log=$raw;
         if($bad==='server')$changed['server_uuid']='cccccccc-cccc-4ccc-8ccc-cccccccccccc';

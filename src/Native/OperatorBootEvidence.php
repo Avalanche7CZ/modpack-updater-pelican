@@ -51,7 +51,7 @@ final class OperatorBootEvidence
         if ($collected < $started || $collected > microtime(true)+5 || (!$auditedApply && ($verificationStartedAt ?? microtime(true))-$collected > 300)) { throw new RuntimeException('Docker container inspection is stale or has an inconsistent clock; collect fresh evidence.'); }
         $identity = RunningInstance::same($instance, ['min'=>$started-0.002,'max'=>$started+0.002]);
         $file = self::open($directory.'/console.log'); $beforeStat = fstat($file);
-        $digest = hash_init('sha256'); $evidence = new StartupEvidence; $bytes = 0;
+        $digest = hash_init('sha256'); $evidence = new StartupEvidence; $startupProof = null; $bytes = 0;
         try {
             while (($line = fgets($file, 262146)) !== false) {
                 $bytes += strlen($line); if ($bytes > 536870912 || strlen($line) > 262144 || !str_ends_with($line,"\n")) { throw new RuntimeException('Docker evidence log exceeds limits or has a truncated line.'); }
@@ -60,6 +60,11 @@ final class OperatorBootEvidence
                 $at = self::timestamp($match[1]);
                 if ($at < $started-0.000002 || $at > $collected+0.000002) { throw new RuntimeException('Docker log contains output outside this container start/collection window.'); }
                 $evidence->line($match[2]);
+                if ($startupProof === null) {
+                    $candidate = $evidence->proof();
+                    if (StartupEvidence::matches($candidate, $target)) { $startupProof = $candidate; }
+                }
+                // Keep reading and validating the entire log after the first verified startup.
             }
             $afterStat = fstat($file);
             foreach (['dev','ino','size','mtime','ctime','mode','uid','nlink'] as $key) {
@@ -68,9 +73,10 @@ final class OperatorBootEvidence
             if (!feof($file)) { throw new RuntimeException('Docker evidence log read did not complete.'); }
         } finally { fclose($file); }
         $sha = hash_final($digest);
-        if (!hash_equals($sha, $meta['log_sha256'] ?? '') || !StartupEvidence::matches($evidence->proof(), $target)) { throw new RuntimeException('Docker log hash, original runtime or fresh Done evidence is missing or inconsistent.'); }
+        if (!is_string($meta['log_sha256'] ?? null) || !hash_equals($sha, $meta['log_sha256'])) { throw new RuntimeException('Docker log SHA-256 does not match the evidence manifest.'); }
+        if ($startupProof === null) { throw new RuntimeException('Docker log lacks valid original-runtime startup evidence with a fresh Done marker.'); }
         return ['source'=>'operator_docker', 'bundle_sha256'=>hash('sha256',$json."\n".$sha), 'log_sha256'=>$sha,
             'operator_uid'=>posix_geteuid(), 'container_id'=>$before['Id'], 'started_at'=>$before['State']['StartedAt'], 'collected_at'=>$collected,
-            'instance'=>$identity, ...$evidence->proof()];
+            'instance'=>$identity, ...$startupProof];
     }
 }
