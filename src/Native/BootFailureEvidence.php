@@ -30,6 +30,12 @@ final class BootFailureEvidence
             $text = self::safeTail(implode("\n", $after));
             if (trim($text) !== '') { return ['source' => 'wings_console', 'text' => $text]; }
         }
+        // start() retired latest.log before the start request. A replacement log may
+        // contain the crash even when Minecraft exits before the first running sample.
+        if ($this->sample === '') {
+            try { $this->sample = $this->files->read('logs/latest.log', 4194304); }
+            catch (Throwable) { /* Preserve the boot failure even when diagnostics are unavailable. */ }
+        }
         $text = self::safeTail($this->sample);
         if (trim($text) !== '') { return ['source' => 'startup_log_sample', 'text' => $text]; }
         return ['source' => 'unavailable', 'text' => ''];

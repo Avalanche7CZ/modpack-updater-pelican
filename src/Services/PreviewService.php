@@ -144,7 +144,9 @@ final class PreviewService
         $binding = ['uuid' => $server->pelican_server_uuid, 'from' => $base['version'], 'to' => $target['version'],
             'base' => $base['files'], 'local' => $local, 'target' => $target['files'], 'rules' => $rules,
             'directory_decisions' => $server->directory_decisions ?? [], 'decisions' => $plan['changes'], 'identities' => $identities, 'safety_roots' => $safetyRoots, 'disabled' => $server->disabled_mods, 'runtime' => $compatibility, 'backup_mode' => $server->backup_mode,
-            'exclusions' => $server->backup_excluded_directories, 'mod_evidence' => $modEvidence, 'qualification' => $qualification];
+            'exclusions' => $server->backup_excluded_directories, 'mod_evidence' => $modEvidence,
+            // Live observations cannot invalidate an otherwise identical approved offline plan.
+            'qualification' => $native && $qualification !== null ? array_diff_key($qualification, ['boot_evidence' => true]) : $qualification];
         if ($native) { $binding['native_mod_drift_schema'] = \Arcturus\ModpackManager\Native\ModDrift::SCHEMA; }
         $digest = hash('sha256', json_encode($binding, JSON_THROW_ON_ERROR));
         $preview = ['comparison_schema' => ManifestComparison::SCHEMA, 'candidate_count' => count($comparisonPaths), 'mod_plan_schema' => ModUpgradePlanner::SCHEMA, 'logical_mod_upgrades' => $plan['counts']['upgrade_mod'] ?? 0, 'qualification' => $qualification, 'policy_revision' => $server->policy_revision, 'from' => $base['version'], 'to' => $target['version'], 'blocked' => $plan['blocked'],

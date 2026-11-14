@@ -62,6 +62,9 @@ final class DeploymentApproval
             if ($automatic) { app(ScheduledMaintenance::class)->requireEnabled($fresh); }
             app(QueuePreparation::class)->requireLocalQueue();
             app(DeploymentGate::class)->requireReady($fresh);
+            if ($automatic && $fresh->transport === 'native') {
+                \Arcturus\ModpackManager\Native\Qualification::requireAutomaticBoot($fresh->preview_summary['qualification'] ?? []);
+            }
             if (! hash_equals($fresh->preview_summary['plan_sha256'] ?? '', $digest)) { throw new RuntimeException('Plan changed while the approval dialog was open; review it again.'); }
             $snapshot = app(SameHostDeployment::class)->panelSnapshot($fresh->pelicanServer);
             if (! hash_equals($fresh->preview_summary['qualification']['panel_sha256'], hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)))) { throw new RuntimeException('Pelican launch settings changed since comparison; inspect and compare again.'); }

@@ -74,6 +74,7 @@ final class Deployment
             if ($job->automatic) { app(ScheduledMaintenance::class)->requireEnabled($managed); }
             app(DeploymentGate::class)->require($managed, $job->approvedPlanSha256);
             $preview = app(PreviewService::class)->generate($managed, $operation);
+            if ($job->automatic) { Qualification::requireAutomaticBoot($preview['qualification'] ?? []); }
             app(DeploymentGate::class)->require($managed->refresh(), $job->approvedPlanSha256);
             $server = $managed->pelicanServer;
             $files = new Wings($server, app(DaemonFileRepository::class), $heartbeat, $metrics);
@@ -110,7 +111,7 @@ final class Deployment
             }
             $phase('stopping', 'Stopping Minecraft and confirming the native Wings maintenance guard', ['native_before' => $before, 'native_after' => $after, 'native_disabled_mod_moves' => $moves,
                 'native_world_properties_sha256' => $preview['qualification']['properties_sha256'], 'runtime_original' => $original, 'runtime_expected' => $expected, 'native_original_runtime' => $preview['qualification']['current'],
-                'native_retained_launcher' => $retainedLauncher, 'excluded_directories' => $excluded]);
+                'native_retained_launcher' => $retainedLauncher, 'native_original_boot_verified' => ($preview['qualification']['boot_evidence']['verified'] ?? false) === true, 'excluded_directories' => $excluded]);
             $metrics->mark('stop_requested'); $stopped = true;
             $power->guardAndStop($server, $heartbeat); $metrics->mark('offline_confirmed');
             $verify($before, 'verifying_before_backup', 'Verifying files before backup');
@@ -193,7 +194,7 @@ final class Deployment
                         $current = app(\Arcturus\ModpackManager\Services\SameHostDeployment::class)->panelSnapshot($server->refresh());
                         if ($current !== $original && $current !== $expected) { throw new RuntimeException('Runtime settings changed outside this operation; manual review is required.'); }
                         $blocked = [...$current, 'startup' => 'printf "%s\\n" "Arcturus recovery verification pending"; exit 1'];
-                        $phase('restoring', 'Installing the recovery startup barrier before native restore', ['runtime_recovery_barrier' => $blocked]);
+                        $phase('restoring', 'Installing the recovery startup barrier before native restore', ['runtime_recovery_barrier' => $blocked, 'restore_files_verified' => false, 'recovery_startup_verified' => false]);
                         app(Runtime::class)->installSettings($server, $current, $blocked);
                         app(Runtime::class)->syncAndRequire($server, $blocked);
                         $details = $power->details($server);
@@ -205,7 +206,7 @@ final class Deployment
                         CrucibleRuntime::verify($files, $retainedLauncher);
                         app(Runtime::class)->restoreSettings($server, $original, $blocked);
                         app(Runtime::class)->syncAndRequire($server, $original);
-                        $receipt->save(fn (array $context) => ['context' => [...$context, 'native_original_files_verified' => ['backup_uuid' => $backup->uuid, 'confirmation' => $context['native_restore_confirmation'] ?? null, 'scope_sha256' => hash('sha256', json_encode($critical, JSON_THROW_ON_ERROR)), 'verified_at' => microtime(true)]]], 'db-recovery-evidence');
+                        $receipt->save(fn (array $context) => ['context' => [...$context, 'restore_files_verified' => true, 'recovery_startup_verified' => false, 'native_original_files_verified' => ['backup_uuid' => $backup->uuid, 'confirmation' => $context['native_restore_confirmation'] ?? null, 'scope_sha256' => hash('sha256', json_encode($critical, JSON_THROW_ON_ERROR)), 'verified_at' => microtime(true)]]], 'db-recovery-evidence');
                         $phase('restarting_original', 'Verifying the original installation after confirmed native restore');
                         $power->deploymentGuard($server, true);
                         app(Boot::class)->start($server, $files, $operation->id.'-old', $preview['qualification']['current'], $checkpoint, $heartbeat, $bootFailure('rollback'));
@@ -214,14 +215,16 @@ final class Deployment
                         $restored = true; $recovery = 'Exact locked backup, original runtime settings and fresh original boot verified.';
                     } else { $recovery = 'No game-file deployment began. Confirm any pending native backup before releasing maintenance.'; }
                 } catch (Throwable $failure) {
-                    report($failure); $recovery = 'Recovery requires manual intervention: '.$this->message($failure);
+                    report($failure);
+                    $filesRestored = ($operation->fresh()->context['restore_files_verified'] ?? false) === true;
+                    $recovery = ($filesRestored ? 'Original files and runtime settings restored; original Minecraft boot is NOT verified. ' : '').'Recovery requires manual intervention: '.$this->message($failure);
                 }
                 if (! $restored) { try { $phase('restoring', 'Recovery unverified; retaining the stopped checkpoint'); $power->guardAndStop($server); } catch (Throwable $failure) { report($failure); $recovery .= ' Wings offline state could not be confirmed; stop this server manually.'; } }
             }
             $message = mb_substr($this->message($error).' '.$recovery, 0, 1800);
             $managed->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
             $operation->update(['error' => $message]);
-            app(OperationTracker::class)->transition($operation, $restored ? 'restored' : ($stopped ? 'manual_intervention' : 'cancelled'), ['restore_verified' => $restored]);
+            app(OperationTracker::class)->transition($operation, $restored ? 'restored' : ($stopped ? 'manual_intervention' : 'cancelled'), ['restore_verified' => $restored, 'recovery_startup_verified' => $restored]);
             if ($restored) { try { $power->sync($server); } catch (Throwable $failure) { report($failure); } }
             $event = $managed->events()->create(['kind' => 'deploy', 'status' => 'failed', 'message' => $message, 'details' => ['operation_id' => $operation->id,
                 'backup_uuid' => $backup?->uuid, 'restore_verified' => $restored, 'critical' => $stopped && ! $restored, 'discord_notification_pending' => true]]);

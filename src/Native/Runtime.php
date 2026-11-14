@@ -18,13 +18,17 @@ final class Runtime
     public function plan(Server $server, array $current, array $target, array $manifest, string $stage, ?array $buildEvidence = null): array
     {
         foreach (['minecraft', 'loader'] as $key) { if (empty($current[$key]) || empty($target[$key])) { throw new RuntimeException('Installed or target '.$key.' is unknown; inspect the active runtime and verified server pack.'); } }
-        if (($current['java_confidence'] ?? '') !== 'verified' || ! is_int($current['java'] ?? null)) { throw new RuntimeException('Actual Java is not verified in the current boot log; an image name is only a hint.'); }
+        $configuredJava = ($current['java_confidence'] ?? '') === 'image_hint' && ($current['loader_confidence'] ?? '') === 'file_evidence'
+            && ($current['startup'] ?? null) === $server->startup && ($current['image'] ?? null) === $server->image;
+        if ((! $configuredJava && ($current['java_confidence'] ?? '') !== 'verified') || ! is_int($current['java'] ?? null)) {
+            throw new RuntimeException('Cannot identify Java from the configured Pelican image '.$server->image.'. Its runtime is not probed before deployment; an explicit Java version is required for this runtime plan.');
+        }
         $minimum = max(RuntimePlan::minimumJava($target['minecraft']), (int) ($target['java'] ?? 0));
         $maximum = $target['java_max'] ?? null;
         if ($maximum !== null) {
             if (! is_int($maximum) || $maximum < $minimum) { throw new RuntimeException('The selected server pack declares an invalid Java range.'); }
             if ($current['java'] < $minimum || $current['java'] > $maximum) {
-                throw new RuntimeException('The selected server pack requires Java '.$minimum.'–'.$maximum.'; the current verified runtime is Java '.$current['java'].'. Check the selected archive variant and the egg before updating.');
+                throw new RuntimeException('The selected server pack requires Java '.$minimum.'–'.$maximum.'; the current configured runtime is Java '.$current['java'].'. Check the selected archive variant and the egg before updating.');
             }
         }
         $java = $current['java'] >= $minimum ? $current['java'] : $minimum;

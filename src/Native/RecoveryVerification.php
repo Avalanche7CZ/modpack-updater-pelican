@@ -62,7 +62,7 @@ final class RecoveryVerification
                 if (! ($operation->context['backup_complete'] ?? false) || ! ($operation->context['backup_uuid'] ?? null)) { throw new RuntimeException('Native writes lack a verified backup receipt. Keep Minecraft stopped and inspect the locked backups manually.'); }
                 $backup = $server->backups()->where('uuid', $operation->context['backup_uuid'])->firstOrFail();
                 $barrier = [...$current, 'startup' => 'printf "%s\\n" "Arcturus recovery verification pending"; exit 1'];
-                $operation->update(['context' => [...$operation->context, 'runtime_recovery_barrier' => $barrier]]);
+                $operation->update(['context' => [...$operation->context, 'runtime_recovery_barrier' => $barrier, 'restore_files_verified' => false, 'recovery_startup_verified' => false]]);
                 app(Runtime::class)->installSettings($server, $current, $barrier); app(Runtime::class)->syncAndRequire($server, $barrier);
                 if (($power->details($server)['configuration']['invocation'] ?? null) !== $barrier['startup']) { throw new RuntimeException('Wings did not acknowledge the recovery startup barrier.'); }
                 app(PelicanBackupManager::class)->restoreNativeAndWait($server, $backup, $operation->context['excluded_directories'] ?? [], $files, $journal,
@@ -74,7 +74,7 @@ final class RecoveryVerification
                 app(Runtime::class)->requireSnapshot($server, $original);
             }
             CrucibleRuntime::verify($files, $operation->context['native_retained_launcher'] ?? []);
-            $operation->update(['context' => [...$operation->context, 'native_original_files_verified' => ['backup_uuid' => $operation->context['backup_uuid'] ?? null, 'confirmation' => $operation->context['native_restore_confirmation'] ?? null, 'scope_sha256' => hash('sha256', json_encode($critical, JSON_THROW_ON_ERROR)), 'verified_at' => microtime(true)]]]);
+            $operation->update(['context' => [...$operation->context, 'restore_files_verified' => true, 'recovery_startup_verified' => false, 'native_original_files_verified' => ['backup_uuid' => $operation->context['backup_uuid'] ?? null, 'confirmation' => $operation->context['native_restore_confirmation'] ?? null, 'scope_sha256' => hash('sha256', json_encode($critical, JSON_THROW_ON_ERROR)), 'verified_at' => microtime(true)]]]);
             $attempt = (int) ($operation->context['native_recovery_attempt'] ?? 0) + 1;
             $operation->update(['phase' => 'recovery_starting', 'context' => [...$operation->context, 'native_recovery_attempt' => $attempt]]);
             app(Runtime::class)->syncAndRequire($server, $original);
@@ -99,6 +99,9 @@ final class RecoveryVerification
             $operation->update(['phase' => 'restoring']);
             try { $power->guardAndStop($server); } catch (Throwable $failure) { report($failure); }
             $message = get_class($error) === RuntimeException::class ? $error->getMessage() : 'Native recovery infrastructure failed; retain the exact backup and stopped checkpoint and inspect the Panel log.';
+            if (($operation->fresh()->context['restore_files_verified'] ?? false) === true) {
+                $message = 'Original files and runtime settings restored; original Minecraft boot is NOT verified. '.$message;
+            }
             $operation->update(['error' => $message]);
             app(OperationTracker::class)->transition($operation, 'manual_intervention');
             app(DiscordNotifier::class)->criticalRecovery($managed, $message, $operation->id);

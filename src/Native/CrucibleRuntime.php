@@ -9,7 +9,7 @@ use Arcturus\ModpackManager\Modpacks\Providers\GtnhProvider;
 use RuntimeException;
 use ZipArchive;
 
-/** Explicit pack-only update of a running GTNH 1.7.10 Crucible installation. */
+/** Explicit pack-only update retaining the configured GTNH 1.7.10 Crucible launcher. */
 final class CrucibleRuntime
 {
     public const STRATEGY = 'verified_gtnh_crucible_runtime_reuse';
@@ -28,19 +28,21 @@ final class CrucibleRuntime
 
     public function plan(Server $server, Wings $files, array $current, array $requested, array $base, array $target, array $mutations): array
     {
-        if (($current['loader_confidence'] ?? '') !== 'verified_boot' || ($current['loader'] ?? null) !== 'crucible' ||
+        if (! in_array($current['loader_confidence'] ?? '', ['verified_boot', 'file_evidence'], true) || ($current['loader'] ?? null) !== 'crucible' ||
             ($current['minecraft'] ?? null) !== self::MINECRAFT || ! self::matchesUpstream($base) || ! self::matchesUpstream($target) ||
             ($requested['loader'] ?? null) !== 'forge' || ($requested['loader_version'] ?? null) !== self::FORGE ||
             ($requested['minecraft'] ?? null) !== self::MINECRAFT || isset($target['runtime_build'])) {
-            throw new RuntimeException('Keeping Crucible requires a verified running Crucible 1.7.10 server and official GTNH baseline and target packs with the same Forge 10.13.4.1614 runtime.');
+            throw new RuntimeException('Keeping Crucible requires a file-verified Crucible 1.7.10 launcher and official GTNH baseline and target packs with the same Forge 10.13.4.1614 runtime.');
         }
 
         $java = $current['java'] ?? null;
         $minimum = $requested['java'] ?? null;
         $maximum = $requested['java_max'] ?? null;
-        if (($current['java_confidence'] ?? '') !== 'verified' || ! is_int($java) || ! is_int($minimum) || ! is_int($maximum)
+        $configuredJava = ($current['java_confidence'] ?? '') === 'image_hint'
+            && ($current['startup'] ?? null) === $server->startup && ($current['image'] ?? null) === $server->image;
+        if ((! $configuredJava && ($current['java_confidence'] ?? '') !== 'verified') || ! is_int($java) || ! is_int($minimum) || ! is_int($maximum)
             || $java < $minimum || $java > $maximum) {
-            throw new RuntimeException('The verified Java version must be within the selected GTNH server ZIP’s Java range to keep Crucible.');
+            throw new RuntimeException('Keeping Crucible: Pelican image '.$server->image.' must declare an identifiable Java version within the selected GTNH server ZIP’s Java range ('.($minimum ?? 'unknown').'–'.($maximum ?? 'unknown').').');
         }
 
         [$jar, $argFiles] = self::launcher($server->startup);
@@ -51,14 +53,7 @@ final class CrucibleRuntime
             }
         }
 
-        $retained = [$jar => ['sha256' => $this->inspectJar($files, $jar), 'mode' => $files->permissions($jar)]];
-        foreach ($argFiles as $path) {
-            // Do not expand nested argfiles or accept an argfile that selects a different launcher/classpath.
-            $text = $files->read($path, 65536);
-            self::checkJvmOptions(self::tokens($text, $path), $path);
-            $retained[$path] = ['sha256' => hash('sha256', $text), 'mode' => $files->permissions($path)];
-        }
-        ksort($retained);
+        $retained = $current['launcher_files'] ?? $this->retained($server, $files);
 
         return [
             'strategy' => self::STRATEGY,
@@ -69,6 +64,30 @@ final class CrucibleRuntime
             'dependency_hashes' => [],
             'retained_launcher_files' => $retained,
         ];
+    }
+
+    /** Inspect current configuration and bytes, without executing Java or trusting a prior log. */
+    public function inspect(Server $server, Wings $files): array
+    {
+        $retained = $this->retained($server, $files);
+        $current = (new \Arcturus\ModpackManager\Services\RuntimeInspector)->inspect([], [], $server->startup, $server->image);
+        return [...$current, 'minecraft' => self::MINECRAFT, 'loader' => 'crucible', 'loader_version' => null,
+            'loader_confidence' => 'file_evidence', 'launcher_files' => $retained];
+    }
+
+    private function retained(Server $server, Wings $files): array
+    {
+        [$jar, $argFiles] = self::launcher($server->startup);
+        $retained = [$jar => ['sha256' => $this->inspectJar($files, $jar), 'mode' => $files->permissions($jar)]];
+        foreach ($argFiles as $path) {
+            // Do not expand nested argfiles or accept an argfile that selects a different launcher/classpath.
+            $text = $files->read($path, 65536);
+            self::checkJvmOptions(self::tokens($text, $path), $path);
+            $retained[$path] = ['sha256' => hash('sha256', $text), 'mode' => $files->permissions($path)];
+        }
+        ksort($retained);
+
+        return $retained;
     }
 
     /** Parse only the Java launcher forms we can prove. Never evaluate a command. */
@@ -165,7 +184,7 @@ final class CrucibleRuntime
             foreach (['Implementation-Title: Crucible', 'Forge-Version: '.self::FORGE, 'Main-Class: cpw.mods.fml.relauncher.ServerLaunchWrapper'] as $line) {
                 [$key] = explode(':', $line, 2);
                 if (! in_array($line, explode("\n", $main), true) || preg_match_all('/^'.preg_quote($key, '/').':/mi', $main) !== 1) {
-                    throw new RuntimeException('The active Crucible JAR does not prove the expected Crucible / Forge 10.13.4.1614 launcher.');
+                    throw new RuntimeException('The active Crucible JAR does not prove the expected Crucible / Forge 10.13.4.1614 launcher: '.$path.'.');
                 }
             }
         } finally { fclose($temp); }

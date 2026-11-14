@@ -11,7 +11,7 @@ final class RuntimeInspector
     {
         $result = ['minecraft' => null, 'loader' => null, 'loader_version' => null, 'java' => null,
             'java_confidence' => 'unknown', 'loader_confidence' => 'unknown', 'startup' => $startup, 'image' => $image, 'egg' => $egg, 'evidence' => [], 'warnings' => []];
-        if (preg_match('/(?:java|jdk)[_: -]?(8|11|16|17|21|25)(?:[^0-9]|$)/i', $image, $m)) {
+        if (preg_match('/(?:java|jdk)[_: -]?(?:1\.)?([1-9][0-9]{0,2})(?:[^0-9]|$)/i', $image, $m)) {
             $result['java'] = (int) $m[1];
             $result['java_confidence'] = 'image_hint';
         }

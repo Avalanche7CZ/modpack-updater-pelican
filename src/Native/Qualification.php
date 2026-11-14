@@ -52,22 +52,9 @@ final class Qualification
         foreach ($scope['moves'] as $from => $to) {
             if ($files->stat($to) !== null) { throw new RuntimeException('Disabled mod destination already exists: '.$to.'. Review it in Pelican Files and compare again.'); }
         }
-        $details = app(\Arcturus\ModpackManager\Services\PelicanPowerController::class)->details($pelican);
-        $uptime = $details['utilization']['uptime'] ?? null;
-        $modified = $files->stat('logs/latest.log')['modified'] ?? null;
-        if (($details['state'] ?? '') !== 'running' || ! is_numeric($uptime) || $uptime <= 0 || ! is_string($modified) || strtotime($modified) === false ||
-            strtotime($modified) < time() - (int) ceil($uptime / 1000) - 30 ||
-            ($details['configuration']['invocation'] ?? null) !== $pelican->startup ||
-            ($details['configuration']['container']['image'] ?? null) !== $pelican->image ||
-            ! $pelican->updated_at || $pelican->updated_at->timestamp > time() - (int) ceil($uptime / 1000) + 30) {
-            throw new RuntimeException('Boot the original installation with its current Panel startup/image, then compare. Wings uptime and the log must corroborate that boot.');
-        }
-        $current = [...($server->runtime_report ?? []), 'loader_confidence' => 'verified_boot', 'startup' => $pelican->startup, 'image' => $pelican->image];
-        $boot = (new RuntimeInspector)->fromStartupLog($files->read('logs/latest.log', 4194304));
-        if ($boot['minecraft'] === null || $boot['loader'] === null || ($boot['loader_version'] === null && $boot['loader'] !== 'crucible')) { throw new RuntimeException('The current boot log does not prove the active Minecraft and loader runtime.'); }
-        foreach (['minecraft', 'loader', 'loader_version'] as $key) { $current[$key] = $boot[$key]; }
-        if ($boot['java'] !== null) { $current['java'] = $boot['java']; $current['java_confidence'] = 'verified'; }
-        else { $current['java_confidence'] = 'unknown'; }
+        // A current file/configuration plan is independent of whether that installation can boot.
+        $current = $this->fileRuntime($server, $files, $base);
+        $bootEvidence = $this->liveBootEvidence($server, $files, $current);
         $texts = [];
         $runtimePaths = array_keys($target['files']);
         foreach ($runtimePaths as $path) {
@@ -83,7 +70,7 @@ final class Qualification
             $runtime = (new CrucibleRuntime)->plan($pelican, $files, $current, $requested, $base, $target, $scope['after']);
         } else {
             if ($current['loader'] === 'crucible' && CrucibleRuntime::matchesUpstream($base) && CrucibleRuntime::matchesUpstream($target)) {
-                throw new RuntimeException('GTNH ships a Forge launcher, but this server is running Crucible. Select Keep existing Crucible runtime to compare without migrating the launcher.');
+                throw new RuntimeException('GTNH ships a Forge launcher, but the configured launcher is Crucible. Select Keep existing Crucible runtime to compare without migrating the launcher.');
             }
             $runtime = (new Runtime)->plan($pelican, $current, $requested, $target['files'], $stage, $target['runtime_build'] ?? null);
         }
@@ -93,8 +80,77 @@ final class Qualification
         }
         app(PelicanBackupManager::class)->requireReady($pelican);
         $snapshot = app(SameHostDeployment::class)->panelSnapshot($pelican);
-        return ['protocol' => self::PROTOCOL, 'runtime_strategy' => $runtime['strategy'], 'current' => $current, 'target' => $runtime['target'],
+        return ['protocol' => self::PROTOCOL, 'boot_evidence' => $bootEvidence, 'runtime_strategy' => $runtime['strategy'], 'current' => $current, 'target' => $runtime['target'],
             'runtime_plan' => $runtime, 'panel_sha256' => hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)),
             'properties_sha256' => hash('sha256', $properties), 'staged_hashes' => $hashes, 'disabled_mod_moves' => $scope['moves']];
     }
+
+    /** Automation keeps its previous live-start qualification; manual approval may use file evidence. */
+    public static function requireAutomaticBoot(array $qualification): void
+    {
+        if (($qualification['boot_evidence']['verified'] ?? false) !== true) {
+            throw new RuntimeException('Automatic native deployment requires the original server running with current boot evidence. Review and manually approve an offline installation.');
+        }
+    }
+
+    private function fileRuntime(ManagedServer $server, Wings $files, array $base): array
+    {
+        $pelican = $server->pelicanServer;
+        if ($server->keep_existing_crucible_runtime || preg_match('/Crucible[^\s]*\.jar/i', $pelican->startup)) {
+            return (new CrucibleRuntime)->inspect($pelican, $files);
+        }
+        // Only scoped launcher/configuration candidates; never recursively inspect worlds or follow links.
+        $paths = array_keys($server->file_inventory['files'] ?? []); $texts = [];
+        foreach (array_unique([...array_keys($base['files']), ...$paths, ...SameHostDeployment::LAUNCH_FILES]) as $path) {
+            if (! in_array($path, SameHostDeployment::LAUNCH_FILES, true) && ! str_ends_with($path, '/unix_args.txt')) { continue; }
+            if (str_ends_with($path, '.jar')) { continue; }
+            $meta = $path === 'unix_args.txt' ? $files->linkMetadata($path) : $files->stat($path);
+            if ($meta === null || ($meta['symlink'] ?? false)) { continue; }
+            if (count($texts) >= 64) { throw new RuntimeException('Too many current launcher files; the active startup is ambiguous.'); }
+            $texts[$path] = $files->read($path, 1048576); $paths[] = $path;
+        }
+        $current = (new RuntimeInspector)->inspect(array_values(array_unique($paths)), $texts, $pelican->startup, $pelican->image);
+        if (empty($current['minecraft']) || empty($current['loader'])) {
+            throw new RuntimeException('Cannot identify the current Minecraft/loader from Pelican Startup and scoped launcher files: '.$pelican->startup.'. '.implode('; ', $current['warnings']));
+        }
+        return $current;
+    }
+
+    /** Optional evidence for automation, not a prerequisite of manually approved offline work. */
+    private function liveBootEvidence(ManagedServer $server, Wings $files, array $current): array
+    {
+        $pelican = $server->pelicanServer;
+        $details = app(\Arcturus\ModpackManager\Services\PelicanPowerController::class)->details($pelican);
+        $state = $details['state'] ?? 'unknown';
+        if (! in_array($state, ['running', 'offline', 'exited'], true)) {
+            throw new RuntimeException('Wings reports '.$state.'; comparison requires a stable running or stopped server.');
+        }
+        if ($state !== 'running') { return ['verified' => false]; }
+        $uptime = $details['utilization']['uptime'] ?? null;
+        if (! is_numeric($uptime) || $uptime <= 0 || ! $pelican->updated_at) { return ['verified' => false]; }
+        $started = time() - (int) ceil($uptime / 1000);
+        if ($pelican->updated_at->timestamp > $started + 30 ||
+            ($details['configuration']['invocation'] ?? null) !== $pelican->startup ||
+            ($details['configuration']['container']['image'] ?? null) !== $pelican->image) { return ['verified' => false]; }
+        // A launcher replaced after the running instance began cannot borrow its old boot proof.
+        foreach ($current['launcher_files'] ?? [] as $path => $proof) {
+            $modified = $files->stat($path)['modified'] ?? null;
+            if (! is_string($modified) || strtotime($modified) === false || strtotime($modified) > $started) { return ['verified' => false]; }
+        }
+        $meta = $files->stat('logs/latest.log');
+        if ($meta === null || ($meta['size'] ?? 0) > 4194304 || ! is_string($meta['modified'] ?? null) || strtotime($meta['modified']) === false || strtotime($meta['modified']) < $started - 30) { return ['verified' => false]; }
+        try { $text = $files->read('logs/latest.log', 4194304); }
+        catch (TextChangedDuringInspection) { return ['verified' => false]; }
+        $boot = (new RuntimeInspector)->fromStartupLog($text);
+        if (! preg_match('/\bDone \([\d.]+s\)!/i', $text)) { return ['verified' => false]; }
+        foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
+            if (! isset($current[$key])) { continue; }
+            if ($boot[$key] === null) { return ['verified' => false]; }
+            if ($boot[$key] !== $current[$key]) {
+                throw new RuntimeException('Fresh running boot reports '.$key.' '.(string) $boot[$key].' but configured launcher/image declares '.(string) $current[$key].'. Review the actual startup and Java range before comparison.');
+            }
+        }
+        return ['verified' => true];
+    }
+
 }

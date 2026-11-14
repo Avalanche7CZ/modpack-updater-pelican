@@ -42,12 +42,12 @@ $systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = [];
 $hash = fn ($value) => hash('sha256', $value);
 $bootLog = fn ($mc, $version, $java) => "ModLauncher running: args [--fml.neoForgeVersion, $version, --fml.mcVersion, $mc]\nModLauncher 10.0.9 starting: java version $java.0.1\n[Server thread/INFO]: Done (0.1s)!\n";
 $crucibleBootLog = fn () => file_get_contents(__DIR__.'/../fixtures/gtnh-crucible/startup-output.txt');
-$crucibleJar = function (string $forge = '10.13.4.1614'): string {
+$crucibleJar = function (string $forge = '10.13.4.1614', string $build = 'original'): string {
     $file = tempnam(sys_get_temp_dir(), 'arcturus-crucible-fixture-');
     try {
         $zip = new ZipArchive;
         check($zip->open($file, ZipArchive::OVERWRITE) === true, 'Cannot create Crucible fixture');
-        $zip->addFromString('META-INF/MANIFEST.MF', "Manifest-Version: 1.0\r\nImplementation-Title: Crucible\r\nForge-Version: $forge\r\nMain-Class: cpw.mods.fml.relauncher.ServerLaunchWrapper\r\n\r\n");
+        $zip->addFromString('META-INF/MANIFEST.MF', "Manifest-Version: 1.0\r\nImplementation-Title: Crucible\r\nForge-Version: $forge\r\nImplementation-Version: $build\r\nMain-Class: cpw.mods.fml.relauncher.ServerLaunchWrapper\r\n\r\n");
         $zip->close();
         return file_get_contents($file);
     } finally { unlink($file); }
@@ -132,6 +132,7 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false,
     }
     if ($crucible) {
         $systems[$uuid]['data']['Crucible-1.7.10-server.jar'] = $crucibleJar();
+        $systems[$uuid]['file_modified'] = array_fill_keys(['Crucible-1.7.10-server.jar', 'java9args.txt'], now()->subMinutes(2)->toIso8601String());
         $systems[$uuid]['data']['java9args.txt'] = file_get_contents(__DIR__.'/../fixtures/gtnh-crucible/java9args.txt');
         $systems[$uuid]['data']['logs/latest.log'] = $crucibleBootLog();
     }
@@ -144,7 +145,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     $requests[] = [$request->method(), $path, $q];
     if (str_ends_with($path, '/logs')) {
         check($request->method() === 'GET' && in_array($q['size'] ?? '', ['60','100'], true), 'Console was not queried with a bounded read');
-        if ($mode === 'diagnostic_unavailable' && $sys['starts'] > 0) { return Http::response(['error' => 'private remote failure body'], 500, $headers); }
+        if (in_array($mode, ['diagnostic_unavailable', 'crucible_offline_failed_boot'], true) && $sys['starts'] > 0) { return Http::response(['error' => 'private remote failure body'], 500, $headers); }
         return Http::response(['data' => $sys['console'] ?? ['Original console before the update']], 200, $headers);
     }
     if (str_ends_with($path, '/sync')) {
@@ -160,7 +161,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
         foreach ([...array_keys($sys['data']), ...$sys['dirs']] as $file) {
             if (! str_starts_with($file, $prefix)) { continue; } $rest = substr($file, strlen($prefix)); if ($rest === '') { continue; }
             $name = explode('/', $rest)[0]; $full = $prefix.$name; $isFile = isset($sys['data'][$full]);
-            $rows[$name] = ['name' => $name, 'file' => $isFile, 'directory' => ! $isFile, 'symlink' => isset($sys['links'][$full]), 'size' => $isFile ? strlen($sys['data'][$full]) : 0, 'mode_bits' => decoct($sys['modes'][$full] ?? 0644), 'modified' => $sys['modified']];
+            $rows[$name] = ['name' => $name, 'file' => $isFile, 'directory' => ! $isFile, 'symlink' => isset($sys['links'][$full]), 'size' => $isFile ? strlen($sys['data'][$full]) : 0, 'mode_bits' => decoct($sys['modes'][$full] ?? 0644), 'modified' => $sys['file_modified'][$full] ?? $sys['modified']];
         }
         return Http::response(array_values($rows), 200, $headers);
     }
@@ -176,7 +177,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     }
     if (str_ends_with($path, '/files/create-directory')) { $sys['dirs'][] = ltrim($request['path'].'/'.$request['name'], '/'); return Http::response([], 204, $headers); }
     if (str_ends_with($path, '/files/write')) {
-        check($sys['state'] === 'offline' && $sys['configuration']['suspended'] && ! $sys['configuration']['crash_detection_enabled'], 'Upload not guarded/offline');
+        check(in_array($sys['state'], ['offline', 'exited'], true) && $sys['configuration']['suspended'] && ! $sys['configuration']['crash_detection_enabled'], 'Upload not guarded/offline');
         $file = ltrim($q['file'], '/'); $sys['data'][$file] = $mode === 'staging_corrupt' ? str_repeat('z', strlen($request->body())) : $request->body();
         if ($mode === 'ownership_lost') {
             $mode = 'success'; $managed = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
@@ -220,12 +221,18 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
             if ($mode === 'crucible_drift') { $sys['modes']['java9args.txt'] = 0600; }
         }
         else {
+            $sys['omit_uptime'] = false; // A target start must supply new, real boot evidence.
             $sys['boot_started'] = microtime(true); $sys['polls_since_start'] = 0;
             $sys['starts']++; $fail = in_array($mode, ['failed_boot', 'failed_restore', 'installer_failed_boot', 'disable_failed_boot', 'root_args_failed_boot', 'rollback_log_grows', 'diagnostic_unavailable', 'stale_console'], true) && $sys['starts'] === 1;
+            if ($mode === 'crucible_offline_failed_boot') { $fail = true; }
             $sys['state'] = $fail ? 'offline' : 'running';
             if ($fail) {
                 $sys['data']['world/region/new-failed-boot.mca'] = 'must disappear on full recovery';
                 if ($mode !== 'stale_console') { $sys['console'] = [$targetConsole]; }
+                if ($mode === 'crucible_offline_failed_boot') {
+                    $sys['data']['logs/latest.log'] = 'java.lang.NoClassDefFoundError: java/util/jar/Pack200';
+                    $sys['console'] = ['java.lang.NoClassDefFoundError: java/util/jar/Pack200'];
+                }
             }
             else {
                 $sys['console'] = ['Original or target boot continued normally'];
@@ -246,7 +253,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
         return Http::response([], 202, $headers);
     }
     if (str_ends_with($path, '/backup')) {
-        check($sys['state'] === 'offline' && $sys['configuration']['suspended'], 'Backup not offline/guarded');
+        check(in_array($sys['state'], ['offline', 'exited'], true) && $sys['configuration']['suspended'], 'Backup not offline/guarded');
         $consoleManaged = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
         $consoleLines = \Arcturus\ModpackManager\ConsoleIntegration\ConsoleHistory::read($consoleManaged->id, null)['lines'];
         check(str_contains(end($consoleLines)['text'], 'locked Pelican backup'), 'Native backup phase not visible while Minecraft is offline');
@@ -292,6 +299,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     if (($sys['uptime_repeat'] ?? 0) > 0) { $uptime = $sys['sampled_uptime']; $sys['uptime_repeat']--; }
     $sys['sampled_uptime'] = $uptime;
     if (isset($sys['post_sync_samples'])) { $sys['post_sync_samples'][] = $uptime; }
+    if ($sys['omit_uptime'] ?? false) { $uptime = null; }
     return Http::response(['state' => $observedState, 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => $uptime]], 200, $headers);
 };
 try {
@@ -308,6 +316,11 @@ try {
         ['Almanac filename lookalike', false, 'drift_lookalike'],
         ['GTNH retains Crucible', false, 'crucible_success'], ['GTNH rejects wrong boot and rolls back', false, 'crucible_wrong_boot'],
         ['GTNH blocks launcher permission drift', false, 'crucible_drift'],
+        ['offline without log or uptime', false, 'offline_success'],
+        ['GTNH offline with replaced JAR', false, 'crucible_offline_success'],
+        ['GTNH offline without log', false, 'crucible_offline_no_log'],
+        ['GTNH stopped after approval', false, 'crucible_stopped_after_compare'],
+        ['GTNH broken target and original boot', false, 'crucible_offline_failed_boot'],
         ['root args migration', true, 'root_args_success'], ['root args migration rollback', true, 'root_args_failed_boot'],
     ]) as [$label, $migration, $scenario]) {
         // Keep only one scenario's HTTP recordings and stream responses in memory.
@@ -331,6 +344,17 @@ try {
             $systems[$uuid]['configuration']['invocation'] = $originalStartup;
             $systems[$uuid]['data']['unix_args.txt'] = 'libraries/net/neoforged/neoforge/21.1.1/unix_args.txt';
             $systems[$uuid]['links']['unix_args.txt'] = true;
+        }
+        $offlineScenario = $scenario === 'offline_success' || str_starts_with($scenario, 'crucible_offline_');
+        if ($offlineScenario) {
+            $systems[$uuid]['state'] = 'exited'; $systems[$uuid]['omit_uptime'] = true;
+            if ($crucible) {
+                $systems[$uuid]['data']['Crucible-1.7.10-server.jar'] = $crucibleJar('10.13.4.1614', 'operator-replaced');
+                $systems[$uuid]['file_modified']['Crucible-1.7.10-server.jar'] = now()->toIso8601String();
+                // Stale, successful log from the old JAR must neither authorize this JAR nor block Compare.
+                $systems[$uuid]['data']['logs/latest.log'] = str_replace('25.0.1', '27.0.1', $crucibleBootLog());
+            }
+            if (in_array($scenario, ['offline_success', 'crucible_offline_no_log'], true)) { unset($systems[$uuid]['data']['logs/latest.log']); }
         }
         $originalData = $systems[$uuid]['data'];
         check((new Preparation($managed))->request('capabilities')['backend'] === 'native', 'Native preparation still requires host provisioning');
@@ -493,9 +517,29 @@ try {
                 $runtime['target']['java'] === 25 && count($runtime['retained_launcher_files']) === 2, 'Crucible runtime plan lost the separate upstream or retained runtime');
         }
         check($managed->local_root === null && $managed->staging_parent === null, 'Native deployment inherited host volume access');
+        if ($offlineScenario) {
+            check($preview['applicable'], 'Offline Compare blocked: '.implode('; ', $preview['capability_blockers']));
+            check(($preview['qualification']['boot_evidence']['verified'] ?? true) === false &&
+                $preview['qualification']['current']['loader_confidence'] === 'file_evidence' &&
+                $preview['qualification']['current']['java_confidence'] === 'image_hint', 'Offline Compare fabricated boot/Java proof');
+            check($systems[$uuid]['starts'] === 0 && ! isset($snapshots[$uuid]), 'Offline Compare started Minecraft or created a backup');
+            if ($crucible) { check($preview['qualification']['runtime_plan']['retained_launcher_files']['Crucible-1.7.10-server.jar']['sha256'] === hash('sha256', $originalData['Crucible-1.7.10-server.jar']), 'Plan retained a stale JAR hash'); }
+            rejects(fn () => \Arcturus\ModpackManager\Native\Qualification::requireAutomaticBoot($preview['qualification']), 'Offline manual qualification silently enabled automation');
+            $compareCalls = array_filter($requests, fn ($r) => str_contains($r[1], $uuid) && str_ends_with($r[1], '/files/contents') && ($r[2]['file'] ?? '') === '/logs/latest.log');
+            check($compareCalls === [], 'Offline Compare consumed stale latest.log');
+        }
         $operation = app(DeploymentApproval::class)->queue($managed, $preview['plan_sha256'], (string) Str::uuid());
+        if ($scenario === 'crucible_stopped_after_compare') { $systems[$uuid]['state'] = 'exited'; $systems[$uuid]['omit_uptime'] = true; }
+        $deployRequestStart = count($requests);
         Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
         $operation->refresh(); $managed->refresh();
+        if ($offlineScenario || $scenario === 'crucible_stopped_after_compare') {
+            $calls = array_values(array_slice($requests, $deployRequestStart));
+            $backupIndex = array_key_first(array_filter($calls, fn ($r) => str_ends_with($r[1], '/backup')));
+            check($backupIndex !== null, 'Offline Deploy never requested its exact backup: '.$operation->error);
+            check(! array_filter(array_slice($calls, 0, $backupIndex + 1), fn ($r) => str_ends_with($r[1], '/power')), 'Offline deploy powered Minecraft before backup');
+            check(($operation->context['native_original_boot_verified'] ?? true) === false, 'Offline initial boot was recorded as verified');
+        }
         if ($scenario === 'success') {
             $measurements = $operation->context['native_metrics'];
             check(isset($measurements['phases_seconds']['verifying_before_backup'], $measurements['phases_seconds']['backing_up'], $measurements['phases_seconds']['verifying_after_backup']), 'Backup verification and wait timings were combined: '.json_encode(['phase' => $operation->phase, 'error' => $operation->error, 'metrics' => $measurements]));
@@ -517,6 +561,16 @@ try {
                 check($operation->phase === 'manual_intervention' && $managed->last_backup_uuid === null && $systems[$uuid]['starts'] === 0
                     && str_contains($operation->error ?? '', 'Retained Crucible launcher file drifted'), 'Retained runtime drift did not stop the deployment before backup/writes');
                 check($systems[$uuid]['data']['config/options.cfg'] === 'old', 'A config was installed despite launcher drift');
+                echo $label." native transaction passed\n"; continue;
+            }
+            if ($scenario === 'crucible_offline_failed_boot') {
+                check($operation->phase === 'manual_intervention' && $managed->installed_version === '1' && $managed->active_operation_id === $operation->id, 'Broken original was reported as functional rollback');
+                check(($operation->context['restore_files_verified'] ?? false) === true && ($operation->context['restore_verified'] ?? true) === false && ($operation->context['recovery_startup_verified'] ?? true) === false, 'Restore files and boot proof were conflated');
+                check($systems[$uuid]['state'] === 'offline' && $systems[$uuid]['data']['config/options.cfg'] === 'old', 'Failed rollback lost the offline restored snapshot');
+                check(($operation->context['native_target_boot_failure']['source'] ?? '') === 'startup_log_sample' && str_contains(json_encode($operation->context['native_target_boot_failure'] ?? []), 'Pack200'), 'Fresh target crash log was discarded when the console was unavailable');
+                check(str_contains($operation->error, 'Original files and runtime settings restored; original Minecraft boot is NOT verified'), 'File restoration was not distinguished from boot verification');
+                $history = \Arcturus\ModpackManager\ConsoleIntegration\ConsoleHistory::read($managed->id, null)['lines'];
+                check(! str_contains(json_encode($history), 'Rollback verified'), 'Failed original boot was announced as successful');
                 echo $label." native transaction passed\n"; continue;
             }
             if ($scenario === 'crucible_wrong_boot') {
@@ -554,7 +608,7 @@ try {
         if ($scenario === 'rollback_log_grows') {
             check($systems[$uuid]['starts'] === 2 && str_contains($operation->error ?? '', 'Minecraft exited during native startup verification'), 'Real target exit was not rolled back');
         }
-        if (in_array($scenario, ['success', 'installer_success', 'disable_success', 'root_args_success', 'target_log_grows', 'drift_success'], true)) {
+        if (in_array($scenario, ['success', 'offline_success', 'installer_success', 'disable_success', 'root_args_success', 'target_log_grows', 'drift_success'], true)) {
             check($operation->phase === 'completed' && $managed->installed_version === '2', $label.' did not complete: '.$operation->error);
             if ($scenario === 'drift_success') {
                 check(! isset($systems[$uuid]['data'][$almanac('1.26.10.2')]) && ! isset($systems[$uuid]['data'][$letMeDespawn('1.26.10.1')]) &&
@@ -943,6 +997,21 @@ try {
     \App\Models\User::retrieved(function ($user): void {
         $user->setRelation('roles', new \Illuminate\Database\Eloquent\Collection([(new \App\Models\Role)->forceFill(['name' => \App\Models\Role::ROOT_ADMIN])]));
     });
+    $offlineAuto = $make(false); $offlineAutoUuid = $offlineAuto->pelican_server_uuid;
+    $offlineAuto->update(['policy' => 'auto', 'deploy_enabled' => true, 'automation_actor_id' => 1]);
+    $systems[$offlineAutoUuid]['state'] = 'exited'; $systems[$offlineAutoUuid]['omit_uptime'] = true;
+    unset($systems[$offlineAutoUuid]['data']['logs/latest.log']);
+    $offlineAutoPlan = app(PreviewService::class)->generate($offlineAuto);
+    check($offlineAutoPlan['applicable'], 'Offline automation fixture did not produce a valid manual plan');
+    $requestStart = count($requests);
+    try {
+        app(DeploymentApproval::class)->queueAutomatic($offlineAuto);
+        throw new LogicException('Offline manual plan bypassed the automatic boot requirement');
+    } catch (RuntimeException $error) {
+        check(str_contains($error->getMessage(), 'Automatic native deployment requires'), 'Offline automation failed for an unrelated reason: '.$error->getMessage());
+    }
+    check($offlineAuto->fresh()->active_operation_id === null && count($requests) === $requestStart && $systems[$offlineAutoUuid]['starts'] === 0, 'Rejected offline automation dispatched work or powered the server');
+
 Schema::create('schedules', function (Blueprint $t) {
     $t->id(); $t->unsignedBigInteger('server_id'); $t->string('name'); $t->boolean('is_active')->default(true);
     $t->boolean('is_processing')->default(true); $t->boolean('only_when_online')->default(true);
