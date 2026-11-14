@@ -1,0 +1,6 @@
+Forge Mod Loader version 7.99.40.1614 for Minecraft 1.7.10 loading
+Java is OpenJDK, version 25.0.1
+MinecraftForge v10.13.4.1614 Initialized
+Crucible DummyMod injected successfully!
+[Server thread/INFO]: Starting minecraft server version 1.7.10
+[Server thread/INFO]: Done (1.0s)!

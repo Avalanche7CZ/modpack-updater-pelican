@@ -30,7 +30,7 @@ $egg->docker_images = ['Java 21' => 'fixture:java_21', 'Java 25' => 'fixture:jav
 $systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = []; $syncFail = false;
 $hash = fn ($value) => hash('sha256', $value);
 $bootLog = fn ($mc, $version, $java) => "ModLauncher running: args [--fml.neoForgeVersion, $version, --fml.mcVersion, $mc]\nModLauncher 10.0.9 starting: java version $java.0.1\n[Server thread/INFO]: Done (0.1s)!\n";
-$crucibleBootLog = fn () => "Forge Mod Loader version 7.99.40.1614 for Minecraft 1.7.10 loading\nJava is OpenJDK, version 25.0.1\nMinecraftForge v10.13.4.1614 Initialized\nCrucible DummyMod injected successfully!\n[Server thread/INFO]: Done (0.1s)!\n";
+$crucibleBootLog = fn () => file_get_contents(__DIR__.'/../fixtures/gtnh-crucible/startup-output.txt');
 $crucibleJar = function (string $forge = '10.13.4.1614'): string {
     $file = tempnam(sys_get_temp_dir(), 'arcturus-crucible-fixture-');
     try {

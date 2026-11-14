@@ -10,6 +10,7 @@ final class StartupEvidence
 {
     private array $runtime = ['minecraft'=>null, 'loader'=>null, 'loader_version'=>null, 'java'=>null];
     private bool $crucible = false;
+    private bool $vanillaFallback = false;
     private bool $valid = true;
     private bool $done = false;
     private int $lines = 0;
@@ -24,6 +25,11 @@ final class StartupEvidence
         $inspector = new RuntimeInspector;
         $observed = $inspector->fromStartupLog($line ?? '');
         $observed['java'] ??= $inspector->javaVersion($line ?? '');
+        if ($observed['loader'] === 'vanilla') {
+            // This banner is shared by modded servers. Keep only its Minecraft version now.
+            $this->vanillaFallback = true;
+            $observed['loader'] = null; $observed['loader_version'] = null;
+        }
         $crucible = stripos($line ?? '', 'Crucible') !== false;
         if ($crucible || array_filter($observed, fn ($v) => $v !== null)) { $this->done = false; }
         $this->crucible = $this->crucible || $crucible;
@@ -39,10 +45,14 @@ final class StartupEvidence
     public function proof(): array
     {
         $runtime = $this->runtime;
-        if ($this->crucible && $runtime['minecraft'] === '1.7.10' && in_array($runtime['loader'], ['forge','crucible'], true)) {
+        $valid = $this->valid && (!$this->crucible || in_array($runtime['loader'], [null,'forge','crucible'], true));
+        if ($this->crucible && $runtime['minecraft'] === '1.7.10' && in_array($runtime['loader'], [null,'forge','crucible'], true)) {
             $runtime['loader'] = 'crucible'; $runtime['loader_version'] = null;
+        } elseif ($runtime['loader'] === null && !$this->crucible && $this->vanillaFallback && $this->done) {
+            // Derive the fallback without storing it: later strong evidence must still take precedence.
+            $runtime['loader'] = 'vanilla'; $runtime['loader_version'] = $runtime['minecraft'];
         }
-        return ['runtime'=>$runtime, 'done'=>$this->done, 'valid'=>$this->valid, 'lines'=>$this->lines, 'sha256'=>$this->digest];
+        return ['runtime'=>$runtime, 'done'=>$this->done, 'valid'=>$valid, 'lines'=>$this->lines, 'sha256'=>$this->digest];
     }
 
     public static function matches(array $proof, array $target): bool

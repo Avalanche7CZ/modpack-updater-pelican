@@ -8,8 +8,7 @@ use Arcturus\ModpackManager\Native\RunningInstance;
 use Arcturus\ModpackManager\Native\StartupEvidence;
 
 $target = ['minecraft'=>'1.7.10','loader'=>'crucible','loader_version'=>null,'java'=>25];
-$lines = ['Forge Mod Loader version 7.99.40.1614 for Minecraft 1.7.10 loading', 'Java is OpenJDK, version 25.0.1',
-    'MinecraftForge v10.13.4.1614 Initialized', 'Crucible DummyMod injected successfully!', '[Server thread/INFO]: Done (1.0s)!'];
+$lines = file(__DIR__.'/fixtures/gtnh-crucible/startup-output.txt', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
 $proof = new StartupEvidence;
 foreach ($lines as $line) { $proof->line($line); }
 check(StartupEvidence::matches($proof->proof(), $target), 'Split GTNH/Crucible/Java 25 console facts were not retained');
@@ -24,6 +23,46 @@ check(!StartupEvidence::matches($proof->proof(),$target), 'Conflicting runtime a
 $early = new StartupEvidence; $early->line('Done (1.0s)!');
 foreach (array_slice($lines,0,-1) as $line) { $early->line($line); }
 check(!StartupEvidence::matches($early->proof(),$target), 'Done from before the startup header accepted');
+
+// Generic Minecraft banners are weak evidence in either ordering, including after proof() is read.
+$vanillaTarget=['minecraft'=>'1.7.10','loader'=>'vanilla','loader_version'=>'1.7.10','java'=>25];
+$forgeTarget=['minecraft'=>'1.7.10','loader'=>'forge','loader_version'=>'10.13.4.1614','java'=>25];
+$generic='[Server thread/INFO]: Starting minecraft server version 1.7.10';
+$forge=['Forge Mod Loader version 7.99.40.1614 for Minecraft 1.7.10 loading','MinecraftForge v10.13.4.1614 Initialized'];
+$vanilla=new StartupEvidence;
+$vanilla->line($generic);
+check($vanilla->proof()['runtime']['loader']===null, 'Incomplete startup was prematurely classified as Vanilla');
+foreach (['Java is OpenJDK, version 25.0.1','Done (1.0s)!'] as $line) $vanilla->line($line);
+check(StartupEvidence::matches($vanilla->proof(),$vanillaTarget), 'Actual vanilla fallback was lost');
+foreach ($forge as $line) $vanilla->line($line);
+$vanilla->line('Done (1.0s)!');
+check(StartupEvidence::matches($vanilla->proof(),$forgeTarget), 'Reading vanilla fallback poisoned later strong loader evidence');
+foreach ([[$generic,...$forge],[...$forge,$generic]] as $order) {
+    $evidence=new StartupEvidence;
+    foreach ([...$order,'Java is OpenJDK, version 25.0.1','Done (1.0s)!'] as $line) $evidence->line($line);
+    check(StartupEvidence::matches($evidence->proof(),$forgeTarget), 'Generic banner conflicted with Forge depending on order');
+}
+$crucibleMarker='Crucible DummyMod injected successfully!';
+foreach ([[$crucibleMarker,$generic],[$generic,$crucibleMarker]] as $order) {
+    $evidence=new StartupEvidence;
+    foreach ([...$order,'Java is OpenJDK, version 25.0.1','Done (1.0s)!'] as $line) $evidence->line($line);
+    check(StartupEvidence::matches($evidence->proof(),$target), 'Vanilla fallback overrode the real Crucible marker');
+}
+foreach ([[$crucibleMarker,'Loading Minecraft 1.7.10 with Fabric Loader 0.16.9'],['Loading Minecraft 1.7.10 with Fabric Loader 0.16.9',$crucibleMarker]] as $order) {
+    $evidence=new StartupEvidence;
+    foreach ([...$order,$generic,'Java is OpenJDK, version 25.0.1','Done (1.0s)!'] as $line) $evidence->line($line);
+    check(!$evidence->proof()['valid'], 'Crucible marker masked an incompatible strong loader');
+}
+// A generic banner cannot repair a genuine loader/version conflict.
+foreach (['Loading Minecraft 1.7.10 with Fabric Loader 0.16.9','ModLauncher args [--fml.neoForgeVersion, 21.1.1, --fml.mcVersion, 1.7.10]','MinecraftForge v10.13.4.9999 Initialized'] as $conflict) {
+    $evidence=new StartupEvidence;
+    foreach ([...$forge,'Java is OpenJDK, version 25.0.1',$conflict,$generic,'Done (1.0s)!'] as $line) $evidence->line($line);
+    check(!$evidence->proof()['valid'], 'Genuinely conflicting loader/version was accepted');
+    check(!StartupEvidence::matches($evidence->proof(),$forgeTarget) && !StartupEvidence::matches($evidence->proof(),$vanillaTarget), 'Generic banner masked a strong loader conflict');
+}
+$changedMinecraft=new StartupEvidence;
+foreach ([...$forge,'Starting minecraft server version 1.12.2','Java is OpenJDK, version 25.0.1','Done (1.0s)!'] as $line) $changedMinecraft->line($line);
+check(!$changedMinecraft->proof()['valid'], 'Contradictory Minecraft version was ignored with the generic banner');
 
 $uuid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'; $operation='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 $directory=sys_get_temp_dir().'/arcturus-operator-evidence-'.bin2hex(random_bytes(8)); mkdir($directory,0700);
