@@ -56,6 +56,29 @@
                 <p class="mt-2 text-sm text-amber-600">{{ ($context['native_manual_start']['role'] ?? '') === 'deploy' ? 'Nasazeno, start neověřen.' : 'Soubory obnoveny, původní start neověřen.' }} Use normal Pelican power controls and launcher settings, then Verify running server. The active checkpoint and locked backup block another update. A manual crash does not initiate rollback.</p>
             @endif
             @if($canConfirmRunning ?? false)
+                <x-filament::button color="warning" wire:click="reviewCurrentConfiguration('{{ $operation->id }}')" wire:loading.attr="disabled">Přijmout aktuální konfiguraci a dokončit nasazení</x-filament::button>
+                @if(($configurationSetReview ?? null) && ($configurationSetReview['operation_id'] ?? null) === $operation->id)
+                    <div class="mt-3 overflow-x-auto">
+                        <p class="text-sm">Potvrzujete celý tento seznam pro nasazení {{ $operation->id }}, verzi {{ $configurationSetReview['target_version'] }} a manifest {{ $configurationSetReview['target_manifest_sha256'] }}. Configy zůstanou lokálními změnami; upstream baseline a záloha zůstanou zachovány.</p>
+                        @if($configurationSetReview['runtime_error'] ?? null)<p>{{ $configurationSetReview['runtime_error'] }}</p>@endif
+                        <table class="mt-2 w-full text-left text-sm">
+                            <thead><tr><th>Cesta</th><th>Původní ověřený SHA-256</th><th>Aktuální SHA-256 k přijetí</th><th>Kontrola</th></tr></thead>
+                            <tbody>
+                                @forelse($configurationSetReview['differences'] as $difference)
+                                    <tr><td class="break-all">{{ $difference['path'] }}</td><td class="break-all">{{ $difference['expected_sha256'] ?? '[očekávána nepřítomnost]' }}</td><td class="break-all">{{ $difference['actual_sha256'] ?? '[nepřítomný nebo nečitelný]' }}</td><td>{{ $difference['reason'] ?? 'Lokální textová konfigurace k přijetí' }}</td></tr>
+                                @empty
+                                    <tr><td colspan="4">Všechny ověřované cesty souhlasí.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                        @if($configurationSetReview['can_confirm'])
+                            <x-filament::button color="warning" wire:click="acceptCurrentConfiguration" wire:loading.attr="disabled"
+                                wire:confirm="Přijímám celý zobrazený seznam přesných cest a aktuálních hashů jako lokální konfiguraci této operace. Připojil jsem se k serveru a potvrzuji běh cílové verze {{ $configurationSetReview['target_version'] }}. Dokončit nasazení bez automatického důkazu bootu?">Potvrdit celý seznam a dokončit nasazení</x-filament::button>
+                        @else
+                            <p class="text-amber-600">Nasazení nelze dokončit: striktní cesty a runtime musí souhlasit.</p>
+                        @endif
+                    </div>
+                @endif
                 <x-filament::button color="gray" wire:click="reviewRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled">Zkontrolovat všechny rozdíly nasazení</x-filament::button>
                 <x-filament::button color="warning" wire:click="confirmRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled"
                     wire:confirm="Potvrzuji, že jsem se připojil k tomuto serveru a ručně potvrdil běh cílové verze {{ $context['to'] ?? '' }}. Boot nebude označen za automaticky ověřený. Souborové nesoulady uzavření zablokují. Pokračovat?">Potvrdit běžící nasazení</x-filament::button>

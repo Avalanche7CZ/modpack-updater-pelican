@@ -24,12 +24,14 @@ final class DeploymentConfigChanges
         ksort($expected); return $expected;
     }
 
-    private function restriction(Operation $op, array $target, string $path, ?string $expected, ?string $actual, ?string $error): ?string
+    private function restriction(Operation $op, array $target, string $path, ?string $expected, ?string $actual, ?string $error, bool $configurationSet = false): ?string
     {
         if ($error !== null) { return $error; }
         if ($expected === null) { return 'Expected removal: the path must remain absent.'; }
         if ($actual === null) { return 'Expected deployed file is missing.'; }
         if (array_key_exists($path, $op->context['native_target_runtime_plan']['dependency_hashes'] ?? [])) { return 'Runtime dependency: strict hash required.'; }
+        if (array_key_exists($path, $op->context['native_target_runtime_plan']['retained_launcher_files'] ?? [])) { return 'Retained runtime launcher/argument: strict hash required.'; }
+        if ($configurationSet && $path === 'server.properties') { return null; }
         if (! str_starts_with($path, 'config/') || ! in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), ['cfg', 'conf', 'properties', 'json', 'json5', 'toml', 'yaml', 'yml', 'ini', 'txt', 'xml', 'hocon', 'snbt'], true)) {
             return 'Only text configuration files under config/ may be accepted; JARs and other deployed files remain strict.';
         }
@@ -45,9 +47,15 @@ final class DeploymentConfigChanges
         return $receipt;
     }
 
-    public function report(Operation $op, array $target, string $targetSha, Wings $files): array
+    public function report(Operation $op, array $target, string $targetSha, Wings $files, bool $configurationSet = false): array
     {
-        $expected = $this->scope($op); $scopeSha = hash('sha256', json_encode($expected, JSON_THROW_ON_ERROR)); $differences = []; $accepted = [];
+        $expected = $this->scope($op);
+        if ($configurationSet) {
+            // Include locally retained target configs too; never replace a deployed removal receipt.
+            foreach ($target['files'] as $path => $sha) { if (str_starts_with($path, 'config/') && ! array_key_exists($path, $expected)) { $expected[$path] = $sha; } }
+            ksort($expected);
+        }
+        $scopeSha = hash('sha256', json_encode($expected, JSON_THROW_ON_ERROR)); $differences = []; $accepted = [];
         foreach (array_chunk($expected, 32, true) as $batch) {
             $errors = [];
             try { $hashes = $files->hashBatch(array_keys($batch)); }
@@ -61,16 +69,30 @@ final class DeploymentConfigChanges
             }
             foreach ($batch as $path => $sha) {
                 if (! isset($errors[$path]) && $hashes[$path] === $sha) { continue; }
-                $reason = $this->restriction($op, $target, $path, $sha, $hashes[$path], $errors[$path] ?? null);
+                $reason = $this->restriction($op, $target, $path, $sha, $hashes[$path], $errors[$path] ?? null, $configurationSet);
+                if ($reason === null && $configurationSet) {
+                    try { $this->currentText($files, $path, $hashes[$path]); }
+                    catch (RuntimeException $error) { $reason = $error->getMessage(); }
+                }
                 $receipt = $reason === null ? $this->accepted($op, $targetSha, $path, $sha, $hashes[$path], $scopeSha) : null;
-                if ($receipt !== null) { $accepted[$path] = $receipt; }
+                if ($configurationSet && $reason === null) {
+                    $accepted[$path] = ['operation_id' => $op->id, 'target_manifest_sha256' => $targetSha, 'path' => $path,
+                        'scope_sha256' => $scopeSha, 'expected_sha256' => $sha, 'actual_sha256' => $hashes[$path], 'approval' => 'configuration_set'];
+                } elseif ($receipt !== null) { $accepted[$path] = $receipt; }
                 $differences[] = ['path' => $path, 'expected_sha256' => $sha, 'actual_sha256' => $hashes[$path],
                     'reviewable' => $reason === null, 'reason' => $reason, 'accepted' => $receipt !== null];
             }
         }
         return ['differences' => $differences, 'accepted' => $accepted,
-            'can_confirm' => ! array_filter($differences, fn ($row) => ! $row['accepted']),
+            'can_confirm' => ! array_filter($differences, fn ($row) => $configurationSet ? $row['reason'] !== null : ! $row['accepted']),
             'scope_sha256' => hash('sha256', json_encode(['expected' => $expected, 'accepted' => $accepted], JSON_THROW_ON_ERROR))];
+    }
+
+    private function currentText(Wings $files, string $path, string $sha): void
+    {
+        $text = $files->read($path, self::TEXT_LIMIT);
+        if (hash('sha256', $text) !== $sha || $files->hash($path) !== $sha) { throw new RuntimeException('Config changed while reading confirmed list: '.$path); }
+        if (! mb_check_encoding($text, 'UTF-8') || preg_match('/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/', $text)) { throw new RuntimeException('Only UTF-8 text configs can be accepted: '.$path); }
     }
 
     public function review(Operation $op, ManagedServer $managed, array $target, string $targetSha, Wings $files, string $path, string $actualSha): array

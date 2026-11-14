@@ -90,7 +90,7 @@ foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as
     $systems[$uuid]['state'] = 'running'; $systems[$uuid]['boot_started'] = microtime(true) - 120; $systems[$uuid]['omit_uptime'] = false;
     unset($systems[$uuid]['data']['logs/latest.log']); $systems[$uuid]['console'] = [];
     $beforeConfirmation = count($requests);
-    if (getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY')) { require __DIR__.'/config_acceptance.php'; continue; }
+    if (getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY')) { require __DIR__.(getenv('ARCTURUS_CONFIG_SET_ONLY') ? '/config_set.php' : '/config_acceptance.php'); continue; }
     rejects(fn () => $service->verify($operation->id, 1), 'Normal Verify fabricated missing boot evidence');
     rejects(fn () => $service->confirmRunningDeployment($operation->id, 999), 'Non-admin confirmed running deployment');
     $systems[$uuid]['data']['config/options.cfg'] = 'changed after deploy';

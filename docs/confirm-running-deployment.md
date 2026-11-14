@@ -2,6 +2,16 @@
 
 Po aktualizaci pluginu je přímo v kartě čekajícího nasazení akce **Potvrdit běžící nasazení**. Použije ji root admin, který se připojil k cílovému Minecraft serveru a výslovně potvrzuje běh nasazené verze. Nejde o automatický důkaz bootu. Akce neodesílá Start, Stop, Restart, Restore, sync ani nový deploy.
 
+## Jedno potvrzení celé aktuální konfigurace
+
+Root admin může v kartě aktivního ověřeného deploye zvolit **Přijmout aktuální konfiguraci a dokončit nasazení**. Akce nejprve zobrazí celý seznam odlišných cest s původním ověřeným a aktuálním SHA-256, cílovou verzí, ID operace a manifestem. Zahrnuje nasazený rozsah, cílové configy pod `config/` včetně dříve zachovaných lokálních configů a přesně kořenový `server.properties` z původního world-properties receipt. Nezahrnuje obecnou výjimku pro jiné cesty pojmenované `server.properties`.
+
+Po kontrole seznamu stačí jednou zvolit **Potvrdit celý seznam a dokončit nasazení** a potvrdit běh cílové verze. Otevírání jednotlivých diffů není potřeba. Všechny přijímané rozdíly musí být běžné UTF-8 textové configy do 1 MiB; JARy, runtime závislosti/launcher, chybějící soubory, očekávané odstraněné cesty a ostatní cesty zůstávají striktní. Blokující rozdíly se zobrazí ve stejném přehledu a dokončení nepovolí.
+
+Závěrečná akce znovu získá mutation lease, ověří přesnou aktivní operaci, autentizovaný cílový manifest, dokončenou zamčenou zálohu, launcher/nastavení i stejnou běžící instanci. Znovu načte přesné hashe celého potvrzeného seznamu i striktních cest. Změna hashe, množiny rozdílů, manifestu, checkpointu nebo běžící instance zneplatní původní proof; UI jej nesmí nahradit novým neviděným seznamem. Přijetí všech lokálních hashů, audit a dokončení verze/baseline proběhnou v jedné DB transakci. Původní souborový receipt a upstream manifest zůstanou nezměněny, záloha zamčená. Akce neprovádí souborový zápis, Start/Stop/Restart, Restore, sync ani nový deploy. Běh potvrzuje admin; nevzniká automaticky ověřený boot.
+
+Pro současnou 2.9.0 tedy po aktualizaci pluginu otevři tento přehled, ověř seznam (zejména Botania, railcraft a server.properties) a potvrď jej jednou. Následující individuální postup zůstává dostupný jako alternativa.
+
 Pro již běžící GTNH 2.9.0 s chybějícím boot záznamem:
 
 1. Načti nový kód pluginu také ve webovém PHP runtime podle běžného upgrade postupu. Nic na maty zde nebylo provedeno.
@@ -76,8 +86,10 @@ Cílená lokální reprodukce (pouze disposable checkouty):
 
 ```bash
 php tests/crucible_startup.php
+PELICAN_SOURCE=/tmp/disposable-rc2 php tests/integration/native_config_set.php
 PELICAN_SOURCE=/tmp/disposable-rc2 php tests/integration/native_config_acceptance.php
 PELICAN_SOURCE=/tmp/disposable-rc2 php tests/integration/native_running_confirmation.php
+PELICAN_SOURCE=/tmp/disposable-rc3 php tests/integration/native_config_set.php
 PELICAN_SOURCE=/tmp/disposable-rc3 php tests/integration/native_config_acceptance.php
 PELICAN_SOURCE=/tmp/disposable-rc3 php tests/integration/native_running_confirmation.php
 ```
@@ -85,3 +97,5 @@ PELICAN_SOURCE=/tmp/disposable-rc3 php tests/integration/native_running_confirma
 Lokálně prošly cílené regrese na oficiálním RC2 `f64a167` i RC3 `6095cea`, s jejich vlastními Composer lockfile závislostmi. Pokrývají doslovný JAR, egg default/server override, neplatné názvy i obsah JARu, změnu proměnné po Compare, normální Start/Verify s placeholderem a oddělené admin dokončení bez boot logu přes CLI i kartu. Ověřují přesný odmítnutý souborový drift, zachování místního railcraft.cfg a upstream manifestu, historii s `startup_verified=false`, zamčenou zálohu a nulová power/restore/sync volání při potvrzení. Také prošel původní automatický boot s `startup_verified=true`, parser/console jednotkové regrese a kontrola kompatibility append patche a plugin API na RC3. Wings v runtime testech jsou HTTP fixture, databáze izolovaná SQLite; živé Minecraft/Wings ani maty nebyly testovány či měněny.
 
 Regrese individuálního přijetí configů navíc pokrývá souhrn šesti rozdílů najednou, diff proti ověřeným cílovým bajtům, odmítnutí binárního configu, striktní JAR/runtime/removal kontroly, vazbu na konkrétní cestu/operaci/manifest/hash, odmítnutí zastaralého review a opětovné kontroly při dokončení. Přes CLI i kartu dokončí testovací GTNH 2.9.0 bez boot logu, změny živých souborů a power/restore/sync požadavků; původní receipt, čistý upstream manifest, zamčená záloha a jednotlivá přijetí zůstanou v auditu. Tato cílená regrese prošla na RC2 i RC3 se stejnými lokálními fixture/SQLite omezeními.
+
+Hromadné potvrzení (`native_config_set.php`) prošlo na RC2 i RC3: společný přehled Botania/Another/railcraft a kořenového server.properties bez individuálních diffů, root autorizace, striktní JAR/runtime/odstraněné cesty a binární config, odmítnutí jiné než kořenové properties cesty, změny hashe/seznamu/aktivní operace/manifestu/běžící instance a odmítnutí neviděného nového hashe v UI. Test potvrzuje dokončení 2.9.0 s lokálními receipt záznamy, původním upstream manifestem i zamčenou zálohou a jen GET požadavky na Wings. Produkční maty nebylo kontaktováno.

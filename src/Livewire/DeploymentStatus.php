@@ -19,6 +19,31 @@ final class DeploymentStatus extends Component
     #[Locked]
     public ?array $configReview = null;
 
+    #[Locked]
+    public ?array $configurationSetReview = null;
+
+    public function reviewCurrentConfiguration(string $operationId): void
+    {
+        Access::requireAdmin();
+        Operation::where('managed_server_id', $this->managedServerId)->findOrFail($operationId);
+        $this->configurationSetReview = null;
+        try { $this->configurationSetReview = app(\Arcturus\ModpackManager\Native\ManualStart::class)->acceptCurrentConfiguration($operationId, (int) auth()->id()); }
+        catch (\Throwable $error) { $this->reviewFailure($error); }
+    }
+
+    public function acceptCurrentConfiguration(): void
+    {
+        Access::requireAdmin();
+        $review = $this->configurationSetReview;
+        if (! ($review['can_confirm'] ?? false) || empty($review['proof'])) { return; }
+        Operation::where('managed_server_id', $this->managedServerId)->findOrFail($review['operation_id']);
+        try {
+            $result = app(\Arcturus\ModpackManager\Native\ManualStart::class)->acceptCurrentConfiguration($review['operation_id'], (int) auth()->id(), true, $review['proof']);
+            $this->configurationSetReview = null;
+            \Filament\Notifications\Notification::make()->title('Nasazení dokončeno s přijatou lokální konfigurací')->body($result['message'])->success()->send();
+        } catch (\Throwable $error) { $this->configurationSetReview = null; $this->reviewFailure($error); }
+    }
+
     public function mount(int $managedServerId): void { Access::requireAdmin(); $this->managedServerId = $managedServerId; }
 
     public function confirmRunningDeployment(string $operationId): void

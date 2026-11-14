@@ -27,6 +27,7 @@ PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_bulk.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/apply_batches.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/manual_lease.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_config_acceptance.php
+PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_config_set.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_running_confirmation.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_restore_policy.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_deployment.php
