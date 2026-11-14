@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
 
-/** Explicit verification of an operator-restored snapshot. Never replays apply or initiates a restore. */
+/** Explicit operator recovery; Native restore requires execution-bound approval when automatic restore is disabled. */
 final class VerifyDeploymentRecovery implements ShouldQueue
 {
     use Queueable;
@@ -99,6 +99,7 @@ final class VerifyDeploymentRecovery implements ShouldQueue
             $row->update(['phase' => 'restoring']);
             try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); } catch (Throwable) { }
             $row->update(['error' => 'Recovery verification interrupted. Confirm Wings offline state and retain the locked backup; do not reapply the update.']);
+            if (\Arcturus\ModpackManager\Native\RestorePolicy::automaticRestoreDisabled($row)) { \Arcturus\ModpackManager\Native\RestorePolicy::retainFailure($row); }
             app(OperationTracker::class)->transition($row, 'manual_intervention');
             app(\Arcturus\ModpackManager\Services\DiscordNotifier::class)->criticalRecovery($server, $row->error, $row->id);
         } finally { $lease->release(); }

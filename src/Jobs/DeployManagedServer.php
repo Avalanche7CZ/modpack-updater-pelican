@@ -404,6 +404,7 @@ final class DeployManagedServer implements ShouldQueue
             try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); }
             catch (Throwable) { $message .= ' Wings could not confirm offline state; stop the server manually first.'; }
             $operation->update(['error' => $message]);
+            if (($operation->context['native_writes_started'] ?? false) && \Arcturus\ModpackManager\Native\RestorePolicy::automaticRestoreDisabled($operation)) { \Arcturus\ModpackManager\Native\RestorePolicy::retainFailure($operation); }
             $server->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
             app(OperationTracker::class)->transition($operation, 'manual_intervention');
             app(DiscordNotifier::class)->criticalRecovery($server, $message, $operation->id);

@@ -40,6 +40,7 @@ final class RecoveryVerification
             if ($executionId === null || ($operation->context['native_execution_id'] ?? null) !== $executionId || !in_array($operation->phase, ['recovery_queued', 'checking_recovery'], true) || $operation->completed_at || ($operation->context['protocol'] ?? '') !== Qualification::PROTOCOL) { throw new RuntimeException('Recovery worker no longer owns an open queued recovery.'); }
             if ($managed->active_operation_id !== $operation->id || ! ($operation->context['recovery_actor_id'] ?? null)) { throw new RuntimeException('Native recovery receipt is not active or lacks administrator approval.'); }
             $ownsRecovery = true;
+            RestorePolicy::requireRecoveryApproval($operation, $executionId);
             $operation->update(['phase' => 'checking_recovery', 'heartbeat_at' => now()]);
             $power->deploymentGuard($server, false);
             if ($power->state($server) !== 'exited' || $server->status !== null || $server->backups()->whereNull('completed_at')->exists()) {
@@ -64,6 +65,7 @@ final class RecoveryVerification
                 $operation->update(['context' => [...$operation->context, 'runtime_recovery_barrier' => $barrier, 'restore_files_verified' => false, 'recovery_startup_verified' => false]]);
                 app(Runtime::class)->installSettings($server, $current, $barrier); app(Runtime::class)->syncAndRequire($server, $barrier);
                 if (($power->details($server)['configuration']['invocation'] ?? null) !== $barrier['startup']) { throw new RuntimeException('Wings did not acknowledge the recovery startup barrier.'); }
+                RestorePolicy::requireRecoveryApproval($operation->fresh(), $executionId);
                 app(PelicanBackupManager::class)->restoreNativeAndWait($server, $backup, $operation->context['excluded_directories'] ?? [], $files, $journal,
                     (int) config('arcturus-modpack-manager.deployment_restore_timeout', 3600), $heartbeat, $operation->context['native_link_stash'] ?? null);
                 (new Transaction($files))->verify($critical);
@@ -102,6 +104,7 @@ final class RecoveryVerification
                 $message = 'Original files and runtime settings restored; original Minecraft boot is NOT verified. '.$message;
             }
             $operation->update(['error' => $message]);
+            if (RestorePolicy::automaticRestoreDisabled($operation->fresh())) { RestorePolicy::retainFailure($operation); }
             app(OperationTracker::class)->transition($operation, 'manual_intervention');
             app(DiscordNotifier::class)->criticalRecovery($managed, $message, $operation->id);
         } finally { if ($locked) { $lock->release(); } }

@@ -24,7 +24,9 @@ final class DeploymentApproval
             $operation = $fresh->operations()->lockForUpdate()->findOrFail($fresh->active_operation_id);
             if ($operation->phase === 'recovery_queued') { return $operation; }
             if ($operation->kind !== 'deploy' || $operation->phase !== 'manual_intervention') { throw new RuntimeException('Only a stopped deployment recovery checkpoint can be verified.'); }
-            $operation->update(['phase' => 'recovery_queued', 'completed_at' => null, 'heartbeat_at' => now(), 'error' => null, 'context' => [...$operation->context, 'previous_recovery_error' => $operation->error, 'recovery_actor_id' => auth()->id(), 'native_execution_id' => bin2hex(random_bytes(16))],
+            $execution = bin2hex(random_bytes(16));
+            $operation->update(['phase' => 'recovery_queued', 'completed_at' => null, 'heartbeat_at' => now(), 'error' => null, 'context' => [...$operation->context, 'previous_recovery_error' => $operation->error, 'recovery_actor_id' => auth()->id(), 'native_execution_id' => $execution,
+                'native_explicit_rollback' => ['operation_id' => $operation->id, 'execution_id' => $execution, 'backup_uuid' => $operation->context['backup_uuid'] ?? null, 'actor_id' => auth()->id(), 'requested_at' => now()->toIso8601String()]],
                 'progress' => ['message' => 'Administrator requested verification of the manually restored original snapshot']]);
             DB::afterCommit(function () use ($operation): void {
                 try { Bus::dispatch(new \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery($operation->id)); }
@@ -34,12 +36,12 @@ final class DeploymentApproval
         });
     }
 
-    public function queue(ManagedServer $server, string $digest, string $requestId, bool $manualStart = false): Operation
+    public function queue(ManagedServer $server, string $digest, string $requestId, bool $manualStart = false, bool $noAutomaticRestore = false): Operation
     {
         Access::requireAdmin();
         if (auth()->id() === null) { throw new RuntimeException('An identified root administrator must approve deployment.'); }
         if (! preg_match('/^[a-f0-9]{64}$/D', $digest) || ! \Illuminate\Support\Str::isUuid($requestId)) { throw new RuntimeException('Invalid deployment approval receipt.'); }
-        return $this->enqueue($server, $digest, $requestId, (int) auth()->id(), false, $manualStart);
+        return $this->enqueue($server, $digest, $requestId, (int) auth()->id(), false, $manualStart, $noAutomaticRestore);
     }
 
     public function queueAutomatic(ManagedServer $server, ?string $requestId = null): Operation
@@ -48,17 +50,18 @@ final class DeploymentApproval
         return $this->enqueue($server, $server->preview_summary['plan_sha256'] ?? '', $requestId ?? (string) \Illuminate\Support\Str::uuid(), (int) $server->automation_actor_id, true);
     }
 
-    private function enqueue(ManagedServer $server, string $digest, string $requestId, int $actorId, bool $automatic, bool $manualStart = false): Operation
+    private function enqueue(ManagedServer $server, string $digest, string $requestId, int $actorId, bool $automatic, bool $manualStart = false, bool $noAutomaticRestore = false): Operation
     {
-        return DB::transaction(function () use ($server, $digest, $requestId, $actorId, $automatic, $manualStart): Operation {
+        return DB::transaction(function () use ($server, $digest, $requestId, $actorId, $automatic, $manualStart, $noAutomaticRestore): Operation {
             $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
             $existing = $fresh->operations()->find($requestId);
             if ($existing) {
-                if (($existing->context['manual_start_after_deploy'] ?? false) !== $manualStart || $existing->kind !== 'deploy' || ($existing->context['plan_sha256'] ?? '') !== $digest || ($existing->context['actor_id'] ?? null) !== $actorId) {
+                if (($existing->context['no_automatic_restore'] ?? false) !== $noAutomaticRestore || ($existing->context['manual_start_after_deploy'] ?? false) !== $manualStart || $existing->kind !== 'deploy' || ($existing->context['plan_sha256'] ?? '') !== $digest || ($existing->context['actor_id'] ?? null) !== $actorId) {
                     throw new RuntimeException('Approval request already belongs to a different deployment.');
                 }
                 return $existing;
             }
+            if ($noAutomaticRestore && ($automatic || $fresh->transport !== 'native')) { throw new RuntimeException('Disabling automatic restore requires a manually approved Native deployment.'); }
             if ($manualStart && ($automatic || $fresh->transport !== 'native')) { throw new RuntimeException('Manual start is only available for manually approved Native deployments.'); }
             if ($automatic) { app(ScheduledMaintenance::class)->requireEnabled($fresh); }
             app(QueuePreparation::class)->requireLocalQueue();
@@ -70,7 +73,7 @@ final class DeploymentApproval
             $snapshot = app(SameHostDeployment::class)->panelSnapshot($fresh->pelicanServer);
             if (! hash_equals($fresh->preview_summary['qualification']['panel_sha256'], hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)))) { throw new RuntimeException('Pelican launch settings changed since comparison; inspect and compare again.'); }
             $operation = app(OperationTracker::class)->create($fresh, 'deploy', ['actor_id' => $actorId, 'manual_approval' => true, 'automatic_approval' => $automatic,
-                'manual_start_after_deploy' => $manualStart, 'plan_sha256' => $digest, 'from' => $fresh->installed_version, 'to' => $fresh->targetVersion(),
+                'manual_start_after_deploy' => $manualStart, 'no_automatic_restore' => $noAutomaticRestore, 'plan_sha256' => $digest, 'from' => $fresh->installed_version, 'to' => $fresh->targetVersion(),
                 'policy_revision' => $fresh->policy_revision, 'panel_snapshot' => $snapshot, 'panel_sha256' => $fresh->preview_summary['qualification']['panel_sha256'], 'protocol' => $fresh->preview_summary['qualification']['protocol']], $requestId);
             $fresh->update(['approved_plan_sha256' => $digest, 'approved_at' => now(), 'approved_by' => $actorId]);
             DB::afterCommit(function () use ($fresh, $operation, $digest, $automatic): void {

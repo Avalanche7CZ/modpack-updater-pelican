@@ -65,6 +65,7 @@ jobs:
           php tests/integration/native_bulk.php
           php tests/integration/apply_batches.php
           php tests/integration/manual_lease.php
+          php tests/integration/native_restore_policy.php
           php tests/integration/native_deployment.php
           php tests/integration/boot_race.php
           php tests/integration/policies.php

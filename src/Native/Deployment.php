@@ -185,7 +185,9 @@ final class Deployment
                     if (($operation->fresh()->context['native_archive_pending'] ?? false) === true || $error instanceof ArchiveOutcomeUnknown) {
                         throw new RuntimeException('Wings archive work may still be running. Keep maintenance, stage and locked backup; confirm daemon completion before operator recovery. Never replay this operation.');
                     }
-                    if ($changed && $backup && $backupComplete) {
+                    if ($changed && RestorePolicy::automaticRestoreDisabled($operation->fresh())) {
+                        $recovery = 'Automatic restore disabled by this operation approval; maintenance, checkpoint, logs and locked backup retained for explicit administrator rollback.';
+                    } elseif ($changed && $backup && $backupComplete) {
                         // Wings restore clears suspension even on failure. Use an inert startup as a
                         // second barrier so a concurrent direct Wings start cannot launch Minecraft.
                         $current = app(\Arcturus\ModpackManager\Services\SameHostDeployment::class)->panelSnapshot($server->refresh());
@@ -221,6 +223,7 @@ final class Deployment
             $message = mb_substr($this->message($error).' '.$recovery, 0, 1800);
             $managed->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
             $operation->update(['error' => $message]);
+            if ($changed && RestorePolicy::automaticRestoreDisabled($operation->fresh())) { RestorePolicy::retainFailure($operation); }
             app(OperationTracker::class)->transition($operation, $restored ? 'restored' : ($stopped ? 'manual_intervention' : 'cancelled'), ['restore_verified' => $restored, 'recovery_startup_verified' => $restored]);
             if ($restored) { try { $power->sync($server); } catch (Throwable $failure) { report($failure); } }
             $event = $managed->events()->create(['kind' => 'deploy', 'status' => 'failed', 'message' => $message, 'details' => ['operation_id' => $operation->id,

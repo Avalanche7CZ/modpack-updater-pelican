@@ -55,7 +55,7 @@ Pokud startuješ jiným nástrojem než běžnou Pelican Console/API, nejprve po
 
 ## Nový ruční deploy
 
-Ve stávajícím potvrzení **Update with backup** vyber **Po nasazení spustím server ručně**. Volba je uložena v konkrétní schválené operaci. Výchozí flow a automatické Schedules ji nemají. Záloha, staging, drift kontroly a finální ověření souborů proběhnou normálně. Teprve potom se předají ovládací prvky a zobrazí „Nasazeno, start neověřen“. Chyby zápisu/kontroly před tímto bodem stále používají původní recovery.
+Ve stávajícím potvrzení **Update with backup** vyber **Po nasazení spustím server ručně**. Volba je uložena v konkrétní schválené operaci. Lze ji kombinovat s [Při chybě neobnovovat automaticky](no-automatic-restore.md); při selhání pak zůstane maintenance a přesný zamčený backup pro výslovný rollback adminem. Výchozí flow a automatické Schedules ji nemají. Záloha, staging, drift kontroly a finální ověření souborů proběhnou normálně. Teprve potom se předají ovládací prvky a zobrazí „Nasazeno, start neověřen“. Chyby zápisu/kontroly před tímto bodem stále používají původní recovery.
 
 Dokud admin neprovede Verify running server, installed_version ani baseline se neposunou a další update zůstává blokovaný. Ověření očekává cílový pack/runtime. Akce v záhlaví **Hand over manual start** a **Verify running server** používají stejnou službu jako CLI. Pro stdout-only GTNH důkazy použij observer výše s UUID nové operace.
 

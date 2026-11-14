@@ -50,6 +50,9 @@
             @if(isset($context['native_target_boot_failure']) || isset($context['native_rollback_boot_failure']) || isset($context['native_recovery_boot_failure']))
                 <p class="mt-2 text-sm">Private startup diagnostics: <code>php artisan arcturus-modpack:boot-diagnostics {{ $operation->id }}</code></p>
             @endif
+            @if($operation->phase === 'manual_intervention' && ($context['native_auto_restore_suppressed'] ?? false) === true)
+                <p class="mt-2 text-sm text-amber-600">Nasazení nedokončeno, čeká na admina. Automatic restore was disabled in the approved operation. Maintenance, checkpoint, logs and the locked backup remain; use Recover original installation only to explicitly request rollback.</p>
+            @endif
             @if($operation->phase === 'manual_intervention')
                 <p class="mt-2 text-sm">Keep Minecraft stopped. Check the locked backup and retained deployment journal before restoring. Do not retry Apply Update or delete recovery evidence. If Wings could not confirm stopped state, stop the server through the node first. After an operator restores the correct snapshot and original launch settings, use Verify restored original snapshot; it never reapplies the update.</p>
             @endif

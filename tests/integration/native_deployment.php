@@ -204,6 +204,12 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
             if ($mode === 'partial_write' && $move['to'] === 'config/options.cfg') { $mode = 'success'; return Http::response(['error' => 'fixture write failure'], 500, $headers); }
             $sys['modes'][$move['to']] = $sys['modes'][$move['from']] ?? 0644; unset($sys['modes'][$move['from']]);
             $sys['data'][$move['to']] = $sys['data'][$move['from']]; unset($sys['data'][$move['from']]);
+            if ($mode === 'final_corrupt' && $move['to'] === 'config/options.cfg') { $sys['data'][$move['to']] = 'corrupt installed file'; $mode = 'success'; }
+            if ($mode === 'interrupted_live' && $move['to'] === 'config/options.cfg') {
+                $mode = 'success'; $managed = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
+                \Illuminate\Support\Facades\Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id)->forceRelease();
+                (new DeployManagedServer($managed->id, false, $managed->approved_plan_sha256, $managed->active_operation_id))->failed(null);
+            }
             if (isset($sys['links'][$move['from']])) { $sys['links'][$move['to']] = true; unset($sys['links'][$move['from']]); }
         }
         return Http::response([], 204, $headers);
@@ -308,6 +314,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     return Http::response(['state' => $observedState, 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => $uptime]], 200, $headers);
 };
 try {
+    if (getenv('ARCTURUS_RESTORE_POLICY_ONLY')) { require __DIR__.'/fixtures/restore_policy.php'; $GLOBALS['arcturus_integration_passed'] = true; return; }
     foreach ((getenv('ARCTURUS_RECOVERY_ONLY') ? [] : [
         ['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'],
         ['corrupt staging rollback', false, 'staging_corrupt'], ['partial batch 204 rollback', false, 'batch_partial'], ['no-op batch 204 rollback', false, 'batch_noop'],

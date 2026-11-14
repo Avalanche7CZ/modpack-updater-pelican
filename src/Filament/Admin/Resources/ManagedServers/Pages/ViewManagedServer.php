@@ -537,15 +537,16 @@ final class ViewManagedServer extends ViewRecord
             ->visible(fn () => $this->tab === 'updates')->disabled(fn () => ! $this->canApplyUpdate())
             ->fillForm(fn () => ['digest' => $this->getRecord()->preview_summary['plan_sha256'] ?? '', 'request_id' => (string) \Illuminate\Support\Str::uuid()])
             ->schema([Hidden::make('digest'), Hidden::make('request_id'),
+                Checkbox::make('no_automatic_restore')->label('Při chybě neobnovovat automaticky')->default(false)->visible(fn () => $this->getRecord()->transport === 'native')->helperText('On failure retain maintenance, checkpoint, logs and the locked backup until an administrator explicitly requests rollback.'),
                 Checkbox::make('manual_start')->label('Po nasazení spustím server ručně')->default(false)->visible(fn () => $this->getRecord()->transport === 'native'),
-                Checkbox::make('confirm')->label('I reviewed this exact file and runtime plan, including any startup/image changes, and approve stopping Minecraft, creating a locked Pelican backup, applying the staged update and verifying startup, or retaining an active checkpoint until I verify my manual start when selected. A failed update may require restoring the full offline backup.')->required()->accepted(),
+                Checkbox::make('confirm')->label('I reviewed this exact file and runtime plan, including any startup/image changes, and approve stopping Minecraft, creating a locked Pelican backup, applying the staged update and verifying startup, or retaining an active checkpoint until I verify my manual start when selected. A failed update may require restoring the full offline backup; when automatic restore is disabled, only an explicit administrator rollback may restore it.')->required()->accepted(),
             ])->modalHeading('Approve this exact manual update')
             ->modalDescription(fn () => ($this->getRecord()->preview_summary['from'] ?? '').' → '.($this->getRecord()->preview_summary['to'] ?? '').'. Plan: '.($this->getRecord()->preview_summary['plan_sha256'] ?? 'unavailable'))
             ->modalSubmitActionLabel('Approve and queue update')
             ->action(function (array $data): void {
                 Access::requireAdmin();
                 try {
-                    $operation = app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->queue($this->getRecord(), $data['digest'], $data['request_id'], (bool) ($data['manual_start'] ?? false));
+                    $operation = app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->queue($this->getRecord(), $data['digest'], $data['request_id'], (bool) ($data['manual_start'] ?? false), (bool) ($data['no_automatic_restore'] ?? false));
                     $this->queued('Manual update approved; deployment operation '.$operation->id);
                 } catch (\Throwable $error) {
                     Notification::make()->title('Update was not queued')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Deployment approval failed. Verify database/queue connectivity and compare the current plan again.')->danger()->send();
