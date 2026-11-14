@@ -9,12 +9,27 @@ use Arcturus\ModpackManager\Services\UpdatePlanner;
 use RuntimeException;
 
 /** Pelican rc.2 authenticated binary streams; no client token and no host-volume access. */
-final class Wings implements MutationBatches
+final class Wings implements StagingUploads
 {
     public const MAX_FILE_BYTES = 2147483648;
 
     public function __construct(private readonly Server $server, private readonly DaemonFileRepository $daemon,
-        private readonly ?\Closure $heartbeat = null) {}
+        private readonly ?\Closure $heartbeat = null, private readonly ?DeploymentMetrics $metrics = null) {}
+
+    private ?ApplyBudget $budget = null;
+    public function budget(?ApplyBudget $budget): void { $this->budget = $budget; }
+
+    private function measured(string $category, \Closure $work): mixed
+    { return $this->metrics !== null ? $this->metrics->measure($category, $work) : $work(); }
+
+    private function boundedClient(int $maximum): \Illuminate\Http\Client\PendingRequest
+    { return $this->client()->connectTimeout(5)->timeout($this->budget?->timeout($maximum) ?? $maximum)->withOptions(['allow_redirects' => false]); }
+
+    private function mutation(string $endpoint, array $payload, string $method = 'post'): void
+    {
+        $this->heartbeat?->__invoke(true);
+        $this->measured($endpoint, fn () => $this->boundedClient(60)->{$method}('/api/servers/'.$this->server->uuid.'/files/'.$endpoint, $payload)->throw());
+    }
 
     // Share only the transport pool within this server operation. Every request still
     // gets fresh Pelican authentication, node identity checks and Laravel middleware.
@@ -64,8 +79,8 @@ final class Wings implements MutationBatches
         // never replay mutations or bypass node authentication failures.
         for ($attempt = 0; ; $attempt++) {
             try {
-                $response = $this->client()->get('/api/servers/'.$this->server->uuid.'/files/list-directory',
-                    ['directory' => $directory === '' ? '/' : '/'.$directory])->throw();
+                $response = $this->measured('list-directory', fn () => $this->boundedClient(30)->get('/api/servers/'.$this->server->uuid.'/files/list-directory',
+                    ['directory' => $directory === '' ? '/' : '/'.$directory])->throw());
                 if ($response->status() !== 200) { throw new RuntimeException('Wings directory listing requires a direct complete response.'); }
                 $rows = $response->json();
                 break;
@@ -149,33 +164,36 @@ final class Wings implements MutationBatches
         $before = $verifiedMetadata ?? $this->regular($path);
         if ($before === null) { return null; }
         if ($before['size'] > $limit) { throw new RuntimeException('Native file exceeds the inspection byte limit: '.$path); }
-        $options = ['stream' => true, 'read_timeout' => 5, 'allow_redirects' => false];
-        $response = $this->client()->connectTimeout(5)->timeout($timeout)->withOptions($options)
-            ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
-        $stream = $response->toPsrResponse()->getBody();
-        $hash = hash_init('sha256'); $bytes = 0;
-        $deadline = microtime(true) + $timeout;
-        try {
-            if ($response->status() !== 200) { throw new RuntimeException('Native mod inspection requires a direct Wings file response.'); }
-            while (! $stream->eof()) {
-                if (microtime(true) >= $deadline) { throw new RuntimeException('Native mod inspection timed out.'); }
-                $chunk = $stream->read(1048576);
-                if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings file stream stalled.'); }
-                $bytes += strlen($chunk);
-                if ($bytes > $before['size']) {
-                    if ($capture !== null) { throw new TextChangedDuringInspection('Startup log grew during inspection.'); }
-                    throw new RuntimeException('Wings file grew while being verified.');
+        return $this->measured('hash-read', function () use ($path, $limit, $timeout, $sink, $verifiedMetadata, $capture, $before): string {
+            $options = ['stream' => true, 'read_timeout' => 5, 'allow_redirects' => false];
+            $response = $this->boundedClient($timeout)->withOptions($options)
+                ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
+            $stream = $response->toPsrResponse()->getBody();
+            $hash = hash_init('sha256'); $bytes = 0;
+            $deadline = microtime(true) + ($this->budget?->timeout($timeout) ?? $timeout);
+            try {
+                if ($response->status() !== 200) { throw new RuntimeException('Native mod inspection requires a direct Wings file response.'); }
+                while (! $stream->eof()) {
+                    if (microtime(true) >= $deadline || ($this->budget !== null && $this->budget->timeout($timeout) < 5)) { throw new RuntimeException('Native mod inspection timed out before the next bounded read.'); }
+                    $chunk = $stream->read(1048576);
+                    if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings file stream stalled.'); }
+                    $bytes += strlen($chunk); $this->metrics?->bytes('hash-read', strlen($chunk));
+                    $this->budget?->timeout($timeout);
+                    if ($bytes > $before['size']) {
+                        if ($capture !== null) { throw new TextChangedDuringInspection('Startup log grew during inspection.'); }
+                        throw new RuntimeException('Wings file grew while being verified.');
+                    }
+                    if ($sink !== null && fwrite($sink, $chunk) !== strlen($chunk)) { throw new RuntimeException('Panel cannot save private mod inspection bytes.'); }
+                    $capture?->__invoke($chunk);
+                    hash_update($hash, $chunk); $this->heartbeat?->__invoke();
                 }
-                if ($sink !== null && fwrite($sink, $chunk) !== strlen($chunk)) { throw new RuntimeException('Panel cannot save private mod inspection bytes.'); }
-                $capture?->__invoke($chunk);
-                hash_update($hash, $chunk); $this->heartbeat?->__invoke();
-            }
-        } finally { $stream->close(); }
-        // A batch validates fresh ancestor and leaf metadata together after all bounded reads.
-        $after = $verifiedMetadata ?? $this->regular($path);
-        if ($capture !== null && $after !== $before) { throw new TextChangedDuringInspection('Startup log changed during inspection.'); }
-        if ($bytes !== $before['size'] || $after !== $before) { throw new RuntimeException('Wings file changed or transfer was truncated during verification.'); }
-        return hash_final($hash);
+            } finally { $stream->close(); }
+            // A batch validates fresh ancestor and leaf metadata together after all bounded reads.
+            $after = $verifiedMetadata ?? $this->regular($path);
+            if ($capture !== null && $after !== $before) { throw new TextChangedDuringInspection('Startup log changed during inspection.'); }
+            if ($bytes !== $before['size'] || $after !== $before) { throw new RuntimeException('Wings file changed or transfer was truncated during verification.'); }
+            return hash_final($hash);
+        });
     }
 
     /** Fresh snapshots are local to ONE read-only batch. Never reused by writes or another phase. */
@@ -190,9 +208,22 @@ final class Wings implements MutationBatches
         return $hashes;
     }
 
-    private function batchMetadata(array $paths): array
+    /** Comparison protects linked leaves/ancestors individually, while failing the whole batch on read errors. */
+    public function inventoryBatch(array $paths): array
     {
-        $directories = []; $metadata = []; $ancestors = [];
+        if (count($paths) > 32 || ! array_is_list($paths)) { throw new RuntimeException('Invalid native inventory batch.'); }
+        $before = $this->batchMetadata($paths, true); $hashes = [];
+        foreach ($paths as $path) {
+            if (isset($before[2][$path])) { continue; }
+            $hashes[$path] = $before[0][$path] === null ? null : $this->streamHash($path, self::MAX_FILE_BYTES, 600, null, $before[0][$path]);
+        }
+        if ($this->batchMetadata($paths, true) !== $before) { throw new RuntimeException('Inventory file, missing path, symlink or ancestor changed during inspection.'); }
+        return ['hashes' => $hashes, 'links' => $before[2]];
+    }
+
+    private function batchMetadata(array $paths, bool $protectLinks = false): array
+    {
+        $directories = []; $metadata = []; $ancestors = []; $links = [];
         foreach ($paths as $path) {
             UpdatePlanner::assertPath($path);
             $parent = ''; $parts = explode('/', $path);
@@ -203,7 +234,10 @@ final class Wings implements MutationBatches
                 $row = $directories[$parent][$part] ?? null;
                 $next = $parent === '' ? $part : $parent.'/'.$part;
                 if ($row === null) { $metadata[$path] = null; break; }
-                if ($row['symlink']) { throw new SymlinkPath($next); }
+                if ($row['symlink']) {
+                    if (! $protectLinks) { throw new SymlinkPath($next); }
+                    $metadata[$path] = null; $links[$path] = $next; $ancestors[$next] = $row; break;
+                }
                 if (! is_string($row['modified'] ?? null) || $row['modified'] === '') { throw new RuntimeException('Wings batch metadata lacks a modification timestamp.'); }
                 if ($index === count($parts) - 1) {
                     if (! $row['file'] || $row['directory'] || ! is_int($row['size'] ?? null) || $row['size'] < 0 || $row['size'] > self::MAX_FILE_BYTES) {
@@ -218,7 +252,7 @@ final class Wings implements MutationBatches
             }
             $this->heartbeat?->__invoke();
         }
-        return [$metadata, $ancestors];
+        return [$metadata, $ancestors, $links];
     }
 
     /** Bounded in-memory head/tail, streamed full hash. A busy or replaced log is never accepted. */
@@ -240,18 +274,23 @@ final class Wings implements MutationBatches
     }
 
     public function read(string $path, int $limit = 1048576): string
+    { return $this->measured('text-read', fn () => $this->readText($path, $limit)); }
+
+    private function readText(string $path, int $limit): string
     {
         if ($limit < 1 || $limit > 4194304) { throw new RuntimeException('Native text read limit exceeded.'); }
         $before = $this->regular($path);
         if ($before === null || $before['size'] > $limit) { throw new RuntimeException('Required native text file is missing or too large: '.$path); }
-        $response = $this->client()->connectTimeout(5)->timeout(30)->withOptions(['stream' => true])
+        $response = $this->boundedClient(30)->withOptions(['stream' => true, 'read_timeout' => 5])
             ->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path])->throw();
         $stream = $response->toPsrResponse()->getBody(); $data = '';
         try {
             while (! $stream->eof()) {
+                if ($this->budget !== null && $this->budget->timeout(30) < 5) { throw new RuntimeException('Applying budget cannot fit the next bounded text read.'); }
                 $chunk = $stream->read(min(65536, $limit + 1 - strlen($data)));
                 if ($chunk === '' && ! $stream->eof()) { throw new RuntimeException('Wings text stream stalled.'); }
-                $data .= $chunk;
+                $data .= $chunk; $this->metrics?->bytes('text-read', strlen($chunk));
+                $this->budget?->timeout(30);
                 if (strlen($data) > $limit) { throw new RuntimeException('Wings text file grew beyond its limit.'); }
             }
         } finally { $stream->close(); }
@@ -266,21 +305,62 @@ final class Wings implements MutationBatches
         if (! preg_match('/^[a-f0-9]{64}$/D', $sha256) || is_link($localFile) || ! is_file($localFile) || filesize($localFile) > self::MAX_FILE_BYTES ||
             ! hash_equals($sha256, hash_file('sha256', $localFile))) { throw new RuntimeException('Prepared artifact does not match its exact manifest.'); }
         if ($this->stat($path) !== null) { throw new RuntimeException('Native upload destination already exists.'); }
-        $stream = fopen($localFile, 'rb');
-        if ($stream === false) { throw new RuntimeException('Cannot open private prepared artifact.'); }
-        try {
-            // Keep a slow transfer live in the durable journal. A fenced operation
-            // aborts the transfer through Guzzle instead of continuing an orphaned write.
-            $lastPulse = 0.0;
-            $progress = function () use (&$lastPulse): void {
+        $this->writeUpload($localFile, $path);
+        if ($this->hash($path) !== $sha256) { throw new RuntimeException('Wings upload verification failed.'); }
+    }
+
+    private function writeUpload(string $localFile, string $path): void
+    {
+        $this->heartbeat?->__invoke(true);
+        $this->measured('upload', function () use ($localFile, $path): void {
+            $stream = fopen($localFile, 'rb');
+            if ($stream === false) { throw new RuntimeException('Cannot open private prepared artifact.'); }
+            $lastPulse = 0.0; $sent = 0;
+            $progress = function ($downloadTotal, $downloaded, $uploadTotal, $uploaded) use (&$lastPulse, &$sent): void {
+                $sent = max($sent, (int) $uploaded);
+                $this->budget?->timeout(600);
                 if (microtime(true) - $lastPulse >= 10) { $this->heartbeat?->__invoke(); $lastPulse = microtime(true); }
             };
-            // Wings requires Content-Length and streams the raw body into this exact file.
-            $this->client()->connectTimeout(5)->timeout(600)->withOptions(['progress' => $progress])->withQueryParameters(['file' => '/'.$path])
-                ->withHeaders(['Content-Length' => (string) filesize($localFile)])
-                ->withBody($stream, 'application/octet-stream')->post('/api/servers/'.$this->server->uuid.'/files/write')->throw();
-        } finally { if (is_resource($stream)) { fclose($stream); } }
-        if ($this->hash($path) !== $sha256) { throw new RuntimeException('Wings upload verification failed.'); }
+            try {
+                $this->boundedClient(600)->withOptions(['progress' => $progress])->withQueryParameters(['file' => '/'.$path])
+                    ->withHeaders(['Content-Length' => (string) filesize($localFile)])
+                    ->withBody($stream, 'application/octet-stream')->post('/api/servers/'.$this->server->uuid.'/files/write')->throw();
+                $sent = max($sent, filesize($localFile));
+            } finally {
+                $this->metrics?->bytes('upload', $sent);
+                if (is_resource($stream)) { fclose($stream); }
+            }
+        });
+    }
+
+    /** Fresh metadata lives only in this isolated staging batch, never across a live mutation. */
+    public function uploadBatch(string $directory, array $uploads): void
+    {
+        if (! preg_match('/^\.arcturus-update-[a-f0-9-]{32,36}\/new$/D', $directory) || $uploads === [] || count($uploads) > 4) {
+            throw new RuntimeException('Invalid isolated upload batch.');
+        }
+        foreach ($uploads as $path => $row) {
+            if (! is_string($path) || ! preg_match('/^[0-9]+$/D', basename($path)) || dirname($path) !== $directory) { throw new RuntimeException('Upload batch escaped isolated numeric staging.'); }
+            UpdatePlanner::assertPath($path);
+            $local = $row['local']; $digest = $row['sha256'];
+            if (! is_string($digest) || ! preg_match('/^[a-f0-9]{64}$/D', $digest) || is_link($local) || ! is_file($local) || filesize($local) > self::MAX_FILE_BYTES || ! hash_equals($digest, hash_file('sha256', $local))) {
+                throw new RuntimeException('Prepared artifact does not match its exact manifest.');
+            }
+        }
+        $paths = array_keys($uploads); $before = $this->batchMetadata($paths);
+        foreach ($before[0] as $meta) { if ($meta !== null) { throw new RuntimeException('Upload batch destination already exists; do not replay.'); } }
+        // Missing ancestors must not count as absent leaves. No mkdir is performed by uploadBatch.
+        foreach ([dirname($directory), $directory] as $ancestor) {
+            if (! isset($before[1][$ancestor])) { throw new RuntimeException('Private upload directory is missing.'); }
+        }
+        foreach ($uploads as $path => $row) { $this->writeUpload($row['local'], $path); }
+        $written = $this->batchMetadata($paths);
+        foreach ($uploads as $path => $row) {
+            if ($written[0][$path] === null || $this->streamHash($path, self::MAX_FILE_BYTES, 600, null, $written[0][$path]) !== $row['sha256']) {
+                throw new RuntimeException('Wings staging upload batch failed SHA-256 verification; do not replay.');
+            }
+        }
+        if ($this->batchMetadata($paths) !== $written) { throw new RuntimeException('Staging batch changed during hash verification; do not replay.'); }
     }
 
     public function permissions(string $path, ?int $mode = null): ?int
@@ -290,7 +370,7 @@ final class Wings implements MutationBatches
         if (! is_string($meta['mode_bits'] ?? null) || ! preg_match('/^[0-7]{1,3}$/D', $meta['mode_bits'])) { throw new RuntimeException('Wings did not provide valid file permission metadata.'); }
         if ($mode === null) { return octdec($meta['mode_bits']); }
         if ($mode < 0 || $mode > 0777) { throw new RuntimeException('Only ordinary file permission bits can be retained.'); }
-        $this->repo()->chmodFiles('/', [['file' => $path, 'mode' => decoct($mode)]])->throw();
+        $this->mutation('chmod', ['root' => '/', 'files' => [['file' => $path, 'mode' => decoct($mode)]]]);
         if ($this->permissions($path) !== $mode) { throw new RuntimeException('Wings did not retain the existing file permissions.'); }
         return $mode;
     }
@@ -316,7 +396,7 @@ final class Wings implements MutationBatches
             $rows[] = ['file' => $path, 'mode' => decoct($mode)];
         }
         if ($rows === []) { return; }
-        $this->repo()->chmodFiles('/', $rows)->throw();
+        $this->mutation('chmod', ['root' => '/', 'files' => $rows]);
         if ($this->permissionsBatch(array_keys($modes)) !== $modes) { throw new RuntimeException('Wings chmod batch was incomplete; do not replay it.'); }
     }
 
@@ -337,7 +417,7 @@ final class Wings implements MutationBatches
         }
         if ($rows === []) { return; }
         // One request only. An error/timeout is ambiguous and must enter existing backup recovery.
-        $this->repo()->renameFiles('/', $rows)->throw();
+        $this->mutation('rename', ['root' => '/', 'files' => $rows], 'put');
         $after = $this->batchMetadata($paths);
         foreach ($moves as $from => $to) {
             $old = $before[0][$from]; $new = $after[0][$to];
@@ -355,7 +435,7 @@ final class Wings implements MutationBatches
             $next = $parent === '' ? $part : $parent.'/'.$part;
             $meta = $this->stat($next);
             if ($meta === null) {
-                $this->repo()->createDirectory($part, $parent === '' ? '/' : '/'.$parent)->throw();
+                $this->mutation('create-directory', ['name' => $part, 'path' => $parent === '' ? '/' : '/'.$parent]);
                 $meta = $this->stat($next);
             }
             if (! $meta || ! $meta['directory'] || $meta['file'] || $meta['symlink']) { throw new RuntimeException('Wings did not create a safe directory.'); }
@@ -367,7 +447,7 @@ final class Wings implements MutationBatches
     {
         UpdatePlanner::assertPath($from); UpdatePlanner::assertPath($to);
         if ($this->stat($from) === null || $this->stat($to) !== null) { throw new RuntimeException('Wings rename source/destination changed.'); }
-        $this->repo()->renameFiles('/', [['from' => $from, 'to' => $to]])->throw();
+        $this->mutation('rename', ['root' => '/', 'files' => [['from' => $from, 'to' => $to]]], 'put');
         if ($this->stat($from) !== null || $this->stat($to) === null) { throw new RuntimeException('Wings acknowledged a rename without completing it.'); }
     }
 
@@ -386,7 +466,7 @@ final class Wings implements MutationBatches
         UpdatePlanner::assertPath($from); UpdatePlanner::assertPath($to);
         $before = $this->metadata($from, true);
         if (! ($before['symlink'] ?? false) || $this->metadata($to, true) !== null) { throw new RuntimeException('Native launcher link move source/destination changed.'); }
-        $this->repo()->renameFiles('/', [['from' => $from, 'to' => $to]])->throw();
+        $this->mutation('rename', ['root' => '/', 'files' => [['from' => $from, 'to' => $to]]], 'put');
         if ($this->metadata($from, true) !== null || ! self::sameLink($before, $this->metadata($to, true))) { throw new RuntimeException('Wings did not preserve the launcher link during rename.'); }
     }
 
@@ -394,7 +474,7 @@ final class Wings implements MutationBatches
     {
         UpdatePlanner::assertPath($path);
         $this->metadata($path, true); // Wings uses lstat: delete a leaf link, never follow an ancestor.
-        $this->repo()->deleteFiles('/', [$path])->throw();
+        $this->mutation('delete', ['root' => '/', 'files' => [$path]]);
         if ($this->metadata($path, true) !== null) { throw new RuntimeException('Wings could not remove the exact entry; check its filesystem denylist.'); }
     }
 }

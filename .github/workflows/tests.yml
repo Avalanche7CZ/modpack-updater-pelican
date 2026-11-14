@@ -59,6 +59,8 @@ jobs:
           php tests/integration/native_download.php
           php tests/integration/native_connections.php
           php tests/integration/native_wings.php
+          php tests/integration/native_receipt.php
+          php tests/integration/native_inventory.php
           php tests/integration/native_batch.php
           php tests/integration/apply_batches.php
           php tests/integration/native_deployment.php

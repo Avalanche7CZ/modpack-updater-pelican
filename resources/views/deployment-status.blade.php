@@ -9,6 +9,35 @@
             @if(in_array($operation->phase, ['verifying_before_backup', 'verifying_after_backup', 'applying'], true) && is_int($operation->progress['files_done'] ?? null) && is_int($operation->progress['files_total'] ?? null))
                 <p class="mt-2 text-sm">{{ number_format($operation->progress['files_done'], 0, '.', ' ') }} / {{ number_format($operation->progress['files_total'], 0, '.', ' ') }} {{ $operation->phase === 'applying' ? 'confirmed for this step.' : 'paths verified (including expected absence).' }}</p>
             @endif
+            @if($receiptReadable && is_array($context['native_metrics'] ?? null))
+                @php($metrics = $context['native_metrics'])
+                <p class="mt-2 text-sm">Recorded elapsed: {{ number_format($metrics['elapsed_seconds'] ?? 0, 1) }} s. Measurements update at checkpoints and periodic heartbeats.</p>
+                @if(is_numeric($metrics['offline_to_verified_boot_seconds'] ?? null))
+                    <p class="mt-2 text-sm">Confirmed offline → verified Minecraft boot: {{ number_format($metrics['offline_to_verified_boot_seconds'], 1) }} s.</p>
+                @endif
+                <details class="mt-2 text-sm">
+                    <summary>Native deployment measurements</summary>
+                    <p class="mt-2">Export: <code>php artisan arcturus-modpack:native-measurements {{ $operation->id }}</code></p>
+                    <div class="overflow-x-auto">
+                        <table class="mt-2 w-full text-left">
+                            <thead><tr><th>Work</th><th>Calls</th><th>Seconds</th><th>Transferred MiB</th><th>Failed</th></tr></thead>
+                            <tbody>
+                                @foreach(($metrics['work'] ?? []) as $name => $sample)
+                                    <tr><td>{{ str_replace('-', ' ', $name) }}</td><td>{{ number_format($sample['calls'] ?? 0) }}</td><td>{{ number_format($sample['seconds'] ?? 0, 2) }}</td><td>{{ in_array($name, ['upload', 'hash-read', 'text-read'], true) ? number_format(($sample['bytes'] ?? 0) / 1048576, 2) : '—' }}</td><td>{{ number_format($sample['failed'] ?? 0) }}</td></tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                        <table class="mt-2 w-full text-left">
+                            <thead><tr><th>Phase</th><th>Elapsed seconds</th></tr></thead>
+                            <tbody>
+                                @foreach(($metrics['phases_seconds'] ?? []) as $name => $seconds)
+                                    <tr><td>{{ str_replace(['applying.', '_'], ['', ' '], $name) }}</td><td>{{ number_format($seconds, 2) }}</td></tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            @endif
             @if($receiptReadable && $operation->phase === 'completed')<p class="mt-2 text-sm">Update completed. Minecraft reached a fresh startup marker.</p>@endif
             @if($receiptReadable && $operation->phase === 'restored')<p class="mt-2 text-sm">Update failed. Pelican confirmed the native restore; managed file hashes, original launcher settings and Minecraft startup were verified.</p>@endif
             @if($context['running_original_sync_pending'] ?? false)<p class="mt-2 text-sm text-amber-600">Original installation verified; Wings configuration release is pending. Use Retry verified recovery sync. No restore or restart is needed.</p>@endif

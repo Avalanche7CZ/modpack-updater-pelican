@@ -25,6 +25,7 @@ final class ModpackManagerServiceProvider extends ServiceProvider
             $this->commands([
                 \Arcturus\ModpackManager\Console\Commands\RetireCorruptPrewrite::class,
                 \Arcturus\ModpackManager\Console\Commands\BootDiagnostics::class,
+                \Arcturus\ModpackManager\Console\Commands\NativeMeasurements::class,
                 \Arcturus\ModpackManager\Console\Commands\VerifyRunningOriginal::class,
             ]);
         }

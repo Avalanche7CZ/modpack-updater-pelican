@@ -111,3 +111,5 @@ See [bounded native verification](native-batch-verification.md) for directory-sh
 See [Applying progress and Wings mutation batches](native-applying.md) for step-specific counts, bounded chmod/rename, partial-batch recovery and remaining per-file upload work.
 
 For a retained recovery whose original Minecraft is already running, use [read-only running-original verification](verify-running-original.md) before considering another restore.
+
+See [native performance measurements](native-performance.md) for bounded staging uploads, Comparison batching, Applying budgets, recorded timings and the GTNH copy rehearsal.

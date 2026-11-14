@@ -36,6 +36,7 @@ $beforeWork=$auditClock($wall->copy()); $afterWork=$auditClock($wall->copy()->ad
 check((float)$afterWork->format('U.u')-(float)$beforeWork->format('U.u')===2.0, 'Fixture audit timestamps diverged from Wings during work between sleeps');
 
 $egg->docker_images = ['Java 21' => 'fixture:java_21', 'Java 25' => 'fixture:java_25'];
+$foreignReceiptCipher = null;
 $systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = []; $syncFail = false;
 $hash = fn ($value) => hash('sha256', $value);
 $bootLog = fn ($mc, $version, $java) => "ModLauncher running: args [--fml.neoForgeVersion, $version, --fml.mcVersion, $mc]\nModLauncher 10.0.9 starting: java version $java.0.1\n[Server thread/INFO]: Done (0.1s)!\n";
@@ -135,7 +136,7 @@ $make = function (bool $migration, bool $installer = false, bool $drift = false,
     }
     return $managed;
 };
-$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$syncFail, $bootLog, $crucibleBootLog, $targetConsole) {
+$wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$syncFail, &$foreignReceiptCipher, $bootLog, $crucibleBootLog, $targetConsole) {
     $url = $request->url(); preg_match('~/api/servers/([a-f0-9-]+)~', $url, $m); $uuid = $m[1] ?? ''; check(isset($systems[$uuid]), 'Unexpected native fixture server');
     $sys = &$systems[$uuid]; $headers = ['User-Agent' => 'Pelican Wings/v1.0.0 (id:fixture)'];
     $path = parse_url($url, PHP_URL_PATH); parse_str(parse_url($url, PHP_URL_QUERY) ?? '', $q);
@@ -175,7 +176,13 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     if (str_ends_with($path, '/files/create-directory')) { $sys['dirs'][] = ltrim($request['path'].'/'.$request['name'], '/'); return Http::response([], 204, $headers); }
     if (str_ends_with($path, '/files/write')) {
         check($sys['state'] === 'offline' && $sys['configuration']['suspended'] && ! $sys['configuration']['crash_detection_enabled'], 'Upload not guarded/offline');
-        $file = ltrim($q['file'], '/'); $sys['data'][$file] = $request->body();
+        $file = ltrim($q['file'], '/'); $sys['data'][$file] = $mode === 'staging_corrupt' ? str_repeat('z', strlen($request->body())) : $request->body();
+        if ($mode === 'ownership_lost') {
+            $mode = 'success'; $managed = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
+            $newOwner = Operation::findOrFail($managed->active_operation_id);
+            $newOwner->update(['context' => [...$newOwner->context, 'native_execution_id' => 'foreign-execution']]);
+            $foreignReceiptCipher = $newOwner->getRawOriginal('context');
+        }
         if ($mode === 'interrupted') {
             $mode = 'success'; $managed = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
             (new DeployManagedServer($managed->id, false, $managed->approved_plan_sha256, $managed->active_operation_id))->failed(null);
@@ -184,6 +191,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     }
     if (str_ends_with($path, '/files/chmod')) { foreach ($request['files'] as $file) { $sys['modes'][$file['file']] = octdec($file['mode']); } return Http::response([], 204, $headers); }
     if (str_ends_with($path, '/files/rename')) {
+        $requests[array_key_last($requests)][3] = $request['files'];
         if ($mode === 'batch_noop') { $mode = 'success'; return Http::response([], 204, $headers); }
         $partialBatch = $mode === 'batch_partial' && count($request['files']) > 1;
         foreach ($request['files'] as $index => $move) {
@@ -243,7 +251,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
         check($backup->is_locked && $backup->ignored_files === ['/backups/'], 'Backup identity/protection differs');
         $snapshots[$backup->uuid] = array_filter($sys['data'], fn ($p) => ! str_starts_with($p, 'backups/') && ! isset($sys['links'][$p]), ARRAY_FILTER_USE_KEY);
         $backupBytes = serialize($snapshots[$backup->uuid]);
-        $callback = ReportBackupCompleteRequest::create('/fixture/backup', 'POST', ['successful' => true, 'checksum_type' => 'sha256', 'checksum' => hash('sha256', $backupBytes), 'size' => strlen($backupBytes)]);
+        $callback = ReportBackupCompleteRequest::create('/fixture/backup', 'POST', ['successful' => $mode !== 'backup_failed', 'checksum_type' => 'sha256', 'checksum' => hash('sha256', $backupBytes), 'size' => strlen($backupBytes)]);
         $callback->attributes->set('node', Node::findOrFail(1)); app(BackupStatusController::class)->index($callback, $backup->uuid);
         // Other Panel starts must be blocked even if they bypass the UI button.
         rejects(fn () => app(DaemonServerRepository::class)->setServer(Server::where('uuid', $uuid)->firstOrFail())->power('restart'), 'Concurrent Panel restart bypassed the operation');
@@ -286,7 +294,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
 try {
     foreach ((getenv('ARCTURUS_RECOVERY_ONLY') ? [] : [
         ['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'],
-        ['partial batch 204 rollback', false, 'batch_partial'], ['no-op batch 204 rollback', false, 'batch_noop'],
+        ['corrupt staging rollback', false, 'staging_corrupt'], ['partial batch 204 rollback', false, 'batch_partial'], ['no-op batch 204 rollback', false, 'batch_noop'],
         ['runtime/image rollback', true, 'failed_boot'], ['target boot with growing log', true, 'target_log_grows'], ['rollback boot with growing log', true, 'rollback_log_grows'],
         ['rollback with console API failure', false, 'diagnostic_unavailable'], ['rollback with stale console', false, 'stale_console'],
         ['failed callback recovery', false, 'failed_restore'], ['interrupted worker recovery', true, 'interrupted'], ['installer-produced runtime', true, 'installer_success'],
@@ -485,6 +493,12 @@ try {
         $operation = app(DeploymentApproval::class)->queue($managed, $preview['plan_sha256'], (string) Str::uuid());
         Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
         $operation->refresh(); $managed->refresh();
+        if ($scenario === 'success') {
+            $measurements = $operation->context['native_metrics'];
+            check(isset($measurements['phases_seconds']['verifying_before_backup'], $measurements['phases_seconds']['backing_up'], $measurements['phases_seconds']['verifying_after_backup']), 'Backup verification and wait timings were combined');
+            check(is_numeric($measurements['offline_to_verified_boot_seconds'] ?? null) && $measurements['offline_to_verified_boot_seconds'] >= 0, 'Verified boot did not record its offline interval');
+            check(($measurements['work']['upload']['bytes'] ?? 0) > 0 && ($measurements['work']['db-checkpoint']['calls'] ?? 0) > 0 && ($measurements['work']['list-directory']['calls'] ?? 0) > 0, 'Endpoint/byte/checkpoint measurements missing');
+        }
         if ($crucible) {
             foreach (['Crucible-1.7.10-server.jar', 'java9args.txt', 'lwjgl3ify-forgePatches.jar'] as $path) {
                 check($systems[$uuid]['data'][$path] === $originalData[$path], 'Crucible runtime file changed: '.$path);
@@ -788,6 +802,50 @@ try {
     $precheckHistory = \Arcturus\ModpackManager\ConsoleIntegration\ConsoleHistory::read($precheck->id, null)['lines'];
     check(str_contains(json_encode($precheckHistory), 'Verifying files before backup'), 'New verification phase missing from console history');
     echo "Pre-backup verification failure retained guard without backup or writes\n";
+
+    // Exact failed backup blocks staging and every game-file mutation.
+    Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
+    $mode = 'success'; Auth::guard()->setUser($adminUser); $badBackup = $make(false); $badUuid = $badBackup->pelican_server_uuid;
+    $badOriginal = $systems[$badUuid]['data']; $badPlan = app(PreviewService::class)->generate($badBackup);
+    $badOp = app(DeploymentApproval::class)->queue($badBackup, $badPlan['plan_sha256'], (string) Str::uuid());
+    $mode = 'backup_failed'; $requestStart = count($requests);
+    Auth::guard()->forgetUser(); app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
+    check($badOp->fresh()->phase === 'manual_intervention' && $systems[$badUuid]['data'] === $badOriginal, 'Failed backup changed installation');
+    check(! array_filter(array_slice($requests, $requestStart), fn ($r) => str_ends_with($r[1], '/files/write') || str_ends_with($r[1], '/files/rename')), 'Failed backup reached staging/live mutation');
+    $budgetFault = null;
+    Operation::saved(function (Operation $row) use (&$budgetFault): void {
+        if ($budgetFault !== null && ($row->context['native_checkpoint']['step'] ?? null) === $budgetFault) {
+            $budgetFault = null; \Arcturus\ModpackManager\Tests\FixtureClock::advance(10000);
+        }
+    });
+    foreach (['before_apply', 'upload_batch_verified', 'retire_batch_intent'] as $boundary) {
+        Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
+        $mode = 'success'; Auth::guard()->setUser($adminUser); $timed = $make(false); $timedUuid = $timed->pelican_server_uuid;
+        $timedPlan = app(PreviewService::class)->generate($timed);
+        $timedOp = app(DeploymentApproval::class)->queue($timed, $timedPlan['plan_sha256'], (string) Str::uuid());
+        // Invoke this exact approved job directly; retire its queued copy afterwards.
+        DB::table('jobs')->delete();
+        $budgetFault = $boundary === 'before_apply' ? null : $boundary;
+        $timedJob = new DeployManagedServer($timed->id, false, $timedPlan['plan_sha256'], $timedOp->id);
+        if ($boundary === 'before_apply') { $timedJob->timeout = 100; }
+        $requestStart = count($requests); Auth::guard()->forgetUser();
+        rejects(fn () => app()->call([$timedJob, 'handle']), 'Applying budget unexpectedly completed: '.$boundary);
+        $timedOp->refresh();
+        check($timedOp->phase === 'restored' && $systems[$timedUuid]['data']['config/options.cfg'] === 'old' && ! isset($systems[$timedUuid]['data']['config/added.cfg']), 'Soft budget bypassed existing verified recovery: '.$timedOp->error);
+        $gameRenames = array_filter(array_slice($requests, $requestStart), fn ($r) => str_ends_with($r[1], '/files/rename') && array_filter($r[3], fn ($move) => str_starts_with($move['from'], 'config/') || str_starts_with($move['to'], 'config/')));
+        check($gameRenames === [], 'Exhausted/uncertain budget proceeded to live rename');
+    }
+    Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
+    $mode = 'success'; Auth::guard()->setUser($adminUser); $fenced = $make(false); $fencedUuid = $fenced->pelican_server_uuid;
+    $fencedPlan = app(PreviewService::class)->generate($fenced);
+    $fencedOp = app(DeploymentApproval::class)->queue($fenced, $fencedPlan['plan_sha256'], (string) Str::uuid());
+    DB::table('jobs')->delete(); Auth::guard()->forgetUser(); $mode = 'ownership_lost'; $requestStart = count($requests);
+    rejects(fn () => app()->call([new DeployManagedServer($fenced->id, false, $fencedPlan['plan_sha256'], $fencedOp->id), 'handle']), 'Worker continued after ownership loss');
+    $fencedOp->refresh(); $fencedCalls = array_slice($requests, $requestStart);
+    check($fencedOp->phase === 'applying' && $fencedOp->getRawOriginal('context') === $foreignReceiptCipher, 'Old worker overwrote the newer execution receipt');
+    check(count(array_filter($fencedCalls, fn ($r) => str_ends_with($r[1], '/files/write'))) === 1 && ! array_filter($fencedCalls, fn ($r) => str_contains($r[1], '/restore') || str_ends_with($r[1], '/files/rename')), 'Old worker wrote another member or took over recovery');
+    check($systems[$fencedUuid]['state'] === 'offline' && $systems[$fencedUuid]['data']['config/options.cfg'] === 'old', 'Ownership loss released guard or changed live game files');
+    echo "Backup failure blocked all writes; soft Applying limits recovered before staging, after staging and at a live intent without replay\n";
 
     $mode = 'success'; Auth::guard()->forgetUser();
     // An old receipt truncated by MySQL TEXT can only be retired after an

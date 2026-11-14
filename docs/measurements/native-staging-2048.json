@@ -1,0 +1,234 @@
+{
+    "baseline": "6953188",
+    "environment": {
+        "php": "8.5.9",
+        "panel": "v1.0.0-rc.2",
+        "laravel": "v13.38.0",
+        "guzzle": "8.3.0",
+        "transport": "zero-latency HTTP fake",
+        "database": "encrypted Eloquent receipts, in-memory SQLite",
+        "downtime_seconds": null
+    },
+    "uploads": 2048,
+    "paths": 2080,
+    "configs": 2016,
+    "jars": 32,
+    "upload_bytes": 93377107,
+    "results": {
+        "6953188": {
+            "requests": {
+                "initial": {
+                    "list-directory": 1
+                },
+                "live_verification": {
+                    "list-directory": 388,
+                    "contents": 2080
+                },
+                "permissions": {
+                    "list-directory": 388
+                },
+                "stage_setup": {
+                    "list-directory": 11,
+                    "create-directory": 3
+                },
+                "upload": {
+                    "list-directory": 18432,
+                    "write": 2048,
+                    "contents": 2048
+                },
+                "stage_permissions": {
+                    "list-directory": 768,
+                    "chmod": 64
+                },
+                "live_recheck": {
+                    "list-directory": 388,
+                    "contents": 2080
+                },
+                "deploy": {
+                    "list-directory": 7592,
+                    "contents": 8256,
+                    "rename": 258
+                },
+                "final_verification": {
+                    "list-directory": 390,
+                    "contents": 2048,
+                    "delete": 1
+                }
+            },
+            "seconds": {
+                "initial": 0.0426244,
+                "stage_verification": 0.11529815099999954,
+                "live_verification": 23.662491886999998,
+                "permissions": 15.267756224,
+                "stage_setup": 0.004236415,
+                "upload": 259.595664249,
+                "stage_permissions": 34.03013016100001,
+                "live_recheck": 24.422520361,
+                "deploy": 244.92019940799995,
+                "final_verification": 29.973745886
+            },
+            "wire_bytes": {
+                "contents": 747017624,
+                "write": 93377107
+            },
+            "sql_queries": 111627,
+            "metrics": {
+                "milestones_seconds": [],
+                "offline_to_verified_boot_seconds": null,
+                "elapsed_seconds": 632.084988117218,
+                "phase": null,
+                "phases_seconds": [],
+                "work": {
+                    "db-heartbeat": {
+                        "calls": 87943,
+                        "seconds": 339.2932119369507,
+                        "bytes": 0,
+                        "failed": 0
+                    },
+                    "db-checkpoint": {
+                        "calls": 4551,
+                        "seconds": 240.21708703041077,
+                        "bytes": 0,
+                        "failed": 0
+                    }
+                }
+            }
+        },
+        "current": {
+            "requests": {
+                "initial": {
+                    "list-directory": 1
+                },
+                "live_verification": {
+                    "list-directory": 388,
+                    "contents": 2080
+                },
+                "permissions": {
+                    "list-directory": 388
+                },
+                "stage_setup": {
+                    "list-directory": 11,
+                    "create-directory": 3
+                },
+                "upload": {
+                    "list-directory": 4608,
+                    "write": 2048,
+                    "contents": 2048
+                },
+                "stage_permissions": {
+                    "list-directory": 768,
+                    "chmod": 64
+                },
+                "live_recheck": {
+                    "list-directory": 388,
+                    "contents": 2080
+                },
+                "deploy": {
+                    "list-directory": 7592,
+                    "contents": 8256,
+                    "rename": 258
+                },
+                "final_verification": {
+                    "list-directory": 390,
+                    "contents": 2048,
+                    "delete": 1
+                }
+            },
+            "seconds": {
+                "initial": 0.00800112,
+                "stage_verification": 0.22352019300000078,
+                "live_verification": 1.5330898729999998,
+                "permissions": 0.9699290999999998,
+                "stage_setup": 0.03238023,
+                "upload": 74.20579149399995,
+                "stage_permissions": 6.002193378999999,
+                "live_recheck": 1.6314828399999999,
+                "deploy": 41.78074108,
+                "final_verification": 1.7610397139999996
+            },
+            "wire_bytes": {
+                "contents": 747017624,
+                "write": 93377107
+            },
+            "sql_queries": 7026,
+            "metrics": {
+                "milestones_seconds": [],
+                "offline_to_verified_boot_seconds": null,
+                "elapsed_seconds": 128.1985149383545,
+                "phase": "applying.final_verification",
+                "phases_seconds": {
+                    "applying.stage_verification": 0.22351884841918945,
+                    "applying.live_verification": 1.5330910682678223,
+                    "applying.permissions": 1.0023069381713867,
+                    "applying.upload": 74.20579409599304,
+                    "applying.stage_permissions": 6.002192974090576,
+                    "applying.live_recheck": 1.6314818859100342,
+                    "applying.deploy": 41.78074312210083,
+                    "applying.final_verification": 1.8113839626312256
+                },
+                "work": {
+                    "list-directory": {
+                        "calls": 14534,
+                        "seconds": 14.241915225982666,
+                        "bytes": 0,
+                        "failed": 0
+                    },
+                    "db-progress": {
+                        "calls": 39,
+                        "seconds": 2.186713933944702,
+                        "bytes": 0,
+                        "failed": 0
+                    },
+                    "hash-read": {
+                        "calls": 16512,
+                        "seconds": 4.39815092086792,
+                        "bytes": 747017624,
+                        "failed": 0
+                    },
+                    "db-checkpoint": {
+                        "calls": 1479,
+                        "seconds": 79.95931649208069,
+                        "bytes": 0,
+                        "failed": 0
+                    },
+                    "db-heartbeat": {
+                        "calls": 2374,
+                        "seconds": 10.262510538101196,
+                        "bytes": 0,
+                        "failed": 0
+                    },
+                    "create-directory": {
+                        "calls": 3,
+                        "seconds": 0.00156402587890625,
+                        "bytes": 0,
+                        "failed": 0
+                    },
+                    "upload": {
+                        "calls": 2048,
+                        "seconds": 1.107468843460083,
+                        "bytes": 93377107,
+                        "failed": 0
+                    },
+                    "chmod": {
+                        "calls": 64,
+                        "seconds": 0.03783750534057617,
+                        "bytes": 0,
+                        "failed": 0
+                    },
+                    "rename": {
+                        "calls": 258,
+                        "seconds": 0.1433417797088623,
+                        "bytes": 0,
+                        "failed": 0
+                    },
+                    "delete": {
+                        "calls": 1,
+                        "seconds": 0.0009181499481201172,
+                        "bytes": 0,
+                        "failed": 0
+                    }
+                }
+            }
+        }
+    }
+}

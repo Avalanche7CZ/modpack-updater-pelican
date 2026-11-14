@@ -11,7 +11,10 @@ use RuntimeException;
 /** Recoverable, ordered operations, NOT an atomic filesystem transaction. Never replay apply. */
 final class Transaction
 {
-    public function __construct(private readonly Files $files) {}
+    public function __construct(private readonly Files $files, private readonly ?ApplyBudget $budget = null) {}
+
+    private function unit(\Closure $work): mixed
+    { return $this->budget !== null ? $this->budget->run($work) : $work(); }
 
     /** One physical scope for qualification, approval, deployment and recovery. */
     public static function scope(array $changes): array
@@ -43,7 +46,7 @@ final class Transaction
     {
         if (! preg_match('/^[a-f0-9-]{32,36}$/D', $id) || array_keys($before) !== array_keys($after)) { throw new RuntimeException('Invalid native transaction identity or scope.'); }
         $remote = '.arcturus-update-'.$id;
-        if ($this->files->stat($remote) !== null) { throw new RuntimeException('A retained native stage exists. Recover its operation; do not replay apply.'); }
+        if ($this->unit(fn () => $this->files->stat($remote)) !== null) { throw new RuntimeException('A retained native stage exists. Recover its operation; do not replay apply.'); }
         foreach ($before as $path => $hash) {
             UpdatePlanner::assertPath($path);
             if (SafetyPaths::reason($path, $safetyRoots) !== null || str_starts_with($path, '.arcturus-update-')) { throw new RuntimeException('Protected path cannot enter a native transaction: '.$path); }
@@ -64,11 +67,13 @@ final class Transaction
         $expected = array_filter(array_diff_key($after, $moved), fn ($h) => $h !== null); ksort($expected);
         $actual = []; $localDone = 0;
         foreach (array_chunk($installs, 32) as $batch) {
-            $checked = (new DirectoryInventory)->hashPaths($stage, $batch, fn () => $report('stage_verification', $localDone, count($installs)));
-            $wanted = array_intersect_key($expected, array_flip($batch));
-            if ($checked !== $wanted) { throw new RuntimeException('Private stage differs from the approved target manifest.'); }
-            $actual += $checked;
-            $localDone += count($batch); $report('stage_verification', $localDone, count($installs));
+            $this->unit(function () use ($installs, $stage, $report, $expected, &$actual, &$localDone, $batch): void {
+                $checked = (new DirectoryInventory)->hashPaths($stage, $batch, function () use ($report, &$localDone, $installs): void { $this->budget?->timeout(600); $report('stage_verification', $localDone, count($installs)); });
+                $wanted = array_intersect_key($expected, array_flip($batch));
+                if ($checked !== $wanted) { throw new RuntimeException('Private stage differs from the approved target manifest.'); }
+                $actual += $checked;
+                $localDone += count($batch); $report('stage_verification', $localDone, count($installs));
+            });
         }
         ksort($actual);
         if ($actual !== $expected) { throw new RuntimeException('Private stage differs from the approved target manifest.'); }
@@ -78,81 +83,113 @@ final class Transaction
         $report('permissions', 0, count($permissionPaths)); $modes = [];
         usort($permissionPaths, fn ($a, $b) => [dirname($a), $a] <=> [dirname($b), $b]);
         foreach (array_chunk($permissionPaths, 32) as $batch) {
-            if ($this->files instanceof MutationBatches) { $modes += $this->files->permissionsBatch($batch); }
-            else { foreach ($batch as $path) { $modes[$path] = $this->files->permissions($path); } }
-            $report('permissions', count($modes), count($permissionPaths));
+            $this->unit(function () use ($batch, &$modes, $report, $permissionPaths): void {
+                if ($this->files instanceof MutationBatches) { $modes += $this->files->permissionsBatch($batch); }
+                else { foreach ($batch as $path) { $modes[$path] = $this->files->permissions($path); } }
+                $report('permissions', count($modes), count($permissionPaths));
+            });
         }
-        $journal(['step' => 'stage_intent', 'stage' => $remote, 'before' => $before, 'after' => $after, 'moves' => $moves]);
-        $this->files->mkdir($remote.'/new'); $this->files->mkdir($remote.'/old');
+        $this->unit(function () use ($journal, $remote, $before, $after, $moves): void {
+            $journal(['step' => 'stage_intent', 'stage' => $remote, 'before' => $before, 'after' => $after, 'moves' => $moves]);
+            $this->files->mkdir($remote.'/new'); $this->files->mkdir($remote.'/old');
+        });
         $report('upload', 0, count($installs));
-        $stageModes = [];
-        foreach ($installs as $index => $path) {
-            $journal(['step' => 'upload_intent', 'path' => $path]);
-            $this->files->upload($stage.'/'.$path, $remote.'/new/'.$index, $after[$path]);
-            if (isset($modes[$path])) {
-                if ($this->files instanceof MutationBatches) { $stageModes[$remote.'/new/'.$index] = $modes[$path]; }
-                else { $this->files->permissions($remote.'/new/'.$index, $modes[$path]); }
+        $stageModes = []; $uploaded = 0;
+        if ($this->files instanceof StagingUploads) {
+            // Four files and normally <=64 MiB per unit; one larger file is its own unit.
+            $batches = []; $batch = []; $bytes = 0;
+            foreach ($installs as $index => $path) {
+                $size = filesize($stage.'/'.$path);
+                if ($batch !== [] && (count($batch) >= 4 || $bytes + $size > 67108864)) { $batches[] = $batch; $batch = []; $bytes = 0; }
+                $batch[$remote.'/new/'.$index] = ['local' => $stage.'/'.$path, 'sha256' => $after[$path]]; $bytes += $size;
+                if (isset($modes[$path])) { $stageModes[$remote.'/new/'.$index] = $modes[$path]; }
             }
-            $journal(['step' => 'upload_verified', 'path' => $path]);
-            $report('upload', $index + 1, count($installs));
+            if ($batch !== []) { $batches[] = $batch; }
+            foreach ($batches as $batch) {
+                $this->unit(function () use ($batch, $remote, $journal): void {
+                    $journal(['step' => 'upload_batch_intent', 'stage' => $remote, 'files' => array_map(fn ($row) => $row['sha256'], $batch)]);
+                    $this->files->uploadBatch($remote.'/new', $batch);
+                    $journal(['step' => 'upload_batch_verified', 'paths' => array_keys($batch)]);
+                });
+                $uploaded += count($batch); $report('upload', $uploaded, count($installs));
+            }
+        } else {
+            foreach ($installs as $index => $path) {
+                $this->unit(function () use ($journal, $path, $stage, $remote, $index, $after, $modes, &$stageModes): void {
+                    $journal(['step' => 'upload_intent', 'path' => $path]);
+                    $this->files->upload($stage.'/'.$path, $remote.'/new/'.$index, $after[$path]);
+                    if (isset($modes[$path])) {
+                        if ($this->files instanceof MutationBatches) { $stageModes[$remote.'/new/'.$index] = $modes[$path]; }
+                        else { $this->files->permissions($remote.'/new/'.$index, $modes[$path]); }
+                    }
+                    $journal(['step' => 'upload_verified', 'path' => $path]);
+                });
+                $report('upload', $index + 1, count($installs));
+            }
         }
         $report('stage_permissions', 0, count($stageModes)); $chmodDone = 0;
         foreach (array_chunk($stageModes, 32, true) as $batch) {
-            $journal(['step' => 'chmod_batch_intent', 'modes' => $batch]);
-            $this->files->chmodBatch($batch); $chmodDone += count($batch);
-            $report('stage_permissions', $chmodDone, count($stageModes));
+            $this->unit(function () use ($batch, $journal, &$chmodDone, $report, $stageModes): void {
+                $journal(['step' => 'chmod_batch_intent', 'modes' => $batch]);
+                $this->files->chmodBatch($batch); $chmodDone += count($batch);
+                $report('stage_permissions', $chmodDone, count($stageModes));
+            });
         }
         // All target bytes are present and verified before the first live-path mutation.
         $report('live_recheck', 0, count($before));
         $this->verify($before, fn ($done, $total) => $report('live_recheck', $done, $total));
         $deployed = 0; $report('deploy', 0, count($after));
         foreach ($moves as $from => $to) {
-            if ($this->files->hash($from) !== $before[$from] || $this->files->permissions($from) !== $modes[$from] || $this->files->stat($to) !== null) { throw new RuntimeException('Disabled mod source or destination changed after approval.'); }
-            $journal(['step' => 'disable_intent', 'path' => $from, 'destination' => $to]);
-            $this->files->rename($from, $to);
-            if ($this->files->hash($from) !== null || $this->files->hash($to) !== $before[$from] || $this->files->permissions($to) !== $modes[$from]) { throw new RuntimeException('Disabled mod rename failed integrity or permission verification.'); }
-            $journal(['step' => 'disable_verified', 'path' => $from, 'destination' => $to]);
-            $deployed += 2; $report('deploy', $deployed, count($after));
+            $this->unit(function () use ($from, $to, $before, $after, $modes, $journal, &$deployed, $report): void {
+                if ($this->files->hash($from) !== $before[$from] || $this->files->permissions($from) !== $modes[$from] || $this->files->stat($to) !== null) { throw new RuntimeException('Disabled mod source or destination changed after approval.'); }
+                $journal(['step' => 'disable_intent', 'path' => $from, 'destination' => $to]);
+                $this->files->rename($from, $to);
+                if ($this->files->hash($from) !== null || $this->files->hash($to) !== $before[$from] || $this->files->permissions($to) !== $modes[$from]) { throw new RuntimeException('Disabled mod rename failed integrity or permission verification.'); }
+                $journal(['step' => 'disable_verified', 'path' => $from, 'destination' => $to]);
+                $deployed += 2; $report('deploy', $deployed, count($after));
+            });
         }
         $order = [...$installs, ...array_keys(array_filter(array_diff_key($after, $moved), fn ($h) => $h === null))];
         if ($this->files instanceof MutationBatches) {
             $installIndexes = array_flip($installs);
             foreach (array_chunk($order, 16, true) as $batch) {
-                $live = array_intersect_key($before, array_flip($batch));
-                $this->verify($live);
-                $existing = array_keys(array_filter($live, fn ($h) => $h !== null));
-                $currentModes = $this->files->permissionsBatch($existing);
-                $retire = []; $replace = []; $retiredExpected = []; $candidateExpected = [];
-                $parents = [];
-                foreach ($batch as $index => $path) {
-                    if ($before[$path] !== null) {
-                        if ($currentModes[$path] !== $modes[$path]) { throw new RuntimeException('Live permissions changed during transfer.'); }
-                        $retire[$path] = $remote.'/old/'.$index;
-                        $retiredExpected[$remote.'/old/'.$index] = $before[$path];
+                $this->unit(function () use ($batch, $before, $after, $modes, $remote, $installIndexes, $journal, &$deployed, $report): void {
+                    $live = array_intersect_key($before, array_flip($batch));
+                    $this->verify($live);
+                    $existing = array_keys(array_filter($live, fn ($h) => $h !== null));
+                    $currentModes = $this->files->permissionsBatch($existing);
+                    $retire = []; $replace = []; $retiredExpected = []; $candidateExpected = [];
+                    $parents = [];
+                    foreach ($batch as $index => $path) {
+                        if ($before[$path] !== null) {
+                            if ($currentModes[$path] !== $modes[$path]) { throw new RuntimeException('Live permissions changed during transfer.'); }
+                            $retire[$path] = $remote.'/old/'.$index;
+                            $retiredExpected[$remote.'/old/'.$index] = $before[$path];
+                        }
+                        if ($after[$path] !== null) {
+                            $parent = dirname($path); if ($parent !== '.' && ! isset($parents[$parent])) { $this->files->mkdir($parent); $parents[$parent] = true; }
+                            $candidate = $remote.'/new/'.$installIndexes[$path];
+                            $replace[$candidate] = $path; $candidateExpected[$candidate] = $after[$path];
+                        }
                     }
-                    if ($after[$path] !== null) {
-                        $parent = dirname($path); if ($parent !== '.' && ! isset($parents[$parent])) { $this->files->mkdir($parent); $parents[$parent] = true; }
-                        $candidate = $remote.'/new/'.$installIndexes[$path];
-                        $replace[$candidate] = $path; $candidateExpected[$candidate] = $after[$path];
+                    $this->verify($candidateExpected);
+                    if ($retire !== []) {
+                        $journal(['step' => 'retire_batch_intent', 'moves' => $retire]);
+                        $this->files->renameBatch($retire);
+                        $this->verify($retiredExpected);
                     }
-                }
-                $this->verify($candidateExpected);
-                if ($retire !== []) {
-                    $journal(['step' => 'retire_batch_intent', 'moves' => $retire]);
-                    $this->files->renameBatch($retire);
-                    $this->verify($retiredExpected);
-                }
-                if ($replace !== []) {
-                    $journal(['step' => 'replace_batch_intent', 'moves' => $replace]);
-                    $this->files->renameBatch($replace);
-                }
-                $this->verify(array_intersect_key($after, $live));
-                $installedModes = $this->files->permissionsBatch(array_keys(array_filter(array_intersect_key($after, $live), fn ($h) => $h !== null)));
-                foreach ($installedModes as $path => $mode) {
-                    if (isset($modes[$path]) && $mode !== $modes[$path]) { throw new RuntimeException('Installed permissions differ from the original approved mode.'); }
-                }
-                $journal(['step' => 'batch_verified', 'paths' => array_values($batch)]);
-                $deployed += count($batch); $report('deploy', $deployed, count($after));
+                    if ($replace !== []) {
+                        $journal(['step' => 'replace_batch_intent', 'moves' => $replace]);
+                        $this->files->renameBatch($replace);
+                    }
+                    $this->verify(array_intersect_key($after, $live));
+                    $installedModes = $this->files->permissionsBatch(array_keys(array_filter(array_intersect_key($after, $live), fn ($h) => $h !== null)));
+                    foreach ($installedModes as $path => $mode) {
+                        if (isset($modes[$path]) && $mode !== $modes[$path]) { throw new RuntimeException('Installed permissions differ from the original approved mode.'); }
+                    }
+                    $journal(['step' => 'batch_verified', 'paths' => array_values($batch)]);
+                    $deployed += count($batch); $report('deploy', $deployed, count($after));
+                });
             }
         } else {
             foreach ($order as $index => $path) {
@@ -175,9 +212,11 @@ final class Transaction
         }
         $report('final_verification', 0, count($after));
         $this->verify($after, fn ($done, $total) => $report('final_verification', $done, $total));
-        $journal(['step' => 'cleanup_intent', 'stage' => $remote]);
-        $this->files->delete($remote);
-        $journal(['step' => 'files_verified']);
+        $this->unit(function () use ($journal, $remote): void {
+            $journal(['step' => 'cleanup_intent', 'stage' => $remote]);
+            $this->files->delete($remote);
+            $journal(['step' => 'files_verified']);
+        });
     }
 
     public function verify(array $expected, ?\Closure $progress = null): void
@@ -186,12 +225,14 @@ final class Transaction
         uksort($expected, fn ($a, $b) => [dirname($a), $a] <=> [dirname($b), $b]);
         $done = 0; $total = count($expected);
         foreach (array_chunk($expected, 32, true) as $batch) {
-            $hashes = $this->files instanceof BatchFiles ? $this->files->hashBatch(array_keys($batch)) : null;
-            foreach ($batch as $path => $digest) {
-                if (($hashes !== null ? $hashes[$path] : $this->files->hash($path)) !== $digest) { throw new RuntimeException('Native verification mismatch: '.$path); }
-                $done++;
-            }
-            $progress?->__invoke($done, $total);
+            $this->unit(function () use ($batch, &$done, $total, $progress): void {
+                $hashes = $this->files instanceof BatchFiles ? $this->files->hashBatch(array_keys($batch)) : null;
+                foreach ($batch as $path => $digest) {
+                    if (($hashes !== null ? $hashes[$path] : $this->files->hash($path)) !== $digest) { throw new RuntimeException('Native verification mismatch: '.$path); }
+                    $done++;
+                }
+                $progress?->__invoke($done, $total);
+            });
         }
     }
 }

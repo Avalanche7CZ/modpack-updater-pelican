@@ -27,31 +27,27 @@ final class Deployment
 {
     public function run(DeployManagedServer $job): void
     {
+        $jobStarted = microtime(true); $metrics = new DeploymentMetrics; $metrics->phase('verifying');
+        $receipt = null; $files = null;
         $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$job->managedServerId, 14400);
         if (! $lock->get()) { return; }
         $operation = null; $execution = null; $stopped = false; $changed = false; $committed = false;
         $backup = null; $backupComplete = false; $before = []; $original = []; $expected = [];
         $power = app(PelicanPowerController::class); $backups = app(PelicanBackupManager::class);
-        $heartbeat = function () use (&$operation, &$execution): void {
-            if (! $operation) { return; }
-            $fresh = $operation->fresh();
-            if ($fresh->completed_at || ($execution !== null && ($fresh->context['native_execution_id'] ?? null) !== $execution)) { throw new RuntimeException('Native deployment receipt closed; retain its checkpoint.'); }
-            $operation->update(['heartbeat_at' => now()]);
+        $heartbeat = function (bool $force = false) use (&$receipt): void { $receipt?->heartbeat($force); };
+        $checkpoint = function (array $row) use (&$operation, &$receipt): void {
+            $receipt->save(fn (array $context) => ['context' => [...$context, ...(array_key_exists('link_stash', $row) ? ['native_link_stash' => $row['link_stash']] : []), 'native_checkpoint' => $row,
+                ...(isset($row['restore_confirmation']) ? ['native_restore_confirmation' => [...$row['restore_confirmation'], 'execution_id' => $context['native_execution_id'] ?? null]] : []),
+                ...(isset($row['boot_attempt']) ? ['native_boot_attempts' => [...($context['native_boot_attempts'] ?? []), $row['boot_attempt']['id'] => [...$row['boot_attempt'], 'execution_id' => $context['native_execution_id'] ?? null, 'restore_callback_id' => $context['native_restore_confirmation']['callback_id'] ?? null]]] : []),
+                'native_checkpoint_sequence' => (int) ($context['native_checkpoint_sequence'] ?? 0) + 1]]);
         };
-        $checkpoint = function (array $row) use (&$operation, $heartbeat): void {
-            $heartbeat();
-            $operation->update(['context' => [...$operation->context, ...(array_key_exists('link_stash', $row) ? ['native_link_stash' => $row['link_stash']] : []), 'native_checkpoint' => $row,
-                ...(isset($row['restore_confirmation']) ? ['native_restore_confirmation' => [...$row['restore_confirmation'], 'execution_id' => $operation->context['native_execution_id'] ?? null]] : []),
-                ...(isset($row['boot_attempt']) ? ['native_boot_attempts' => [...($operation->context['native_boot_attempts'] ?? []), $row['boot_attempt']['id'] => [...$row['boot_attempt'], 'execution_id' => $operation->context['native_execution_id'] ?? null, 'restore_callback_id' => $operation->context['native_restore_confirmation']['callback_id'] ?? null]]] : []),
-                'native_checkpoint_sequence' => (int) ($operation->context['native_checkpoint_sequence'] ?? 0) + 1]]);
+        $phase = function (string $value, string $message, array $context = []) use (&$receipt, $metrics): void {
+            $metrics->phase($value);
+            $receipt->save(fn (array $fresh) => ['phase' => $value, 'progress' => ['message' => $message], 'context' => [...$fresh, ...$context]], 'db-phase');
         };
-        $phase = function (string $value, string $message, array $context = []) use (&$operation, $heartbeat): void {
-            $heartbeat(); $operation->update(['phase' => $value, 'progress' => ['message' => $message], 'context' => [...$operation->context, ...$context]]);
-        };
-        $bootFailure = function (string $role) use (&$operation, $heartbeat): \Closure {
-            return function (array $evidence) use (&$operation, $heartbeat, $role): void {
-                $heartbeat();
-                $operation->update(['context' => [...$operation->context, 'native_'.$role.'_boot_failure' => $evidence]]);
+        $bootFailure = function (string $role) use (&$receipt): \Closure {
+            return function (array $evidence) use (&$receipt, $role): void {
+                $receipt->save(fn (array $context) => ['context' => [...$context, 'native_'.$role.'_boot_failure' => $evidence]], 'db-boot-evidence');
             };
         };
         try {
@@ -69,20 +65,22 @@ final class Deployment
             });
             if (! $operation) { return; }
             $execution = $operation->context['native_execution_id'];
+            $receipt = new DeploymentReceipt($operation, $execution, $metrics);
             if ($job->automatic) { app(ScheduledMaintenance::class)->requireEnabled($managed); }
             app(DeploymentGate::class)->require($managed, $job->approvedPlanSha256);
             $preview = app(PreviewService::class)->generate($managed, $operation);
             app(DeploymentGate::class)->require($managed->refresh(), $job->approvedPlanSha256);
             $server = $managed->pelicanServer;
-            $files = new Wings($server, app(DaemonFileRepository::class), $heartbeat);
+            $files = new Wings($server, app(DaemonFileRepository::class), $heartbeat, $metrics);
             $transaction = new Transaction($files);
-            $verify = function (array $expected, string $name, string $message) use ($transaction, &$operation, $phase): void {
+            $verify = function (array $expected, string $name, string $message) use ($transaction, &$operation, $phase, &$receipt): void {
                 $phase($name, $message);
-                $operation->update(['progress' => ['message' => $message, 'files_done' => 0, 'files_total' => count($expected)]]);
+                $started = microtime(true);
+                $receipt->save(fn () => ['progress' => ['message' => $message, 'files_done' => 0, 'files_total' => count($expected), 'elapsed_seconds' => 0]], 'db-progress');
                 $last = microtime(true);
-                $transaction->verify($expected, function (int $done, int $total) use (&$last, &$operation, $message): void {
+                $transaction->verify($expected, function (int $done, int $total) use (&$last, &$operation, $message, $started, &$receipt): void {
                     if ($done !== $total && microtime(true) - $last < 5) { return; }
-                    $operation->update(['progress' => ['message' => $message, 'files_done' => $done, 'files_total' => $total], 'heartbeat_at' => now()]);
+                    $receipt->save(fn () => ['progress' => ['message' => $message, 'files_done' => $done, 'files_total' => $total, 'elapsed_seconds' => microtime(true) - $started]], 'db-progress');
                     $last = microtime(true);
                 });
             };
@@ -100,7 +98,7 @@ final class Deployment
                 'native_world_properties_sha256' => $preview['qualification']['properties_sha256'], 'runtime_original' => $original, 'runtime_expected' => $expected, 'native_original_runtime' => $preview['qualification']['current'],
                 'native_retained_launcher' => $retainedLauncher, 'excluded_directories' => $excluded]);
             $stopped = true;
-            $power->guardAndStop($server, $heartbeat);
+            $power->guardAndStop($server, $heartbeat); $metrics->mark('offline_confirmed');
             $verify($before, 'verifying_before_backup', 'Verifying files before backup');
             CrucibleRuntime::verify($files, $retainedLauncher);
             if ($files->hash('server.properties') !== $preview['qualification']['properties_sha256']) { throw new RuntimeException('World properties changed after approval; compare again.'); }
@@ -116,17 +114,27 @@ final class Deployment
             $verify($critical, 'verifying_after_backup', 'Verifying files after backup');
             CrucibleRuntime::verify($files, $retainedLauncher);
             app(Runtime::class)->requireSnapshot($server, $original);
-            $phase('applying', 'Transferring and verifying approved candidate files through Wings', ['backup_complete' => true, 'native_writes_started' => true]);
+            // Admission includes maximum unit time, target boot, and the existing recovery path.
+            $bootReserve = max(1, (int) config('arcturus-modpack-manager.deployment_start_timeout', 900)) + max(1, (int) config('arcturus-modpack-manager.deployment_start_ack_timeout', 60)) + 120;
+            $recoveryReserve = max(1, (int) config('arcturus-modpack-manager.deployment_restore_timeout', 3600)) + $bootReserve + 600
+                + max(600, (int) config('arcturus-modpack-manager.native_recovery_verification_reserve', 600));
+            $deadline = $jobStarted + $job->timeout - $bootReserve - $recoveryReserve;
+            $budget = new ApplyBudget($deadline, max(1, min(600, (int) config('arcturus-modpack-manager.native_apply_unit_seconds', 120))));
+            $files->budget($budget); $transaction = new Transaction($files, $budget);
+            $phase('applying', 'Transferring and verifying approved candidate files through Wings', ['backup_complete' => true, 'native_writes_started' => true, 'native_apply_budget' => ['job_seconds' => $job->timeout, 'prior_seconds' => microtime(true) - $jobStarted, 'apply_deadline' => $deadline, 'target_boot_reserve_seconds' => $bootReserve, 'recovery_reserve_seconds' => $recoveryReserve]]);
             $changed = true;
-            $transaction->apply($operation->id, $stage, $before, $after, $preview['policy_context']['safety_roots'] ?? [], $checkpoint, $moves, app(\Arcturus\ModpackManager\Services\ApplyProgress::class)->reporter($operation));
+            $transaction->apply($operation->id, $stage, $before, $after, $preview['policy_context']['safety_roots'] ?? [], $checkpoint, $moves, app(\Arcturus\ModpackManager\Services\ApplyProgress::class)->reporter($operation, $metrics, $receipt));
             $transaction->verify($runtime['dependency_hashes']);
-            CrucibleRuntime::verify($files, $retainedLauncher);
+            $budget->run(fn () => CrucibleRuntime::verify($files, $retainedLauncher));
+            $budget->run(fn () => $heartbeat(true));
             if ($expected !== $original) { app(Runtime::class)->installSettings($server, $original, $runtime); }
             else { app(Runtime::class)->requireSnapshot($server, $original); }
             app(Runtime::class)->syncAndRequire($server, $expected);
+            $files->budget(null);
             $phase('starting', 'Verifying a fresh Minecraft boot and the exact target runtime');
             $power->deploymentGuard($server, true);
             $actualRuntime = app(Boot::class)->start($server, $files, $operation->id, $runtime['target'], $checkpoint, $heartbeat, $bootFailure('target'));
+            $metrics->mark('target_boot_verified');
             app(Runtime::class)->requireSnapshot($server, $expected);
             $event = DB::transaction(function () use ($managed, $target, $operation, $actualRuntime, $backup, $after) {
                 $from = $managed->installed_version;
@@ -143,8 +151,12 @@ final class Deployment
             try { $power->sync($server); } catch (Throwable $error) { report($error); $operation->update(['error' => 'Update committed; synchronize this server configuration in Wings. Do not replay deployment.']); }
             app(DiscordNotifier::class)->forEvent($event);
         } catch (Throwable $error) {
+            $files?->budget(null);
+            if ($files !== null) { $transaction = new Transaction($files); }
             report($error);
             if ($committed || ! $operation) { throw $error; }
+            $owner = $operation->fresh();
+            if ($owner->completed_at || ($owner->context['native_execution_id'] ?? null) !== $execution) { throw $error; }
             $restored = false; $recovery = '';
             if ($stopped) {
                 try {
@@ -168,11 +180,12 @@ final class Deployment
                         CrucibleRuntime::verify($files, $retainedLauncher);
                         app(Runtime::class)->restoreSettings($server, $original, $blocked);
                         app(Runtime::class)->syncAndRequire($server, $original);
-                        $operation->update(['context' => [...$operation->context, 'native_original_files_verified' => ['backup_uuid' => $backup->uuid, 'confirmation' => $operation->context['native_restore_confirmation'] ?? null, 'scope_sha256' => hash('sha256', json_encode($critical, JSON_THROW_ON_ERROR)), 'verified_at' => microtime(true)]]]);
+                        $receipt->save(fn (array $context) => ['context' => [...$context, 'native_original_files_verified' => ['backup_uuid' => $backup->uuid, 'confirmation' => $context['native_restore_confirmation'] ?? null, 'scope_sha256' => hash('sha256', json_encode($critical, JSON_THROW_ON_ERROR)), 'verified_at' => microtime(true)]]], 'db-recovery-evidence');
                         $phase('restarting_original', 'Verifying the original installation after confirmed native restore');
                         $power->deploymentGuard($server, true);
                         app(Boot::class)->start($server, $files, $operation->id.'-old', $preview['qualification']['current'], $checkpoint, $heartbeat, $bootFailure('rollback'));
                         app(Runtime::class)->requireSnapshot($server, $original);
+                        $metrics->mark('original_boot_verified');
                         $restored = true; $recovery = 'Exact locked backup, original runtime settings and fresh original boot verified.';
                     } else { $recovery = 'No game-file deployment began. Confirm any pending native backup before releasing maintenance.'; }
                 } catch (Throwable $failure) {
@@ -189,7 +202,23 @@ final class Deployment
                 'backup_uuid' => $backup?->uuid, 'restore_verified' => $restored, 'critical' => $stopped && ! $restored, 'discord_notification_pending' => true]]);
             app(DiscordNotifier::class)->forEvent($event);
             throw new RuntimeException($message);
-        } finally { $lock->release(); }
+        } finally {
+            $metrics->phase('finished');
+            // Terminal rows are deliberately no longer writable through the ownership fence.
+            // Save diagnostics only while this exact execution still owns its receipt.
+            if ($operation && $execution) {
+                try {
+                    $metricsSnapshot = $metrics->snapshot();
+                    DB::transaction(function () use ($operation, $execution, $metricsSnapshot): void {
+                        $fresh = Operation::whereKey($operation->id)->lockForUpdate()->firstOrFail();
+                        if (($fresh->context['native_execution_id'] ?? null) === $execution) {
+                            $fresh->update(['context' => [...$fresh->context, 'native_metrics' => $metricsSnapshot]]);
+                        }
+                    }, 1);
+                } catch (Throwable $failure) { report($failure); }
+            }
+            $lock->release();
+        }
     }
 
     private function message(Throwable $error): string

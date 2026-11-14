@@ -1,0 +1,32 @@
+{
+    "baseline": "6953188",
+    "environment": {
+        "php": "8.5.9",
+        "panel": "v1.0.0-rc.2",
+        "laravel": "v13.38.0",
+        "guzzle": "8.3.0",
+        "transport": "zero-latency HTTP fake"
+    },
+    "candidates": 2056,
+    "configs": 2016,
+    "jars": 32,
+    "results": {
+        "main": {
+            "requests": {
+                "list-directory": 12236,
+                "contents": 2049
+            },
+            "contents_bytes": 93377124,
+            "inventory_seconds": 19.16413073
+        },
+        "current": {
+            "requests": {
+                "list-directory": 392,
+                "contents": 2049
+            },
+            "contents_bytes": 93377124,
+            "inventory_seconds": 1.126832329
+        }
+    },
+    "identical_inventory_and_plan": true
+}

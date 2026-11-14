@@ -77,18 +77,25 @@ final class Preparation implements IntegrityWorker
         $scope = (new DirectoryPolicy)->scope($this->server);
         $properties = $files->read('server.properties', 1048576);
         $excluded = array_values(array_unique([...SafetyPaths::roots($properties), ...$scope['exclude']]));
-        $result = []; $missing = []; $links = [];
+        $result = []; $missing = []; $links = []; $eligible = [];
         foreach ($paths as $path) {
             UpdatePlanner::assertPath($path);
-            if (SafetyPaths::reason($path, $excluded) !== null || ! ManagedPaths::allowed($path, $scope['manage'])) { $excluded[] = $path; continue; }
-            try { $hash = $files->hash($path); }
-            catch (SymlinkPath $link) {
-                // A linked file or ancestor is protected, not an absent upstream file.
-                // Never turn this into a deletion or follow its target to build inventory.
-                $links[] = $link->path; $excluded[] = $link->path; $this->heartbeat?->__invoke(); continue;
-            }
+            if (SafetyPaths::reason($path, $excluded) !== null || ! ManagedPaths::allowed($path, $scope['manage'])) { continue; }
+            $eligible[] = $path;
+        }
+        usort($eligible, fn ($a, $b) => [dirname($a), $a] <=> [dirname($b), $b]);
+        $hashes = []; $linked = [];
+        foreach (array_chunk($eligible, 32) as $batch) {
+            $checked = $files->inventoryBatch($batch);
+            $hashes += $checked['hashes']; $linked += $checked['links'];
             $this->heartbeat?->__invoke();
-            if ($hash === null) { $missing[] = $path; } else { $result[$path] = $hash; }
+        }
+        // Preserve manifest ordering and the existing protected-versus-missing response contract.
+        foreach ($paths as $path) {
+            if (SafetyPaths::reason($path, $excluded) !== null || ! ManagedPaths::allowed($path, $scope['manage'])) { $excluded[] = $path; continue; }
+            if (isset($linked[$path])) { $links[] = $linked[$path]; $excluded[] = $linked[$path]; continue; }
+            if (! array_key_exists($path, $hashes)) { continue; }
+            if ($hashes[$path] === null) { $missing[] = $path; } else { $result[$path] = $hashes[$path]; }
         }
         ksort($result);
         return ['complete' => true, 'files' => $result, 'missing' => $missing, 'identities' => [], 'metadata' => [],

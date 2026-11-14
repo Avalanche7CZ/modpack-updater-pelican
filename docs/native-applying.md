@@ -1,5 +1,7 @@
 # Applying: independent progress and bounded Wings mutations
 
+For the subsequent staging-upload, DB/budget telemetry and Comparison optimization, see [native performance measurements](native-performance.md). Historical results below remain tied to their original commits and fixtures.
+
 This follows `8d3a107` on main. That commit already made every `Transaction::verify()` use fresh directory-sharing hash batches, including Applying's initial check, post-upload recheck and final verification. It did not batch permission reads, chmod or rename, and its first checkpoint followed local hashing and permission inspection.
 
 Applying still uses the same operation phase and approval/backup gates. `progress.step` now reports:
