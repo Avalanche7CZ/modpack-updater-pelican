@@ -72,7 +72,7 @@ final class RunningOriginal
                 foreach (($context['native_restore_confirmation']['launcher_links'] ?? []) as $path => $link) {
                     if (!Wings::sameLink($link, $files->linkMetadata($path))) { throw new RuntimeException('Preserved original launcher link differs.'); }
                 }
-                $attempt = $this->bootProof($operation, $server, $files, $context, $confirmation);
+                $attempt = $this->bootProof($operation, $server, $files, $context, $confirmation, $dockerEvidence !== null);
                 $instance = RunningInstance::same($instance, $attempt['start_window'] ?? ['min' => $attempt['requested_at'] - 0.01, 'max' => $attempt['accepted_at'] + $attempt['ack_seconds']]);
                 if (isset($attempt['instance'])) { $instance = RunningInstance::same($instance, RunningInstance::receipt($attempt['instance'])); }
                 $proof = ['server_uuid' => $server->uuid, 'server_id' => $server->id, 'operation_id' => $operation->id, 'backup_uuid' => $confirmation['backup_uuid'], 'restore' => $confirmation, 'boot_id' => $attempt['id'], 'instance' => $instance, 'actor_id' => $actor];
@@ -202,7 +202,7 @@ final class RunningOriginal
         return ['backup_uuid' => $uuid, 'callback_id' => $rows[0]->id, 'timestamp' => $rows[0]->timestamp->getTimestamp()];
     }
 
-    private function bootProof(Operation $op, $server, Wings $files, array $context, array $restore): array
+    private function bootProof(Operation $op, $server, Wings $files, array $context, array $restore, bool $operatorDockerEvidence = false): array
     {
         $n = $context['native_recovery_attempt'] ?? 0;
         $id = $n > 0 ? $op->node_operation_id.'-r'.base_convert((string)$n, 10, 36) : $op->id.'-old';
@@ -214,7 +214,12 @@ final class RunningOriginal
             $starts = $actions->where('event', 'server:power.start');
             if ($starts->count() !== 1 || $actions->last()?->event !== 'server:power.start' || $actions->contains(fn ($a) => !in_array($a->event, ['server:power.start', 'server:power.stop'], true)) || !$starts->first()->timestamp) { throw new RuntimeException('Legacy start audit is missing or ambiguous: need one start after the exact restore callback and no later conflicting power action.'); }
             $at = (float)$starts->first()->timestamp->getTimestamp();
-            $proof = ['id' => $id, 'source' => 'legacy_power_audit', 'activity_id' => $starts->first()->id, 'start_window' => ['min' => $restore['timestamp'], 'max' => $at + 1], 'saved' => 'logs/.arcturus-before-'.$id.'.log'];
+            // Legacy audit records a request, not container-start acknowledgement. Only an explicit
+            // Docker import may use the ACK budget; StartedAt must still match current Wings uptime.
+            $startWindow = $operatorDockerEvidence
+                ? ['min' => max($restore['timestamp'], $at), 'max' => $at + max(1, (int) config('arcturus-modpack-manager.deployment_start_ack_timeout', 60))]
+                : ['min' => $restore['timestamp'], 'max' => $at + 1];
+            $proof = ['id' => $id, 'source' => 'legacy_power_audit', 'activity_id' => $starts->first()->id, 'start_window' => $startWindow, 'saved' => 'logs/.arcturus-before-'.$id.'.log'];
         } elseif (($proof['id'] ?? null) !== $id || ($proof['execution_id'] ?? null) !== ($context['native_execution_id'] ?? null) || ($proof['restore_callback_id'] ?? null) !== $restore['callback_id'] || empty($proof['log_absent']) || !isset($proof['requested_at'], $proof['accepted_at'], $proof['ack_seconds']) || $proof['requested_at'] < $restore['timestamp'] - 1) { throw new RuntimeException('Boot evidence is incomplete or predates the restore.'); }
         if (($proof['source'] ?? '') !== 'legacy_power_audit') {
             foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {

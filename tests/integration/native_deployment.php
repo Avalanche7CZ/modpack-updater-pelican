@@ -591,6 +591,37 @@ try {
         check($result['applied'] && $orphanOp->fresh()->phase==='restored' && $orphan->fresh()->active_operation_id===null && !$systems[$ouuid]['configuration']['suspended'], 'Running original did not release modpack suspension');
         check(!$forbidden(array_slice($requests,$start)), 'Finalization issued power/restore/file writes');
     }
+    // Legacy audit is a request timestamp: Docker may prove a start 3.545s later.
+    // Exercise the exact audit lookup and the same Wings/StartedAt intersections without waiting.
+    $resetOrphan(true); $requestStart=count($requests);
+    $restoreEvent=\App\Models\ActivityLog::findOrFail($originalContext['native_restore_confirmation']['callback_id']);
+    $restore=['callback_id'=>$restoreEvent->id,'timestamp'=>$restoreEvent->timestamp->getTimestamp()];
+    $startAudit=\App\Models\ActivityLog::where('id','>',$restoreEvent->id)->where('event','server:power.start')
+        ->whereHas('subjects',fn($q)=>$q->where('subject_type',$orphan->pelicanServer->getMorphClass())->where('subject_id',$orphan->pelicanServer->id))->sole();
+    $auditBefore=$startAudit->getRawOriginal(); $at=(float)$startAudit->timestamp->getTimestamp();
+    $files=new \Arcturus\ModpackManager\Native\Wings($orphan->pelicanServer,app(\App\Repositories\Daemon\DaemonFileRepository::class));
+    $bootProof=new ReflectionMethod(\Arcturus\ModpackManager\Native\RunningOriginal::class,'bootProof');
+    $ackBefore=config('arcturus-modpack-manager.deployment_start_ack_timeout',60);
+    config(['arcturus-modpack-manager.deployment_start_ack_timeout'=>4]);
+    try {
+        $legacy=$bootProof->invoke($verifier,$orphanOp,$orphan->pelicanServer,$files,$orphanOp->context,$restore,true);
+        check($legacy['start_window']===['min'=>max($restore['timestamp'],$at),'max'=>$at+4], 'Legacy Docker proof did not use the configured ACK budget');
+        $identity=function(float $delay)use($at,$legacy):array {
+            $started=$at+$delay; $observed=$at+100;
+            $sample=\Arcturus\ModpackManager\Native\RunningInstance::sample(['state'=>'running','utilization'=>['uptime'=>($observed-$started)*1000]],$observed,$observed+0.001);
+            $bounded=\Arcturus\ModpackManager\Native\RunningInstance::same($sample,$legacy['start_window']);
+            return \Arcturus\ModpackManager\Native\RunningInstance::same($bounded,['min'=>$started-0.002,'max'=>$started+0.002]);
+        };
+        check($identity(3.545)['min']<=$at+3.545, 'Legacy Docker start 3.545s after the audited request was rejected');
+        rejects(fn()=>$identity(4.1),'Docker StartedAt outside the ACK budget was accepted through sampled Wings uncertainty');
+        $ordinary=$bootProof->invoke($verifier,$orphanOp,$orphan->pelicanServer,$files,$orphanOp->context,$restore,false);
+        check($ordinary['start_window']['max']===$at+1, 'Legacy proof without Docker evidence was widened');
+        $modern=$originalContext; $modernId=$orphanOp->id.'-old'; $modern['native_boot_attempts'][$modernId]['ack_seconds']=2;
+        $modernProof=$bootProof->invoke($verifier,$orphanOp,$orphan->pelicanServer,$files,$modern,$restore,true);
+        check(!isset($modernProof['start_window']) && $modernProof['ack_seconds']===2 && $modernProof['requested_at']===$modern['native_boot_attempts'][$modernId]['requested_at'], 'Docker import rewrote the recorded modern boot window');
+        check($startAudit->fresh()->getRawOriginal()===$auditBefore, 'Legacy verification changed the stored power audit');
+        check(!array_filter(array_slice($requests,$requestStart),fn($r)=>$r[0]!=='GET'), 'Legacy window verification mutated Wings');
+    } finally { config(['arcturus-modpack-manager.deployment_start_ack_timeout'=>$ackBefore]); }
     // GTNH latest.log can retain Done/game output without the startup-only FML/Java stdout.
     $resetOrphan(); $savedLog=$systems[$ouuid]['data']['logs/latest.log'];
     $systems[$ouuid]['data']['logs/latest.log']="[Server thread/INFO]: Done (1.0s)!\nPlayer connected\n";
