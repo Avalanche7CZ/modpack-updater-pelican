@@ -391,7 +391,7 @@ final class DeployManagedServer implements ShouldQueue
             $operation->refresh();
             if ($operation->completed_at || ($failureLease !== null &&
                 (ManagedServer::lightweight()->findOrFail($this->managedServerId)->active_operation_id !== $operation->id ||
-                    in_array($operation->phase, ['recovery_queued', 'checking_recovery', 'recovery_starting'], true)))) { return; }
+                    in_array($operation->phase, ['recovery_queued', 'checking_recovery', 'recovery_starting', \Arcturus\ModpackManager\Native\ManualStart::PHASE], true)))) { return; }
             if (in_array($operation->phase, ['queued', 'verifying'], true)) {
                 $message = 'Queue worker failed before deployment began. No Minecraft files were changed; compare and approve again.';
                 $operation->update(['error' => $message]);

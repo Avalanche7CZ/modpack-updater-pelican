@@ -39,8 +39,13 @@
                 </details>
             @endif
             @if($receiptReadable && $operation->phase === 'completed')<p class="mt-2 text-sm">Update completed. Minecraft reached a fresh startup marker.</p>@endif
-            @if($receiptReadable && $operation->phase === 'restored')<p class="mt-2 text-sm">Update failed. Pelican confirmed the native restore; managed file hashes, original launcher settings and Minecraft startup were verified.</p>@endif
+            @if($receiptReadable && $operation->phase === 'restored')
+                <p class="mt-2 text-sm">{{ isset($context['native_manual_start_verification']) ? 'Recovery closed: restored managed files and a fresh original pack boot with administrator-approved launcher settings verified. Original receipt and manual repair audit retained.' : 'Update failed. Pelican confirmed the native restore; managed file hashes, original launcher settings and Minecraft startup were verified.' }}</p>
+            @endif
             @if($receiptReadable && (($context['running_original_sync_pending'] ?? false) === true))<p class="mt-2 text-sm text-amber-600">Original installation verified; Wings configuration release is pending. Use Retry verified recovery sync. No restore or restart is needed.</p>@endif
+            @if($operation->phase === 'awaiting_manual_start')
+                <p class="mt-2 text-sm text-amber-600">{{ ($context['native_manual_start']['role'] ?? '') === 'deploy' ? 'Nasazeno, start neověřen.' : 'Soubory obnoveny, původní start neověřen.' }} Use normal Pelican power controls and launcher settings, then Verify running server. The active checkpoint and locked backup block another update. A manual crash does not initiate rollback.</p>
+            @endif
             @if($operation->error)<p class="mt-2 break-words text-sm">{{ $operation->error }}</p>@endif
             @if(isset($context['native_target_boot_failure']) || isset($context['native_rollback_boot_failure']) || isset($context['native_recovery_boot_failure']))
                 <p class="mt-2 text-sm">Private startup diagnostics: <code>php artisan arcturus-modpack:boot-diagnostics {{ $operation->id }}</code></p>

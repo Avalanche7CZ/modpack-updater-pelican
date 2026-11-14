@@ -54,6 +54,8 @@ foreach (glob($source.'/database/migrations/*.php') as $path) {
 }
 Auth::guard()->setUser(new class extends User
 {
+    public function getMorphClass(): string { return (new User)->getMorphClass(); }
+
     public function isRootAdmin(): bool
     {
         return true;

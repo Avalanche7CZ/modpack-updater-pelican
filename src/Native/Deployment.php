@@ -32,7 +32,7 @@ final class Deployment
         $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$job->managedServerId, 14400);
         if (! $lock->get()) { return; }
         $operation = null; $execution = null; $stopped = false; $changed = false; $committed = false;
-        $backup = null; $backupComplete = false; $before = []; $original = []; $expected = [];
+        $backup = null; $backupComplete = false; $manualHandoff = false; $before = []; $original = []; $expected = [];
         $power = app(PelicanPowerController::class); $backups = app(PelicanBackupManager::class);
         $heartbeat = function (bool $force = false) use (&$receipt, $lock): void {
             if (! $lock->isOwnedByCurrentProcess()) { throw new RuntimeException('Native deployment lease lost; stop mutations and retain recovery evidence.'); }
@@ -152,22 +152,20 @@ final class Deployment
             else { app(Runtime::class)->requireSnapshot($server, $original); }
             app(Runtime::class)->syncAndRequire($server, $expected);
             $files->budget(null);
+            if (($operation->context['manual_start_after_deploy'] ?? false) === true) {
+                $phase(ManualStart::PHASE, 'Nasazeno, start neověřen', ['native_deploy_files_verified' => true,
+                    'native_target_runtime_plan' => $runtime,
+                    'native_manual_deploy_target' => ['path' => $managed->target_manifest_path, 'version' => $target['version'], 'from' => $managed->installed_version, 'base' => $managed->base_manifest_path]]);
+                $manualHandoff = true;
+                app(ManualStart::class)->handoffLocked($operation, $managed, (int) $operation->context['actor_id'], true, null, null, $heartbeat, true);
+                return;
+            }
             $phase('starting', 'Verifying a fresh Minecraft boot and the exact target runtime');
             $power->deploymentGuard($server, true);
             $actualRuntime = app(Boot::class)->start($server, $files, $operation->id, $runtime['target'], $checkpoint, $heartbeat, $bootFailure('target'));
             $metrics->mark('target_boot_verified');
             app(Runtime::class)->requireSnapshot($server, $expected);
-            $event = DB::transaction(function () use ($managed, $target, $operation, $actualRuntime, $backup, $after) {
-                $from = $managed->installed_version;
-                $managed->forceFill(['baseline_provenance' => $managed->target_metadata['prepared'], 'runtime_report' => [...$managed->runtime_report, ...$actualRuntime],
-                    'installed_version' => $target['version'], 'base_manifest_path' => $managed->target_manifest_path, 'target_manifest_path' => null,
-                    'selected_version' => null, 'target_metadata' => null, 'prepared_root' => null, 'preview_summary' => null, 'last_preview_at' => null,
-                    'last_success_at' => now(), 'last_error' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null])->save();
-                app(OperationTracker::class)->transition($operation, 'completed', ['startup_verified' => true]);
-                return $managed->events()->create(['kind' => 'deploy', 'status' => 'success', 'from_version' => $from, 'to_version' => $target['version'],
-                    'message' => 'Native Wings update installed; fresh Minecraft runtime verified', 'details' => ['backup_uuid' => $backup->uuid,
-                        'modified' => array_keys($after), 'startup_verified' => true, 'discord_notification_pending' => true]]);
-            });
+            $event = $this->complete($managed, $operation, $target, $actualRuntime, $backup, $after);
             $committed = true;
             try { $power->sync($server); } catch (Throwable $error) { report($error); $operation->update(['error' => 'Update committed; synchronize this server configuration in Wings. Do not replay deployment.']); }
             app(DiscordNotifier::class)->forEvent($event);
@@ -175,7 +173,7 @@ final class Deployment
             $files?->budget(null);
             if ($files !== null) { $transaction = new Transaction($files); }
             report($error);
-            if ($committed || ! $operation) { throw $error; }
+            if ($committed || $manualHandoff || ! $operation) { throw $error; }
             // A lost cache lease must not let an old worker take over power or recovery.
             if (! $lock->isOwnedByCurrentProcess()) { throw $error; }
             $owner = $operation->fresh();
@@ -248,6 +246,21 @@ final class Deployment
             $prepared?->close();
             $lock->release();
         }
+    }
+
+    public function complete(ManagedServer $managed, Operation $operation, array $target, array $actualRuntime, Backup $backup, array $after): mixed
+    {
+        return DB::transaction(function () use ($managed, $target, $operation, $actualRuntime, $backup, $after) {
+                $from = $managed->installed_version;
+                $managed->forceFill(['baseline_provenance' => $managed->target_metadata['prepared'], 'runtime_report' => [...$managed->runtime_report, ...$actualRuntime],
+                    'installed_version' => $target['version'], 'base_manifest_path' => $managed->target_manifest_path, 'target_manifest_path' => null,
+                    'selected_version' => null, 'target_metadata' => null, 'prepared_root' => null, 'preview_summary' => null, 'last_preview_at' => null,
+                    'last_success_at' => now(), 'last_error' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null])->save();
+                app(OperationTracker::class)->transition($operation, 'completed', ['startup_verified' => true]);
+                return $managed->events()->create(['kind' => 'deploy', 'status' => 'success', 'from_version' => $from, 'to_version' => $target['version'],
+                    'message' => 'Native Wings update installed; fresh Minecraft runtime verified', 'details' => ['backup_uuid' => $backup->uuid,
+                        'modified' => array_keys($after), 'startup_verified' => true, 'discord_notification_pending' => true]]);
+            });
     }
 
     private function message(Throwable $error): string

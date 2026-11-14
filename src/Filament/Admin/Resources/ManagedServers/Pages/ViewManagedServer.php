@@ -125,6 +125,32 @@ final class ViewManagedServer extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('handoffManualStart')->label('Hand over manual start')->color('warning')
+                ->visible(fn () => $this->getRecord()->transport === 'native' && $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->whereIn('phase', ['manual_intervention', \Arcturus\ModpackManager\Native\ManualStart::PHASE])->exists())
+                ->schema([TextInput::make('reference')->label('Successful recovery reference UUID (optional)')->nullable()])
+                ->requiresConfirmation()->modalDescription('Release only this plugin’s power/suspension overlay after exact restored/deployed file verification. Keep Minecraft stopped until handoff finishes. The checkpoint and locked backup remain active; this does not start or restore anything and does not declare recovery successful.')
+                ->action(function (array $data): void {
+                    Access::requireAdmin();
+                    try {
+                        $service = app(\Arcturus\ModpackManager\Native\ManualStart::class); $id = $this->getRecord()->active_operation_id;
+                        $reference = ($data['reference'] ?? '') !== '' ? $data['reference'] : null;
+                        $review = $service->handoff($id, (int) auth()->id(), false, null, $reference);
+                        $result = $service->handoff($id, (int) auth()->id(), true, $review['proof'], $reference);
+                        $this->queued($result['message']);
+                    } catch (\Throwable $error) { report($error); Notification::make()->title('Manual start handoff not confirmed')->body($error instanceof \RuntimeException ? $error->getMessage() : 'Inspect the private Panel log. The checkpoint remains active.')->danger()->send(); }
+                }),
+            Action::make('verifyManualRunning')->label('Verify running server')->color('warning')
+                ->visible(fn () => $this->getRecord()->transport === 'native' && $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('phase', \Arcturus\ModpackManager\Native\ManualStart::PHASE)->exists())
+                ->requiresConfirmation()->modalDescription('Verify a fresh successful boot of this running instance and approve the actual Startup, image and launcher/args used. Close only this operation after expected pack/runtime and file checks pass. No restart or restore is sent.')
+                ->action(function (): void {
+                    Access::requireAdmin();
+                    try {
+                        $service = app(\Arcturus\ModpackManager\Native\ManualStart::class); $id = $this->getRecord()->active_operation_id;
+                        $review = $service->verify($id, (int) auth()->id());
+                        $result = $service->verify($id, (int) auth()->id(), true, $review['proof']);
+                        $this->queued($result['message']);
+                    } catch (\Throwable $error) { report($error); Notification::make()->title('Startup remains unverified')->body($error instanceof \RuntimeException ? $error->getMessage() : 'Inspect the private Panel log. No restart or restore was sent.')->warning()->send(); }
+                }),
             Action::make('verifyRunningOriginal')->label('Verify running original installation')->color('warning')
                 ->visible(fn () => $this->getRecord()->transport === 'native' && $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('kind', 'deploy')->where('phase', 'manual_intervention')->exists())
                 ->requiresConfirmation()->modalDescription('Verify the exact original backup, configuration, scoped files and current startup evidence. No stop, start, restore or log rotation. Close only a proven original recovery and synchronize Wings.')
@@ -152,11 +178,13 @@ final class ViewManagedServer extends ViewRecord
                     catch (\Throwable $error) { report($error); Notification::make()->title('Recovery sync not confirmed')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Configuration sync remains pending. No power or restore was requested.')->danger()->send(); }
                 }),
             Action::make('verifyRecovery')->label(fn () => $this->getRecord()->transport === 'native' ? 'Recover original installation' : 'Verify restored original snapshot')->button()->color('warning')
-                ->visible(fn () => $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('kind', 'deploy')->where('phase', 'manual_intervention')->exists())
+                ->visible(fn () => $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('kind', 'deploy')->whereIn('phase', ['manual_intervention', \Arcturus\ModpackManager\Native\ManualStart::PHASE])->exists())
                 ->requiresConfirmation()->modalDescription(fn () => $this->getRecord()->transport === 'native' ? 'Restore the exact recorded native backup, preserve excluded backup directories and the retained launcher link, restore original launch settings, and verify a fresh Minecraft boot. An unverified server stays stopped. The update is never reapplied.' : 'First restore the exact locked Pelican backup while Minecraft is stopped. This verifies the original scoped receipt, returns any preserved excluded folders, and tests the original startup. It never reapplies the update.')
                 ->action(function (): void {
                     try {
-                        app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->verifyRecovery($this->getRecord());
+                        if ($this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->where('phase', \Arcturus\ModpackManager\Native\ManualStart::PHASE)->exists()) {
+                            app(\Arcturus\ModpackManager\Native\ManualStart::class)->requestRollback($this->getRecord()->active_operation_id, (int) auth()->id());
+                        } else { app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->verifyRecovery($this->getRecord()); }
                         $this->queued('Original snapshot verification queued; recovery checkpoint stays locked until verification succeeds');
                     } catch (\Throwable $error) {
                         Notification::make()->title('Recovery verification was not queued')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Check the current recovery checkpoint and database/queue connectivity.')->danger()->send();
@@ -508,14 +536,15 @@ final class ViewManagedServer extends ViewRecord
             ->visible(fn () => $this->tab === 'updates')->disabled(fn () => ! $this->canApplyUpdate())
             ->fillForm(fn () => ['digest' => $this->getRecord()->preview_summary['plan_sha256'] ?? '', 'request_id' => (string) \Illuminate\Support\Str::uuid()])
             ->schema([Hidden::make('digest'), Hidden::make('request_id'),
-                Checkbox::make('confirm')->label('I reviewed this exact file and runtime plan, including any startup/image changes, and approve stopping Minecraft, creating a locked Pelican backup, applying the staged update and verifying startup. A failed update may require restoring the full offline backup.')->required()->accepted(),
+                Checkbox::make('manual_start')->label('Po nasazení spustím server ručně')->default(false)->visible(fn () => $this->getRecord()->transport === 'native'),
+                Checkbox::make('confirm')->label('I reviewed this exact file and runtime plan, including any startup/image changes, and approve stopping Minecraft, creating a locked Pelican backup, applying the staged update and verifying startup, or retaining an active checkpoint until I verify my manual start when selected. A failed update may require restoring the full offline backup.')->required()->accepted(),
             ])->modalHeading('Approve this exact manual update')
             ->modalDescription(fn () => ($this->getRecord()->preview_summary['from'] ?? '').' → '.($this->getRecord()->preview_summary['to'] ?? '').'. Plan: '.($this->getRecord()->preview_summary['plan_sha256'] ?? 'unavailable'))
             ->modalSubmitActionLabel('Approve and queue update')
             ->action(function (array $data): void {
                 Access::requireAdmin();
                 try {
-                    $operation = app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->queue($this->getRecord(), $data['digest'], $data['request_id']);
+                    $operation = app(\Arcturus\ModpackManager\Services\DeploymentApproval::class)->queue($this->getRecord(), $data['digest'], $data['request_id'], (bool) ($data['manual_start'] ?? false));
                     $this->queued('Manual update approved; deployment operation '.$operation->id);
                 } catch (\Throwable $error) {
                     Notification::make()->title('Update was not queued')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Deployment approval failed. Verify database/queue connectivity and compare the current plan again.')->danger()->send();

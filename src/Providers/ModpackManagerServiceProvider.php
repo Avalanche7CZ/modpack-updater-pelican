@@ -23,6 +23,7 @@ final class ModpackManagerServiceProvider extends ServiceProvider
     {
         if ($this->app->runningInConsole()) {
             $this->commands([
+                \Arcturus\ModpackManager\Console\Commands\ManualStart::class,
                 \Arcturus\ModpackManager\Console\Commands\ConfirmArchiveQuiesced::class,
                 \Arcturus\ModpackManager\Console\Commands\RetireCorruptPrewrite::class,
                 \Arcturus\ModpackManager\Console\Commands\BootDiagnostics::class,
@@ -46,6 +47,18 @@ final class ModpackManagerServiceProvider extends ServiceProvider
                 if ($task->action === \Arcturus\ModpackManager\Schedules\UpdateModpackTask::ID && ! in_array($task->payload, ['update', 'update_restart'], true)) {
                     throw new \RuntimeException('Invalid Update Modpack task payload.');
                 }
+            }
+        });
+        // RC2 console power buttons dispatch to Wings over WebSocket, not DaemonServerRepository.
+        // Observe the ordinary authorized Start/Restart before that dispatch; no power is sent here.
+        \Livewire\Livewire::listen('call', function ($component, $method, $parameters): void {
+            if (! $component instanceof \App\Filament\Server\Pages\Console || $method !== 'mountAction' || ! in_array($parameters[0] ?? null, ['start', 'restart'], true)) { return; }
+            $server = \Filament\Facades\Filament::getTenant();
+            if (! $server instanceof \App\Models\Server) { return; }
+            $managed = \Arcturus\ModpackManager\Models\ManagedServer::lightweight()->where('pelican_server_uuid', $server->uuid)->first();
+            $op = $managed?->active_operation_id ? $managed->operations()->find($managed->active_operation_id) : null;
+            if ($op && \Arcturus\ModpackManager\Native\ManualStart::controlsReleased($op)) {
+                app(\Arcturus\ModpackManager\Native\ManualStart::class)->arm($op->id, $server, $parameters[0]);
             }
         });
         $this->loadRoutesFrom(plugin_path('arcturus-modpack-manager', 'resources/console-routes.php'));

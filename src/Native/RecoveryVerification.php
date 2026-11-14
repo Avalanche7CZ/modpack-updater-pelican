@@ -56,7 +56,7 @@ final class RecoveryVerification
             if (! is_array($original) || ! is_array($runtime) || ! is_array($critical)) { throw new RuntimeException('Original runtime or file receipt is missing. Retain the backup; this checkpoint requires manual inspection.'); }
             $files = new Wings($server, app(DaemonFileRepository::class), $heartbeat);
             $current = app(SameHostDeployment::class)->panelSnapshot($server->refresh());
-            $allowed = [$original, $operation->context['runtime_expected'] ?? null, $operation->context['runtime_recovery_barrier'] ?? null];
+            $allowed = [$original, $operation->context['runtime_expected'] ?? null, $operation->context['runtime_recovery_barrier'] ?? null, $operation->context['manual_rollback_snapshot'] ?? null];
             if (! in_array($current, $allowed, true)) { throw new RuntimeException('Runtime settings changed outside this operation. Review them before recovering; no settings were overwritten.'); }
             if ($operation->context['native_writes_started'] ?? false) {
                 if (! ($operation->context['backup_complete'] ?? false) || ! ($operation->context['backup_uuid'] ?? null)) { throw new RuntimeException('Native writes lack a verified backup receipt. Keep Minecraft stopped and inspect the locked backups manually.'); }

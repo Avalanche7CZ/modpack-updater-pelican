@@ -93,7 +93,7 @@ final class Qualification
         }
     }
 
-    private function fileRuntime(ManagedServer $server, Wings $files, array $base): array
+    public function fileRuntime(ManagedServer $server, Wings $files, array $base): array
     {
         $pelican = $server->pelicanServer;
         if ($server->keep_existing_crucible_runtime || preg_match('/Crucible[^\s]*\.jar/i', $pelican->startup)) {

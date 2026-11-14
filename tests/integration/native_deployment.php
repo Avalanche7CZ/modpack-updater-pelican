@@ -285,6 +285,10 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
         return Http::response([], 202, $headers);
     }
     $observedState = $sys['state'];
+    if (isset($sys['manual_console_rollover'])) {
+        if ($sys['manual_console_rollover']['polls']++ === 0) { $observedState = 'starting'; $sys['console'] = $sys['manual_console_rollover']['headers']; }
+        else { $observedState = 'running'; $sys['console'] = ['[Server thread/INFO]: Done (0.1s)!']; unset($sys['manual_console_rollover']); }
+    }
     if ($observedState === 'offline' && $sys['starts'] === 1 && ($sys['polls_since_start'] ?? 0) === 0) { $sys['polls_since_start'] = 1; $observedState = 'starting'; }
     if (isset($sys['uptime_cache_ages'])) {
         // Cached sample acquisition can predate the previous HTTP request, even if uptime grows.
@@ -577,6 +581,7 @@ try {
                 check($operation->phase === 'restored' && $managed->installed_version === '1' && $systems[$uuid]['starts'] === 2
                     && str_contains($operation->error ?? '', 'did not confirm target loader'), 'Unexpected Forge boot was committed or could not roll back');
                 check($systems[$uuid]['data']['config/options.cfg'] === 'old', 'Crucible rollback failed to restore original config');
+                $manualRecoveryBase = $managed; $manualRecoveryReference = $operation;
             } else {
                 check($operation->phase === 'completed' && $managed->installed_version === '2' && $managed->runtime_report['loader'] === 'crucible'
                     && $systems[$uuid]['data']['config/options.cfg'] === 'new', 'Crucible update did not commit the new pack');
@@ -1095,6 +1100,7 @@ Schema::create('tasks', function (Blueprint $t) {
         check($failed->events()->where('kind', 'schedule')->count() === 1, 'Duplicate failed schedule produced another event');
     }
     echo "Native Wings schedules: no-update restart without backup, prepared automatic deployment, sequencing and duplicate receipt passed\n";
+    if (isset($manualRecoveryBase, $manualRecoveryReference)) { require __DIR__.'/fixtures/manual_start.php'; }
 } finally {
     foreach ($stages as $stage) {
         $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($stage, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);

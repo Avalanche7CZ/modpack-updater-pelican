@@ -36,6 +36,10 @@ final class GuardedDaemonServerRepository extends DaemonServerRepository
                     // to start. Preserve the locked operation for operator inspection.
                     throw new RuntimeException('Unreadable encrypted modpack deployment receipt; keep the server stopped and arrange verified operator recovery.');
                 }
+                if (\Arcturus\ModpackManager\Native\ManualStart::controlsReleased($operation) && ($context['native_manual_start']['state'] ?? '') === 'released') {
+                    app(\Arcturus\ModpackManager\Native\ManualStart::class)->arm($operation->id, $this->server, $action);
+                    return parent::power($action);
+                }
                 if (($context['protocol'] ?? '') === Qualification::PROTOCOL) {
                     throw new RuntimeException('Modpack deployment or recovery owns this server. Inspect its operation before starting Minecraft.');
                 }

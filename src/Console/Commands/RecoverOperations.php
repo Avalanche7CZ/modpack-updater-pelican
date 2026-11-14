@@ -34,6 +34,10 @@ final class RecoverOperations extends Command
             } elseif ($op->kind === 'restart') {
                 app(\Arcturus\ModpackManager\Services\OperationTracker::class)->fail($op, 'Restart worker interrupted. Inspect the Minecraft console before another run.');
             } elseif ($op->kind === 'deploy' && ($context['manual_approval'] ?? false) === true) {
+                if ($op->phase === \Arcturus\ModpackManager\Native\ManualStart::PHASE) {
+                    $this->line('Manual start remains pending; no power or recovery dispatched: '.$op->id);
+                    continue;
+                }
                 if ($op->phase === 'recovery_queued') {
                     \Arcturus\ModpackManager\Jobs\VerifyDeploymentRecovery::dispatch($op->id);
                     $this->line('Requeued the same recovery verification receipt: '.$op->id);

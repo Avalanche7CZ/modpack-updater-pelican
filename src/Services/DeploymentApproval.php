@@ -34,12 +34,12 @@ final class DeploymentApproval
         });
     }
 
-    public function queue(ManagedServer $server, string $digest, string $requestId): Operation
+    public function queue(ManagedServer $server, string $digest, string $requestId, bool $manualStart = false): Operation
     {
         Access::requireAdmin();
         if (auth()->id() === null) { throw new RuntimeException('An identified root administrator must approve deployment.'); }
         if (! preg_match('/^[a-f0-9]{64}$/D', $digest) || ! \Illuminate\Support\Str::isUuid($requestId)) { throw new RuntimeException('Invalid deployment approval receipt.'); }
-        return $this->enqueue($server, $digest, $requestId, (int) auth()->id(), false);
+        return $this->enqueue($server, $digest, $requestId, (int) auth()->id(), false, $manualStart);
     }
 
     public function queueAutomatic(ManagedServer $server, ?string $requestId = null): Operation
@@ -48,17 +48,18 @@ final class DeploymentApproval
         return $this->enqueue($server, $server->preview_summary['plan_sha256'] ?? '', $requestId ?? (string) \Illuminate\Support\Str::uuid(), (int) $server->automation_actor_id, true);
     }
 
-    private function enqueue(ManagedServer $server, string $digest, string $requestId, int $actorId, bool $automatic): Operation
+    private function enqueue(ManagedServer $server, string $digest, string $requestId, int $actorId, bool $automatic, bool $manualStart = false): Operation
     {
-        return DB::transaction(function () use ($server, $digest, $requestId, $actorId, $automatic): Operation {
+        return DB::transaction(function () use ($server, $digest, $requestId, $actorId, $automatic, $manualStart): Operation {
             $fresh = ManagedServer::lightweight()->lockForUpdate()->findOrFail($server->id);
             $existing = $fresh->operations()->find($requestId);
             if ($existing) {
-                if ($existing->kind !== 'deploy' || ($existing->context['plan_sha256'] ?? '') !== $digest || ($existing->context['actor_id'] ?? null) !== $actorId) {
+                if (($existing->context['manual_start_after_deploy'] ?? false) !== $manualStart || $existing->kind !== 'deploy' || ($existing->context['plan_sha256'] ?? '') !== $digest || ($existing->context['actor_id'] ?? null) !== $actorId) {
                     throw new RuntimeException('Approval request already belongs to a different deployment.');
                 }
                 return $existing;
             }
+            if ($manualStart && ($automatic || $fresh->transport !== 'native')) { throw new RuntimeException('Manual start is only available for manually approved Native deployments.'); }
             if ($automatic) { app(ScheduledMaintenance::class)->requireEnabled($fresh); }
             app(QueuePreparation::class)->requireLocalQueue();
             app(DeploymentGate::class)->requireReady($fresh);
@@ -69,7 +70,7 @@ final class DeploymentApproval
             $snapshot = app(SameHostDeployment::class)->panelSnapshot($fresh->pelicanServer);
             if (! hash_equals($fresh->preview_summary['qualification']['panel_sha256'], hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)))) { throw new RuntimeException('Pelican launch settings changed since comparison; inspect and compare again.'); }
             $operation = app(OperationTracker::class)->create($fresh, 'deploy', ['actor_id' => $actorId, 'manual_approval' => true, 'automatic_approval' => $automatic,
-                'plan_sha256' => $digest, 'from' => $fresh->installed_version, 'to' => $fresh->targetVersion(),
+                'manual_start_after_deploy' => $manualStart, 'plan_sha256' => $digest, 'from' => $fresh->installed_version, 'to' => $fresh->targetVersion(),
                 'policy_revision' => $fresh->policy_revision, 'panel_snapshot' => $snapshot, 'panel_sha256' => $fresh->preview_summary['qualification']['panel_sha256'], 'protocol' => $fresh->preview_summary['qualification']['protocol']], $requestId);
             $fresh->update(['approved_plan_sha256' => $digest, 'approved_at' => now(), 'approved_by' => $actorId]);
             DB::afterCommit(function () use ($fresh, $operation, $digest, $automatic): void {

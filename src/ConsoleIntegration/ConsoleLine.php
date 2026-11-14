@@ -21,6 +21,7 @@ final class ConsoleLine
             'verifying_after_backup' => 'Verifying files after backup',
             'backing_up' => 'Waiting for the locked Pelican backup',
             'applying' => 'Applying and verifying approved files',
+            'awaiting_manual_start' => 'Files verified · manual start pending · update checkpoint and backup retained',
             'starting' => 'Starting Minecraft · waiting for verified startup',
             'restoring' => 'Update failed · restoring and verifying the pre-update backup',
             'restarting_original' => 'Restore completed · waiting for verified original Minecraft startup',
@@ -42,7 +43,7 @@ final class ConsoleLine
         if ($message === null) { return null; }
         if ($phase === 'verifying' && $kind !== 'deploy') { $message = 'Verifying the server pack'; }
         $current = $progress['current'] ?? [];
-        if (! in_array($phase, ['completed', 'restored', 'failed', 'cancelled', 'interrupted', 'manual_intervention', 'restoring', 'starting', 'restarting_original', 'recovery_starting', 'waiting_for_approval'], true) &&
+        if (! in_array($phase, ['completed', 'restored', 'failed', 'cancelled', 'interrupted', 'manual_intervention', 'awaiting_manual_start', 'restoring', 'starting', 'restarting_original', 'recovery_starting', 'waiting_for_approval'], true) &&
             is_array($current) && in_array($current['phase'] ?? null, ['downloading', 'extracting', 'hashing', 'comparing'], true)) {
             $phase .= ':'.$current['phase'];
             $done = $current['bytes_done'] ?? null; $total = $current['bytes_total'] ?? null;

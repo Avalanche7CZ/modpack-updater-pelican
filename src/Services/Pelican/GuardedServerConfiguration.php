@@ -30,6 +30,7 @@ final class GuardedServerConfiguration extends ServerConfigurationStructureServi
             $configuration['suspended'] = true;
             return $configuration;
         }
+        if (\Arcturus\ModpackManager\Native\ManualStart::controlsReleased($operation)) { return $configuration; }
         if (($context['manual_approval'] ?? false) !== true ||
             ! in_array($context['protocol'] ?? '', [SameHostDeployment::PROTOCOL, \Arcturus\ModpackManager\Native\Qualification::PROTOCOL], true) ||
             in_array($operation->phase, ['queued', 'verifying', 'completed', 'restored', 'cancelled'], true)) { return $configuration; }

@@ -339,6 +339,33 @@ final class Wings implements BulkStaging
         return ['text' => $text, 'sha256' => $digest, 'done' => $done];
     }
 
+    /** Parse only bytes after the pre-Start log boundary, or a freshly replaced log. Never buffer the full log. */
+    public function manualBootEvidence(?array $boundary): array
+    {
+        $full = new StartupEvidence; $suffix = new StartupEvidence; $fullLine = ''; $suffixLine = '';
+        $prefix = hash_init('sha256'); $bytes = 0; $size = $boundary['size'] ?? 0;
+        $feed = static function (StartupEvidence $parser, string &$line, string $chunk): void {
+            $line .= $chunk;
+            while (($at = strpos($line, "\n")) !== false) { $parser->line(substr($line, 0, $at)); $line = substr($line, $at + 1); }
+            if (strlen($line) > 262144) { throw new RuntimeException('Startup log line exceeds the bounded evidence limit.'); }
+        };
+        $digest = $this->streamHash('logs/latest.log', self::MAX_FILE_BYTES, 600, null, null,
+            function (string $chunk) use ($full, $suffix, &$fullLine, &$suffixLine, $feed, $prefix, &$bytes, $size): void {
+                $feed($full, $fullLine, $chunk);
+                $n = min(strlen($chunk), max(0, $size - $bytes));
+                if ($n > 0) { hash_update($prefix, substr($chunk, 0, $n)); }
+                if (strlen($chunk) > $n) { $feed($suffix, $suffixLine, substr($chunk, $n)); }
+                $bytes += strlen($chunk);
+            });
+        if ($digest === null) { throw new RuntimeException('Fresh startup log is missing.'); }
+        if ($boundary !== null && $digest === $boundary['sha256']) { throw new RuntimeException('Only the pre-Start startup log is present; its old Done is not fresh evidence.'); }
+        if ($fullLine !== '') { $full->line($fullLine); } if ($suffixLine !== '') { $suffix->line($suffixLine); }
+        $appended = $boundary !== null && $bytes >= $size && hash_final($prefix) === $boundary['sha256'];
+        $proof = $appended ? $suffix->proof() : $full->proof();
+        return [...$proof, 'source' => $appended ? 'startup_log_after_boundary' : 'replaced_startup_log',
+            'log_sha256' => $digest, 'bytes' => $bytes, 'modified' => $this->stat('logs/latest.log')['modified']];
+    }
+
     public function read(string $path, int $limit = 1048576): string
     { return $this->measured('text-read', fn () => $this->readText($path, $limit)); }
 

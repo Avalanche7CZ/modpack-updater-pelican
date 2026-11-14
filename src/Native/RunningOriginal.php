@@ -176,7 +176,7 @@ final class RunningOriginal
         }
     }
 
-    private function restoreProof(Operation $op, $server, array $context): array
+    public function restoreProof(Operation $op, $server, array $context): array
     {
         $uuid = $context['backup_uuid'] ?? null;
         $backup = $uuid ? $server->backups()->where('uuid', $uuid)->first() : null;

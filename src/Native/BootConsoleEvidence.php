@@ -15,10 +15,10 @@ final class BootConsoleEvidence
     private ?float $first = null;
     private ?float $last = null;
 
-    public function __construct(private readonly Wings $files)
+    public function __construct(private readonly Wings $files, ?array $baseline = null)
     {
         $this->evidence = new StartupEvidence;
-        try { $this->previous = $files->consoleTail(100); $this->baseline = $this->previous; }
+        try { $this->previous = $baseline ?? $files->consoleTail(100); $this->baseline = $this->previous; }
         catch (Throwable) { } // Unavailable console must not break file-log startup verification.
     }
 
