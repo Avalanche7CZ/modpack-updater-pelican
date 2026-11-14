@@ -28,6 +28,13 @@ use Illuminate\Support\Str;
 use Illuminate\Http\Request;
 
 Schema::table('servers', fn (Blueprint $t) => $t->boolean('skip_scripts')->default(false));
+// Model CPU work between sleeps without a real delay: Laravel audit time must keep advancing.
+$auditClock=\Illuminate\Support\Facades\Date::getTestNow();
+check($auditClock instanceof Closure, 'Fixture audit clock must follow elapsed work, not a frozen last-sleep snapshot');
+$wall=\Illuminate\Support\Carbon::createFromTimestamp(1700000000);
+$beforeWork=$auditClock($wall->copy()); $afterWork=$auditClock($wall->copy()->addSeconds(2));
+check((float)$afterWork->format('U.u')-(float)$beforeWork->format('U.u')===2.0, 'Fixture audit timestamps diverged from Wings during work between sleeps');
+
 $egg->docker_images = ['Java 21' => 'fixture:java_21', 'Java 25' => 'fixture:java_25'];
 $systems = []; $snapshots = []; $requests = []; $mode = 'success'; $stages = []; $syncFail = false;
 $hash = fn ($value) => hash('sha256', $value);

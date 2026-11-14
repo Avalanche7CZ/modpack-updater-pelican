@@ -77,7 +77,7 @@ jobs:
           XTERM_SCRIPT=/tmp/arcturus-console-browser/node_modules/@xterm/xterm/lib/xterm.js \
           PELICAN_SOURCE=/tmp/arcturus-panel node tests/console_browser.mjs
   package:
-    needs: [regression, pelican]
+    # Build the downloadable preview even if a validation job fails; release.yml still requires all checks.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

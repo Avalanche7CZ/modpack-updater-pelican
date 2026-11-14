@@ -42,7 +42,7 @@ Do not substitute a production Panel checkout, database, Wings node or server. F
 
 ## Fast native fixtures
 
-`boot_race.php` and `native_deployment.php` advance a process-local fixture clock instead of waiting through real `sleep`/`usleep` calls. Mock Wings uptime, boot deadlines and Laravel audit timestamps share that clock; actual HTTP/socket timeouts and TLS fixture startup still use real time. The clock is required only by these two test drivers and is not installed with the plugin. Startup, timeout, locked backup, rollback, permission, exact-instance and sync checks remain enabled. The overlapping `console_split` scenario is covered by `console_rolled`, which also verifies partial facts were saved before the console tail rolled over.
+`boot_race.php` and `native_deployment.php` advance a process-local fixture clock instead of waiting through real `sleep`/`usleep` calls. Mock Wings uptime, boot deadlines and Laravel audit timestamps share that clock; actual HTTP/socket timeouts and TLS fixture startup still use real time. Laravel audit timestamps follow a live clock callback plus the same virtual offset, so CPU work between virtual sleeps cannot leave audit time frozen behind Wings uptime. The clock is required only by these two test drivers and is not installed with the plugin. Startup, timeout, locked backup, rollback, permission, exact-instance and sync checks remain enabled. The overlapping `console_split` scenario is covered by `console_rolled`, which also verifies partial facts were saved before the console tail rolled over.
 
 Routine batch verification still checks all 2,049 explicit paths, all 2,048 SHA-256 reads, expected absence, a maximum of 600 directory requests, corruption/symlink/permission failures and bounded 64 MiB streaming. It no longer reruns the historical one-file-at-a-time comparison by default. Request the comparison explicitly when working on performance:
 
@@ -58,7 +58,7 @@ Measured locally on the same disposable RC2 dependencies, including PHP/framewor
 | Native deployment/recovery | 75.14 s | 24.47 s |
 | Batch verification | 5.95 s | 0.95 s |
 
-These are fixture measurements, not full hosted CI timings. Fresh dependency/browser installation and the remaining suites still contribute to CI duration. The offline runner, real network fixtures, PHP compatibility matrix and package validation remain unchanged.
+These are fixture measurements, not full hosted CI timings. Fresh dependency/browser installation and the remaining suites still contribute to CI duration. The offline runner, real network fixtures and PHP compatibility matrix remain unchanged. The `package` job builds and uploads `arcturus-modpack-manager-preview` independently of the test jobs, so the installable ZIP and checksums are available even when validation fails. A preview artifact is not a successful validation result: automatic GitHub Release/feed publishing still waits for the entire reusable verification workflow to pass.
 
 ## Full disposable Wings qualification still required
 

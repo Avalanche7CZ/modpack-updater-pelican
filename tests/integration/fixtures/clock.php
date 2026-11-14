@@ -10,13 +10,20 @@ namespace Arcturus\ModpackManager\Tests {
 
         public static function now(): float { return \microtime(true) + self::$offset; }
 
-        public static function advance(float $seconds): void
+        public static function advance(float $seconds): void { self::$offset += $seconds; }
+
+        public static function install(): void
         {
-            self::$offset += $seconds;
-            // Audit timestamps and server snapshots must use the same time as the fake Wings uptime.
-            \Illuminate\Support\Facades\Date::setTestNow(\Illuminate\Support\Carbon::createFromTimestamp(self::now()));
+            // Keep real elapsed work too: freezing Carbon at the last virtual sleep makes
+            // audit timestamps lag behind Wings uptime on slower CI runners.
+            \Illuminate\Support\Facades\Date::setTestNow(
+                static fn (\Carbon\CarbonInterface $realNow): \Carbon\CarbonInterface =>
+                    $realNow->avoidMutation()->addMicroseconds((int) round(self::$offset * 1000000)),
+            );
         }
     }
+
+    FixtureClock::install();
 }
 
 namespace Arcturus\ModpackManager\Native {
