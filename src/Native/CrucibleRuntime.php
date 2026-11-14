@@ -45,7 +45,7 @@ final class CrucibleRuntime
             throw new RuntimeException('Keeping Crucible: Pelican image '.$server->image.' must declare an identifiable Java version within the selected GTNH server ZIP’s Java range ('.($minimum ?? 'unknown').'–'.($maximum ?? 'unknown').').');
         }
 
-        [$jar, $argFiles] = self::launcher($server->startup);
+        [$jar, $argFiles] = self::launcher($server->startup, self::serverJarfile($server));
         $protected = [$jar, ...$argFiles, self::FORGE_JAR, 'lwjgl3ify-forgePatches.jar', 'minecraft_server.1.7.10.jar'];
         foreach (array_keys($mutations) as $path) {
             if (in_array($path, $protected, true) || str_starts_with($path, 'libraries/') || $path === 'libraries') {
@@ -72,12 +72,13 @@ final class CrucibleRuntime
         $retained = $this->retained($server, $files);
         $current = (new \Arcturus\ModpackManager\Services\RuntimeInspector)->inspect([], [], $server->startup, $server->image);
         return [...$current, 'minecraft' => self::MINECRAFT, 'loader' => 'crucible', 'loader_version' => null,
-            'loader_confidence' => 'file_evidence', 'launcher_files' => $retained];
+            'loader_confidence' => 'file_evidence', 'launcher_files' => $retained,
+            ...(str_contains($server->startup, '{{SERVER_JARFILE}}') ? ['server_jarfile' => self::serverJarfile($server), 'resolved_startup' => self::resolveStartup($server->startup, self::serverJarfile($server))] : [])];
     }
 
     private function retained(Server $server, Wings $files): array
     {
-        [$jar, $argFiles] = self::launcher($server->startup);
+        [$jar, $argFiles] = self::launcher($server->startup, self::serverJarfile($server));
         $retained = [$jar => ['sha256' => $this->inspectJar($files, $jar), 'mode' => $files->permissions($jar)]];
         foreach ($argFiles as $path) {
             // Do not expand nested argfiles or accept an argfile that selects a different launcher/classpath.
@@ -91,8 +92,9 @@ final class CrucibleRuntime
     }
 
     /** Parse only the Java launcher forms we can prove. Never evaluate a command. */
-    public static function launcher(string $startup): array
+    public static function launcher(string $startup, ?string $serverJarfile = null): array
     {
+        $startup = self::resolveStartup($startup, $serverJarfile);
         // This exact prelude only creates the server's logs directory. Leave the
         // original invocation intact in the plan and reject other shell commands.
         $java = preg_replace('~^[ \t]*(?:mkdir[ \t]+-p[ \t]+logs[ \t]*;[ \t]*exec[ \t]+|exec[ \t]+)(?=java[ \t])~', '', $startup);
@@ -125,6 +127,40 @@ final class CrucibleRuntime
         }
 
         throw self::unsupportedLauncher();
+    }
+
+    public static function configured(Server $server): bool
+    {
+        if (preg_match('/Crucible[^\s]*\.jar/i', $server->startup)) { return true; }
+        if (! str_contains($server->startup, '{{SERVER_JARFILE}}')) { return false; }
+        $server->unsetRelation('variables');
+        $value = app(\App\Services\Servers\EnvironmentService::class)->handle($server)['SERVER_JARFILE'] ?? null;
+        return is_string($value) && stripos($value, 'Crucible') !== false;
+    }
+
+    /** Same null-override/default semantics as Pelican EnvironmentService; no generic expansion. */
+    public static function serverJarfile(Server $server): ?string
+    {
+        if (! str_contains($server->startup, '{{SERVER_JARFILE}}')) { return null; }
+        $server->unsetRelation('variables');
+        $variables = $server->variables->where('env_variable', 'SERVER_JARFILE');
+        if ($variables->count() !== 1) { throw new RuntimeException('SERVER_JARFILE: expected exactly one Pelican egg variable for the active Startup.'); }
+        $value = app(\App\Services\Servers\EnvironmentService::class)->handle($server)['SERVER_JARFILE'] ?? null;
+        if (! is_string($value) || ! preg_match('~^(?:\./)?Crucible(?:-[A-Za-z0-9_.+-]+)?\.jar$~iD', $value)) {
+            throw new RuntimeException('SERVER_JARFILE: effective value must be one root Crucible JAR filename; paths, shell syntax and extra arguments are not allowed.');
+        }
+        return $value;
+    }
+
+    public static function resolveStartup(string $startup, ?string $serverJarfile): string
+    {
+        if (! str_contains($startup, '{{SERVER_JARFILE}}')) { return $startup; }
+        if (! is_string($serverJarfile) || ! preg_match('~^(?:\./)?Crucible(?:-[A-Za-z0-9_.+-]+)?\.jar$~iD', $serverJarfile)) {
+            throw new RuntimeException('SERVER_JARFILE: missing or invalid effective root Crucible JAR filename.');
+        }
+        $resolved = preg_replace_callback('~(?<!\S)(-jar[ \t]+)\{\{SERVER_JARFILE\}\}(?=[ \t]|$)~', fn ($match) => $match[1].$serverJarfile, $startup, -1, $count);
+        if ($count !== 1 || str_contains($resolved, '{{SERVER_JARFILE}}')) { throw self::unsupportedLauncher(); }
+        return $resolved;
     }
 
     private static function tokens(string $text, ?string $argFile = null): array
@@ -173,7 +209,7 @@ final class CrucibleRuntime
         try {
             $digest = $files->copyCrucibleForInspection($path, $temp);
             if ($zip->open(stream_get_meta_data($temp)['uri'], ZipArchive::RDONLY) !== true) {
-                throw new RuntimeException('The active Crucible launcher is not a readable JAR.');
+                throw new RuntimeException('The active Crucible launcher is not a readable JAR: '.$path);
             }
             try {
                 $info = $zip->statName('META-INF/MANIFEST.MF');

@@ -6,6 +6,7 @@ namespace Arcturus\ModpackManager\Schedules;
 use App\Extensions\Tasks\TaskSchemaInterface;
 use App\Models\Schedule;
 use App\Models\Task;
+use App\Models\User;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Security\Access;
 use Filament\Forms\Components\Select;
@@ -15,9 +16,10 @@ final class UpdateModpackTask implements TaskSchemaInterface
     public const ID = 'arcturus_modpack_update';
     public function getId(): string { return self::ID; }
     public function getName(): string { return 'Update Modpack'; }
-    public function canCreate(Schedule $schedule): bool
+    public function canCreate(Schedule $schedule, ?User $user = null, ?string $payload = null): bool
     {
-        return Access::admin() && ManagedServer::where('pelican_server_uuid', $schedule->server->uuid)->exists();
+        return ($user !== null ? $user->isRootAdmin() : Access::admin())
+            && ($payload === null || in_array($payload, ['update', 'update_restart'], true)) && ManagedServer::where('pelican_server_uuid', $schedule->server->uuid)->exists();
     }
     public function getDefaultPayload(): ?string { return 'update_restart'; }
     public function getPayloadLabel(): ?string { return 'When the installed release is current'; }

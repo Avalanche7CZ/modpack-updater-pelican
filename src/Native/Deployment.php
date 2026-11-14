@@ -250,18 +250,21 @@ final class Deployment
         }
     }
 
-    public function complete(ManagedServer $managed, Operation $operation, array $target, array $actualRuntime, Backup $backup, array $after): mixed
+    public function complete(ManagedServer $managed, Operation $operation, array $target, array $actualRuntime, Backup $backup, array $after, ?array $adminConfirmation = null): mixed
     {
-        return DB::transaction(function () use ($managed, $target, $operation, $actualRuntime, $backup, $after) {
+        return DB::transaction(function () use ($managed, $target, $operation, $actualRuntime, $backup, $after, $adminConfirmation) {
+                $startupVerified = $adminConfirmation === null;
+                if (! $startupVerified && json_encode($operation->context['native_admin_running_confirmation'] ?? null, JSON_THROW_ON_ERROR) !== json_encode($adminConfirmation, JSON_THROW_ON_ERROR)) { throw new RuntimeException('Missing exact administrator running-deployment confirmation receipt.'); }
                 $from = $managed->installed_version;
                 $managed->forceFill(['baseline_provenance' => $managed->target_metadata['prepared'], 'runtime_report' => [...$managed->runtime_report, ...$actualRuntime],
                     'installed_version' => $target['version'], 'base_manifest_path' => $managed->target_manifest_path, 'target_manifest_path' => null,
                     'selected_version' => null, 'target_metadata' => null, 'prepared_root' => null, 'preview_summary' => null, 'last_preview_at' => null,
                     'last_success_at' => now(), 'last_error' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null])->save();
-                app(OperationTracker::class)->transition($operation, 'completed', ['startup_verified' => true]);
+                app(OperationTracker::class)->transition($operation, 'completed', ['startup_verified' => $startupVerified, ...($startupVerified ? [] : ['running_confirmed_by_admin' => true])]);
                 return $managed->events()->create(['kind' => 'deploy', 'status' => 'success', 'from_version' => $from, 'to_version' => $target['version'],
-                    'message' => 'Native Wings update installed; fresh Minecraft runtime verified', 'details' => ['backup_uuid' => $backup->uuid,
-                        'modified' => array_keys($after), 'startup_verified' => true, 'discord_notification_pending' => true]]);
+                    'message' => $startupVerified ? 'Native Wings update installed; fresh Minecraft runtime verified' : 'Běh nasazení potvrdil admin; boot nebyl automaticky ověřen', 'details' => ['backup_uuid' => $backup->uuid,
+                        'modified' => array_keys($after), 'startup_verified' => $startupVerified, 'running_confirmed_by_admin' => ! $startupVerified,
+                        ...($startupVerified ? [] : ['actor_id' => $adminConfirmation['actor_id'], 'operation_id' => $operation->id, 'target_manifest_sha256' => $adminConfirmation['target_manifest_sha256']]), 'discord_notification_pending' => $startupVerified]]);
             });
     }
 

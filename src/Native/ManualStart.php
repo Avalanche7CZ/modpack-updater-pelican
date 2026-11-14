@@ -142,8 +142,8 @@ final class ManualStart
     private function launcherPaths(Operation $op, Server $server): array
     {
         $paths = array_keys($op->context['native_retained_launcher'] ?? []);
-        foreach ([$server->startup, $op->context['runtime_original']['startup'] ?? ''] as $startup) {
-            try { [$jar, $args] = CrucibleRuntime::launcher($startup); $paths = [...$paths, $jar, ...$args]; }
+        foreach ([$server->startup, $op->context['runtime_original']['startup'] ?? ''] as $index => $startup) {
+            try { [$jar, $args] = CrucibleRuntime::launcher($startup, $index === 0 ? CrucibleRuntime::serverJarfile($server) : ($op->context['runtime_original']['variables']['SERVER_JARFILE'] ?? null)); $paths = [...$paths, $jar, ...$args]; }
             catch (RuntimeException) { }
         }
         // Only root launcher/argument paths may be repaired; never exempt world properties, mods or libraries.
@@ -271,7 +271,7 @@ final class ManualStart
             $pulse(); $details = $power->details($server);
             $snapshot = app(SameHostDeployment::class)->panelSnapshot($server->refresh());
             if ($server->isSuspended() || $server->status !== null) { throw new RuntimeException('Administrator suspension/status changed; handoff sync remains pending.'); }
-            if (($details['configuration']['suspended'] ?? null) === false && ($details['configuration']['invocation'] ?? null) === $snapshot['startup'] && ($details['configuration']['container']['image'] ?? null) === $snapshot['image']) {
+            if (($details['configuration']['suspended'] ?? null) === false && Runtime::configurationMatches($details['configuration'] ?? [], $snapshot)) {
                 $op->refresh(); $handoff = $op->context['native_manual_start']; $handoff['state'] = 'released'; $handoff['synced_at'] = microtime(true);
                 $op->update(['context' => [...$op->context, 'native_manual_start' => $handoff]]); return;
             }
@@ -381,6 +381,109 @@ final class ManualStart
         });
     }
 
+    public static function canConfirmRunningDeployment(Operation $op): bool
+    {
+        $context = $op->context;
+        return $op->kind === 'deploy' && $op->completed_at === null && self::controlsReleased($op)
+            && ($context['automatic_approval'] ?? false) === false && ($context['manual_start_after_deploy'] ?? false) === true
+            && ($context['native_deploy_files_verified'] ?? false) === true
+            && ($context['native_manual_start']['state'] ?? '') === 'released' && ($context['native_manual_start']['role'] ?? '') === 'deploy';
+    }
+
+    private function confirmationTarget(Operation $op, ManagedServer $managed, ?string $version): array
+    {
+        $saved = $op->context['native_manual_deploy_target'] ?? [];
+        if (($saved['path'] ?? null) !== $managed->target_manifest_path || ! $managed->target_manifest_path
+            || ($saved['base'] ?? null) !== $managed->base_manifest_path || ($saved['from'] ?? null) !== $managed->installed_version
+            || ($op->context['from'] ?? null) !== $managed->installed_version) { throw new RuntimeException('Target manifest/baseline identity differs from native_manual_deploy_target.'); }
+        $target = app(ReleaseStore::class)->load($managed->target_manifest_path);
+        if (($saved['version'] ?? null) !== $target['version'] || ($op->context['to'] ?? null) !== $target['version']
+            || ($version !== null && $version !== $target['version']) || $target['provider'] !== $managed->provider || $target['project'] !== $managed->source) {
+            throw new RuntimeException('Target manifest version/provider/project differs from this exact approved deployment: '.$managed->target_manifest_path);
+        }
+        $sha = hash('sha256', json_encode($target, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        if (basename($managed->target_manifest_path) !== $sha.'.json') { throw new RuntimeException('Authenticated target manifest content changed at '.$managed->target_manifest_path); }
+        return [$target, $sha];
+    }
+
+    /** Strict scope: unlike launcher-repair recovery, no deployed path is silently exempted. */
+    private function confirmedDeployFiles(Operation $op, Wings $files): string
+    {
+        $expected = $op->context['native_after'] ?? null;
+        if (! is_array($expected)) { throw new RuntimeException('Missing native_after deployed-file receipt.'); }
+        if (! array_key_exists('server.properties', $expected) && isset($op->context['native_world_properties_sha256'])) { $expected['server.properties'] = $op->context['native_world_properties_sha256']; }
+        foreach ($op->context['native_target_runtime_plan']['dependency_hashes'] ?? [] as $path => $sha) {
+            if (array_key_exists($path, $expected) && $expected[$path] !== $sha) { throw new RuntimeException('Conflicting approved deployed/runtime file digest: '.$path); }
+            $expected[$path] = $sha;
+        }
+        ksort($expected);
+        foreach (array_chunk($expected, 32, true) as $batch) {
+            $actual = $files->hashBatch(array_keys($batch));
+            foreach ($batch as $path => $sha) {
+                if ($actual[$path] !== $sha) { throw new RuntimeException('Deployed file differs: '.$path.'; expected SHA-256 '.($sha ?? '[absent]').', observed '.($actual[$path] ?? '[absent]').'. No deployment was closed.'); }
+            }
+        }
+        return hash('sha256', json_encode($expected, JSON_THROW_ON_ERROR));
+    }
+
+    /** Root attestation of a running target, intentionally independent of missing boot evidence. */
+    public function confirmRunningDeployment(string $id, int $actor, bool $apply = false, ?string $confirm = null, bool $adminConfirmsRunning = false, ?string $version = null): array
+    {
+        $this->actor($actor);
+        if ($apply && ! $adminConfirmsRunning) { throw new RuntimeException('Explicit administrator confirmation of the running target is required (--admin-confirms-running). This is not automatic boot verification.'); }
+        return $this->locked($id, $apply ? 'admin_running_apply' : 'admin_running_review', function ($op, $managed, $pulse) use ($actor, $apply, $confirm, $version): array {
+            $this->requireOwner($op, $managed); $backup = $this->backup($op, $managed);
+            if (! self::canConfirmRunningDeployment($op)) { throw new RuntimeException('Only this active, file-verified Native manual deployment with released controls may be confirmed.'); }
+            [$target, $targetSha] = $this->confirmationTarget($op, $managed, $version);
+            $server = $managed->pelicanServer; $power = app(PelicanPowerController::class); $files = new Wings($server, app(DaemonFileRepository::class), $pulse);
+            $sample = function () use ($server, $power): array { $at = microtime(true); $details = $power->details($server); return [$details, RunningInstance::sample($details, $at, microtime(true))]; };
+            [$details, $instance] = $sample();
+            $snapshot = app(SameHostDeployment::class)->panelSnapshot($server->refresh());
+            if (! Runtime::configurationMatches($details['configuration'] ?? [], $snapshot)) { throw new RuntimeException('Wings configuration.invocation/image/environment does not match the current Pelican Startup template and SERVER_JARFILE.'); }
+            $runtime = $this->runtime($managed, $files, $target);
+            $expected = $op->context['native_target_runtime_plan']['target'] ?? [];
+            foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
+                if (! array_key_exists($key, $expected) || ($runtime[$key] ?? null) !== $expected[$key] || ($op->context['native_manual_start']['expected_runtime'][$key] ?? null) !== $expected[$key]) {
+                    throw new RuntimeException('Current launcher does not match approved target '.$key.'; expected '.json_encode($expected[$key] ?? null).', observed '.json_encode($runtime[$key] ?? null).'.');
+                }
+            }
+            $scopeSha = $this->confirmedDeployFiles($op, $files);
+            [$details, $instance] = RunningInstance::confirm($instance, $sample, microtime(true) + RunningInstance::observationTimeout(), $pulse);
+            if (! Runtime::configurationMatches($details['configuration'] ?? [], $snapshot) || app(SameHostDeployment::class)->panelSnapshot($server->refresh()) !== $snapshot) { throw new RuntimeException('Pelican/Wings settings changed during running-deployment inspection.'); }
+            $digest = hash('sha256', json_encode([$op->id, $op->context['native_manual_start']['id'], $targetSha, $snapshot, $runtime, $scopeSha], JSON_THROW_ON_ERROR));
+            $identity = CheckpointIdentity::of($op); $this->actor($actor); $pulse();
+            if (! $apply) {
+                $review = DB::transaction(function () use ($op, $managed, $actor, $instance, $digest, $targetSha, $identity, $version) {
+                    $fresh = Operation::lockForUpdate()->findOrFail($op->id); $owner = ManagedServer::lightweight()->lockForUpdate()->findOrFail($managed->id);
+                    if ($owner->active_operation_id !== $op->id || CheckpointIdentity::of($fresh) !== $identity || $this->confirmationTarget($fresh, $owner, $version)[1] !== $targetSha) { throw new CheckpointChanged('Deployment identity changed during administrator review.'); }
+                    return $owner->events()->create(['kind' => 'running_deploy_review', 'status' => 'reviewed', 'message' => 'Running target and deployed files inspected; boot unverified, no operation closed',
+                        'details' => ['operation_id' => $op->id, 'actor_id' => $actor, 'digest' => $digest, 'instance' => $instance, 'target_manifest_sha256' => $targetSha]]);
+                }, 1);
+                $proof = hash_hmac('sha256', $review->id.':'.$digest.':'.$actor, (string) config('app.key'));
+                return ['proof' => $proof, 'operation_id' => $op->id, 'from' => $managed->installed_version, 'target_version' => $target['version'], 'backup_uuid' => $backup->uuid,
+                    'startup_template' => $snapshot['startup'], 'image' => $snapshot['image'], 'runtime' => $runtime,
+                    'target_manifest_sha256' => $targetSha, 'startup_verified' => false, 'message' => 'Files and running instance inspected. Explicitly attest that you connected and confirmed this target version; boot evidence remains unverified.'];
+            }
+            $review = $managed->events()->where('kind', 'running_deploy_review')->where('status', 'reviewed')->where('created_at', '>=', now()->subMinutes(15))->latest('id')->get()->first(function ($event) use ($op, $actor, $digest, $confirm): bool {
+                return ($event->details['operation_id'] ?? null) === $op->id && ($event->details['actor_id'] ?? null) === $actor && ($event->details['digest'] ?? null) === $digest
+                    && hash_equals(hash_hmac('sha256', $event->id.':'.$digest.':'.$actor, (string) config('app.key')), (string) $confirm);
+            });
+            if (! $review) { throw new RuntimeException('No matching recent administrator review. Inspect again; file, launcher, manifest or proof may have changed.'); }
+            $instance = RunningInstance::same($review->details['instance'], $instance);
+            DB::transaction(function () use ($op, $managed, $actor, $instance, $runtime, $snapshot, $scopeSha, $target, $targetSha, $backup, $review, $identity, $version): void {
+                $fresh = Operation::lockForUpdate()->findOrFail($op->id); $owner = ManagedServer::lockForUpdate()->findOrFail($managed->id);
+                if ($owner->active_operation_id !== $op->id || CheckpointIdentity::of($fresh) !== $identity || $this->confirmationTarget($fresh, $owner, $version)[1] !== $targetSha) { throw new CheckpointChanged('Exact active deployment or target manifest changed before confirmation.'); }
+                $audit = ['actor_id' => $actor, 'confirmed_at' => microtime(true), 'review_event_id' => $review->id, 'operation_id' => $op->id,
+                    'target_manifest_sha256' => $targetSha, 'backup_uuid' => $backup->uuid, 'instance' => $instance, 'snapshot' => $snapshot,
+                    'configured_runtime' => $runtime, 'deployed_scope_sha256' => $scopeSha, 'attestation' => 'Administrator connected and confirmed the running target; automatic boot evidence is unavailable'];
+                $fresh->update(['context' => [...$fresh->context, 'native_admin_running_confirmation' => $audit], 'error' => null,
+                    'progress' => ['message' => 'Běh nasazení potvrdil admin; boot nebyl automaticky ověřen']]);
+                app(Deployment::class)->complete($owner, $fresh, $target, $runtime, $backup, $fresh->context['native_after'], $audit);
+            }, 1);
+            return ['message' => 'Nasazení dokončeno: běh potvrdil admin. Boot nebyl automaticky ověřen; původní záloha a audit ponechány.', 'startup_verified' => false, 'running_confirmed_by_admin' => true];
+        }, $apply);
+    }
+
     public function verify(string $id, int $actor, bool $apply = false, ?string $confirm = null): array
     {
         $this->actor($actor);
@@ -396,7 +499,7 @@ final class ManualStart
             $instance = RunningInstance::same($instance, ['min' => $attempt['requested_at'], 'max' => $attempt['requested_at'] + max(1, (int) config('arcturus-modpack-manager.deployment_start_ack_timeout', 60))]);
             if (isset($attempt['prior_instance']) && $instance['min'] <= $attempt['prior_instance']['max']) { throw new RuntimeException('Restart did not prove a distinct instance; use Stop then Start and verify its fresh boot.'); }
             $snapshot = app(SameHostDeployment::class)->panelSnapshot($server->refresh());
-            if ($snapshot !== ($attempt['snapshot'] ?? null) || ($details['configuration']['invocation'] ?? null) !== $snapshot['startup'] || ($details['configuration']['container']['image'] ?? null) !== $snapshot['image']) { throw new RuntimeException('Startup/image/settings differ from the manual start boundary. Start again after the repair, then verify.'); }
+            if ($snapshot !== ($attempt['snapshot'] ?? null) || ! Runtime::configurationMatches($details['configuration'] ?? [], $snapshot)) { throw new RuntimeException('Startup/image/settings differ from the manual start boundary. Start again after the repair, then verify.'); }
             $manifest = app(ReleaseStore::class)->load($handoff['role'] === 'deploy' ? $managed->target_manifest_path : $managed->base_manifest_path);
             $runtime = $this->runtime($managed, $files, $manifest);
             if ($runtime !== $attempt['runtime']) { throw new RuntimeException('Launcher/args changed after this Start. Stop, repair and Start again before verification.'); }
@@ -427,7 +530,7 @@ final class ManualStart
             $scoped = $this->files($op, $managed, $files, $handoff['role']);
             if ($handoff['role'] === 'recovery') { (new RunningOriginal)->restoreProof($op, $server, $op->context); }
             [$details, $instance] = RunningInstance::confirm($instance, $sample, microtime(true) + RunningInstance::observationTimeout(), $pulse);
-            if (($details['configuration']['invocation'] ?? null) !== $snapshot['startup'] || ($details['configuration']['container']['image'] ?? null) !== $snapshot['image'] || app(SameHostDeployment::class)->panelSnapshot($server->refresh()) !== $snapshot) { throw new RuntimeException('Panel settings changed during verification.'); }
+            if (! Runtime::configurationMatches($details['configuration'] ?? [], $snapshot) || app(SameHostDeployment::class)->panelSnapshot($server->refresh()) !== $snapshot) { throw new RuntimeException('Panel settings changed during verification.'); }
             $confirmation = hash('sha256', json_encode([$op->id, $handoff['id'], $attempt['id'], $snapshot, $runtime, $expected], JSON_THROW_ON_ERROR));
             if (! $apply) { return ['proof' => $confirmation, 'message' => 'Fresh running instance and expected boot verified. Review actual Startup/image/launcher hashes; repeat with --apply --confirm='.$confirmation, 'snapshot' => $snapshot, 'runtime' => $runtime]; }
             if (! hash_equals($confirmation, (string) $confirm)) { throw new RuntimeException('Review the exact current launcher/runtime with a read-only verification first.'); }

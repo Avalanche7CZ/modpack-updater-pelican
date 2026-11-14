@@ -12,6 +12,15 @@ check(CrucibleRuntime::launcher($startup) === $expected, 'The configured GTNH st
 check(CrucibleRuntime::launcher(str_replace('mkdir -p logs; ', '', $startup)) === $expected, 'exec java was rejected');
 check(CrucibleRuntime::launcher('java -Xms4G -jar @java9args.txt -jar Crucible-1.7.10-server.jar nogui') === $expected, 'The legacy direct launcher was rejected');
 
+$template = 'java @java9args.txt -jar {{SERVER_JARFILE}} nogui';
+check(CrucibleRuntime::launcher($template, 'Crucible-1.7.10-server.jar') === $expected, 'Safe complete SERVER_JARFILE argument was rejected');
+foreach (['../Crucible.jar', 'Crucible.jar nogui', 'Crucible.jar; echo x', 'server.jar', '', '{{OTHER}}'] as $value) {
+    rejects(fn () => CrucibleRuntime::launcher($template, $value), 'Invalid SERVER_JARFILE value was expanded');
+}
+foreach (['java {{SERVER_JARFILE}} nogui', 'java -jar prefix{{SERVER_JARFILE}} nogui', 'java -Dkey={{SERVER_JARFILE}} -jar {{SERVER_JARFILE}} nogui', 'java -cp other -jar {{SERVER_JARFILE}} nogui', 'java -jar {{OTHER}} nogui'] as $command) {
+    rejects(fn () => CrucibleRuntime::launcher($command, 'Crucible-1.7.10-server.jar'), 'Unsupported placeholder location/general expansion/classpath was accepted');
+}
+
 foreach ([
     str_replace('mkdir -p logs', 'mkdir -p logs/subdir', $startup),
     str_replace('mkdir -p logs', 'mkdir -p logs; echo done', $startup),

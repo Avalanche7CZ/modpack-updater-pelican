@@ -33,7 +33,7 @@ final class ConsoleLine
         ];
         if ($phase === 'completed') {
             $message = $kind === 'deploy'
-                ? (($evidence['startup_verified'] ?? false) === true ? 'Update completed · Minecraft startup verified' : 'Operation closed · Minecraft startup unverified')
+                ? (($evidence['running_confirmed_by_admin'] ?? false) === true ? 'Update completed · running confirmed by administrator · boot unverified' : (($evidence['startup_verified'] ?? false) === true ? 'Update completed · Minecraft startup verified' : 'Operation closed · Minecraft startup unverified'))
                 : 'Preparation completed · review the current update plan';
         } elseif ($phase === 'restored') {
             $message = ($evidence['restore_verified'] ?? false) === true

@@ -96,13 +96,24 @@ final class Runtime
         return $next;
     }
 
+    /** RC2 serializes Config.Invocation as the raw Panel template; STARTUP expansion is separate. */
+    public static function configurationMatches(array $configuration, array $snapshot): bool
+    {
+        if (($configuration['invocation'] ?? null) !== $snapshot['startup'] || ($configuration['container']['image'] ?? null) !== $snapshot['image']) { return false; }
+        if (str_contains($snapshot['startup'], '{{SERVER_JARFILE}}')) {
+            $expected = $snapshot['variables']['SERVER_JARFILE'] ?? null;
+            if (! is_string($expected) || ($configuration['environment']['SERVER_JARFILE'] ?? null) !== $expected) { return false; }
+        }
+        return true;
+    }
+
     public function syncAndRequire(Server $server, array $expected): void
     {
         $power = app(\Arcturus\ModpackManager\Services\PelicanPowerController::class);
         $power->sync($server); $until = microtime(true) + 15;
         do {
             $configuration = $power->details($server)['configuration'] ?? [];
-            if (($configuration['invocation'] ?? null) === $expected['startup'] && ($configuration['container']['image'] ?? null) === $expected['image']) { return; }
+            if (self::configurationMatches($configuration, $expected)) { return; }
             sleep(1);
         } while (microtime(true) < $until);
         throw new RuntimeException('Wings did not acknowledge the exact approved startup and Docker image. Keep Minecraft stopped.');

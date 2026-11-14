@@ -245,7 +245,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
                 $sys['console'] = ['Original or target boot continued normally'];
                 $server = Server::where('uuid', $uuid)->firstOrFail(); $new = str_contains($server->startup, '/26.1.2.121/');
                 $log = $bootLog($new ? '26.1.2' : '1.21.1', $new ? '26.1.2.121' : '21.1.1', str_contains($server->image, '25') ? 25 : 21);
-                if (str_contains($server->startup, 'Crucible-1.7.10-server.jar')) {
+                if (str_contains($server->startup, 'Crucible-1.7.10-server.jar') || (str_contains($server->startup, '{{SERVER_JARFILE}}') && str_starts_with($sys['configuration']['environment']['SERVER_JARFILE'] ?? '', 'Crucible'))) {
                     $log = $crucibleBootLog();
                     if ($mode === 'crucible_wrong_boot' && $sys['starts'] === 1) { $log = str_replace('Crucible', 'stock Forge', $log); }
                 }
@@ -314,6 +314,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     return Http::response(['state' => $observedState, 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => $uptime]], 200, $headers);
 };
 try {
+    if (getenv('ARCTURUS_RUNNING_CONFIRMATION_ONLY')) { require __DIR__.'/fixtures/running_confirmation.php'; $GLOBALS['arcturus_integration_passed'] = true; return; }
     if (getenv('ARCTURUS_RESTORE_POLICY_ONLY')) { require __DIR__.'/fixtures/restore_policy.php'; $GLOBALS['arcturus_integration_passed'] = true; return; }
     foreach ((getenv('ARCTURUS_RECOVERY_ONLY') ? [] : [
         ['file-only', false, 'success'], ['published NeoForge migration', true, 'success'], ['partial file write', false, 'partial_write'],

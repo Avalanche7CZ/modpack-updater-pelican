@@ -163,6 +163,7 @@ final class SameHostDeployment
         $variables = [];
         if (\Illuminate\Support\Facades\Schema::hasTable('egg_variables') && \Illuminate\Support\Facades\Schema::hasTable('server_variables')) {
             foreach ($server->variables as $variable) { $variables[$variable->env_variable] = $variable->server_value ?? $variable->default_value; }
+            if (array_key_exists('SERVER_JARFILE', $variables)) { $variables['SERVER_JARFILE'] = app(\App\Services\Servers\EnvironmentService::class)->handle($server)['SERVER_JARFILE'] ?? null; }
             ksort($variables);
         }
         return $variables;

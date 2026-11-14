@@ -96,7 +96,7 @@ final class Qualification
     public function fileRuntime(ManagedServer $server, Wings $files, array $base): array
     {
         $pelican = $server->pelicanServer;
-        if ($server->keep_existing_crucible_runtime || preg_match('/Crucible[^\s]*\.jar/i', $pelican->startup)) {
+        if ($server->keep_existing_crucible_runtime || CrucibleRuntime::configured($pelican)) {
             return (new CrucibleRuntime)->inspect($pelican, $files);
         }
         // Only scoped launcher/configuration candidates; never recursively inspect worlds or follow links.
@@ -130,8 +130,7 @@ final class Qualification
         if (! is_numeric($uptime) || $uptime <= 0 || ! $pelican->updated_at) { return ['verified' => false]; }
         $started = time() - (int) ceil($uptime / 1000);
         if ($pelican->updated_at->timestamp > $started + 30 ||
-            ($details['configuration']['invocation'] ?? null) !== $pelican->startup ||
-            ($details['configuration']['container']['image'] ?? null) !== $pelican->image) { return ['verified' => false]; }
+            ! Runtime::configurationMatches($details['configuration'] ?? [], app(SameHostDeployment::class)->panelSnapshot($pelican))) { return ['verified' => false]; }
         // A launcher replaced after the running instance began cannot borrow its old boot proof.
         foreach ($current['launcher_files'] ?? [] as $path => $proof) {
             $modified = $files->stat($path)['modified'] ?? null;

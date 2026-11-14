@@ -38,13 +38,20 @@
                     </div>
                 </details>
             @endif
-            @if($receiptReadable && $operation->phase === 'completed')<p class="mt-2 text-sm">Update completed. Minecraft reached a fresh startup marker.</p>@endif
+            @if($receiptReadable && $operation->phase === 'completed')
+                <p class="mt-2 text-sm">{{ ($context['running_confirmed_by_admin'] ?? false) === true ? 'Nasazení dokončeno. Běh potvrdil admin; boot nebyl automaticky ověřen.' : 'Update completed. Minecraft reached a fresh startup marker.' }}</p>
+            @endif
             @if($receiptReadable && $operation->phase === 'restored')
                 <p class="mt-2 text-sm">{{ isset($context['native_manual_start_verification']) ? 'Recovery closed: restored managed files and a fresh original pack boot with administrator-approved launcher settings verified. Original receipt and manual repair audit retained.' : 'Update failed. Pelican confirmed the native restore; managed file hashes, original launcher settings and Minecraft startup were verified.' }}</p>
             @endif
             @if($receiptReadable && (($context['running_original_sync_pending'] ?? false) === true))<p class="mt-2 text-sm text-amber-600">Original installation verified; Wings configuration release is pending. Use Retry verified recovery sync. No restore or restart is needed.</p>@endif
             @if($operation->phase === 'awaiting_manual_start')
                 <p class="mt-2 text-sm text-amber-600">{{ ($context['native_manual_start']['role'] ?? '') === 'deploy' ? 'Nasazeno, start neověřen.' : 'Soubory obnoveny, původní start neověřen.' }} Use normal Pelican power controls and launcher settings, then Verify running server. The active checkpoint and locked backup block another update. A manual crash does not initiate rollback.</p>
+            @endif
+            @if($canConfirmRunning ?? false)
+                <x-filament::button color="warning" wire:click="confirmRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled"
+                    wire:confirm="Potvrzuji, že jsem se připojil k tomuto serveru a ručně potvrdil běh cílové verze {{ $context['to'] ?? '' }}. Boot nebude označen za automaticky ověřený. Souborové nesoulady uzavření zablokují. Pokračovat?">Potvrdit běžící nasazení</x-filament::button>
+                <p class="mt-2 text-sm">Root-admin confirmation checks this exact running deployment, launcher and deployed files without power or restore. It records administrator attestation instead of automatic boot evidence.</p>
             @endif
             @if($operation->error)<p class="mt-2 break-words text-sm">{{ $operation->error }}</p>@endif
             @if(isset($context['native_target_boot_failure']) || isset($context['native_rollback_boot_failure']) || isset($context['native_recovery_boot_failure']))

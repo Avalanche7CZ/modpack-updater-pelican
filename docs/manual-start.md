@@ -82,3 +82,5 @@ Sada používá skutečné Pelican RC2 služby a izolovanou SQLite DB s Wings HT
 ## Osiřelá FileStore lease a chybějící webová akce
 
 Pro existující případ `a8557412-63ea-442f-8f86-c9e03e5acf3d` viz [diagnóza a přesný postup bez dalšího restore](manual-handoff-repair.md). Diagnostika rozlišuje release ZIP, soubory na disku a PHP třídy skutečně načtené CLI nebo webem. Nemaž cache ani checkpoint.
+
+Pokud cílový deploy již běží, soubory byly ověřeny a původní boot záznam chybí, root admin může použít [Potvrdit běžící nasazení](confirm-running-deployment.md). Jde o oddělené výslovné potvrzení běhu, které nevymýšlí automatický boot důkaz.
