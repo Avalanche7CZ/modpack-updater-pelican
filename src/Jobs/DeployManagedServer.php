@@ -25,7 +25,6 @@ use Arcturus\ModpackManager\Models\Operation;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\Cache;
 use RuntimeException;
 use Throwable;
 
@@ -63,7 +62,7 @@ final class DeployManagedServer implements ShouldQueue
         if ($this->operationId === null && ! config('arcturus-modpack-manager.enable_deploy', false)) {
             throw new RuntimeException('Deploy feature not enabled by operator');
         }
-        $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$this->managedServerId, 14400);
+        $lock = new \Arcturus\ModpackManager\Native\DeploymentLease($this->managedServerId, $this->operationId, 'legacy_deploy');
         if (! $lock->get()) {
             if ($this->operationId !== null) { return; }
             throw new RuntimeException('Another deploy already holds this server lock');
@@ -384,7 +383,7 @@ final class DeployManagedServer implements ShouldQueue
         if (! $operation || $operation->completed_at) { return; }
         $failureLease = null;
         if (($operation->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL) {
-            $failureLease = Cache::lock('arcturus-modpack-manager-deploy-'.$this->managedServerId, 14400);
+            $failureLease = new \Arcturus\ModpackManager\Native\DeploymentLease($this->managedServerId, $this->operationId, 'deploy_failure');
             if (! $failureLease->get()) { report(new RuntimeException('Native failure callback deferred: another worker owns the deployment lease. Retain its checkpoint.')); return; }
         }
         try {

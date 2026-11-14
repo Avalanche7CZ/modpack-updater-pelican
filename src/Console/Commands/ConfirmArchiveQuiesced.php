@@ -7,7 +7,7 @@ use Arcturus\ModpackManager\Models\{ManagedServer, Operation};
 use Arcturus\ModpackManager\Native\Qualification;
 use Arcturus\ModpackManager\Services\PelicanPowerController;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\{Cache, DB};
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 /** Explicit host-operator attestation. Stock Wings has no archive job cancellation/status API. */
@@ -25,8 +25,8 @@ final class ConfirmArchiveQuiesced extends Command
         try {
             $op = Operation::findOrFail((string) $this->argument('operation'));
             $managed = ManagedServer::lightweight()->findOrFail($op->managed_server_id);
-            $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id, 14400);
-            if (! $lock->get()) { throw new RuntimeException('Worker lease is held; never force-unlock it.'); }
+            $lock = $this->option('apply') ? new \Arcturus\ModpackManager\Native\DeploymentLease($managed->id, $op->id, 'archive_clearance') : null;
+            if ($lock !== null && ! $lock->get()) { throw new RuntimeException('Worker lease is held; never force-unlock it.'); }
             $op->refresh();
             if ($managed->refresh()->active_operation_id !== $op->id || $op->phase !== 'manual_intervention' ||
                 ($op->context['protocol'] ?? '') !== Qualification::PROTOCOL || ! ($op->context['native_archive_pending'] ?? false)) {

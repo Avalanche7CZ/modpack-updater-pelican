@@ -38,7 +38,7 @@ final class ServerPolicyService
         }
         $rules = (new ProtectionPolicy)->normalize($rules);
         (new UpdatePlanner)->plan([], [], [], $rules, [], $disabled);
-        $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$server->id, 60);
+        $lock = new \Arcturus\ModpackManager\Native\DeploymentLease($server->id, $server->active_operation_id, 'policy_save', 60);
         if (! $lock->get()) {
             throw new RuntimeException('Deployment is active; policy changes are locked');
         }

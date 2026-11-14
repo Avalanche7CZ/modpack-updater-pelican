@@ -129,7 +129,11 @@ final class ManagedServer extends Model
 
     public function getOperationStatusAttribute(): string
     {
-        if ($this->active_operation_id) { return 'In progress'; }
+        if ($this->active_operation_id) {
+            return match ($this->operations()->whereKey($this->active_operation_id)->value('phase')) {
+                'manual_intervention' => 'Waiting for recovery', 'awaiting_manual_start' => 'Waiting for manual boot', default => 'In progress',
+            };
+        }
         if ($this->comparison_status === 'failed') { return 'Comparison failed'; }
         return match ($this->latestOperationEvent?->status) {
             'failed' => 'Failed', 'cancelled' => 'Cancelled', 'interrupted' => 'Interrupted',

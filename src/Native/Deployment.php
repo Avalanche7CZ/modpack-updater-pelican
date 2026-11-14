@@ -17,7 +17,6 @@ use Arcturus\ModpackManager\Services\PelicanPowerController;
 use Arcturus\ModpackManager\Services\PreviewService;
 use Arcturus\ModpackManager\Services\ReleaseStore;
 use Arcturus\ModpackManager\Services\ScheduledMaintenance;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
@@ -29,7 +28,7 @@ final class Deployment
     {
         $jobStarted = microtime(true); $metrics = new DeploymentMetrics; $metrics->phase('verifying');
         $receipt = null; $files = null; $prepared = null;
-        $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$job->managedServerId, 14400);
+        $lock = new DeploymentLease($job->managedServerId, $job->operationId, 'deploy');
         if (! $lock->get()) { return; }
         $operation = null; $execution = null; $stopped = false; $changed = false; $committed = false;
         $backup = null; $backupComplete = false; $manualHandoff = false; $before = []; $original = []; $expected = [];

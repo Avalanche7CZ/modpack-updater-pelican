@@ -12,7 +12,6 @@ use Arcturus\ModpackManager\Services\BackupExclusions;
 use Arcturus\ModpackManager\Services\BackupSafetyGate;
 use Arcturus\ModpackManager\Services\OperationTracker;
 use Arcturus\ModpackManager\Services\PelicanPowerController;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -26,8 +25,8 @@ final class RunningOriginal
         if (($apply || $dockerEvidence !== null) && (!$actor || !User::find($actor)?->isRootAdmin())) { throw new RuntimeException('Apply/operator evidence requires an identified root administrator (--actor).'); }
         $operation = Operation::findOrFail($id);
         $managed = ManagedServer::lightweight()->findOrFail($operation->managed_server_id);
-        $lease = Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id, 14400);
-        if (!$lease->get()) { throw new RuntimeException('Another deploy/recovery worker owns the server lease. No action taken.'); }
+        $lease = $apply ? new DeploymentLease($managed->id, $id, $syncOnly ? 'original_sync' : 'original_verify_apply') : null;
+        if ($lease !== null && !$lease->get()) { throw new RuntimeException('Another deploy/recovery worker owns the server lease. No action taken.'); }
         try {
             $operation->refresh(); $managed->refresh(); $context = $operation->context ?? [];
             if ($managed->transport !== 'native' || $operation->kind !== 'deploy' || ($context['protocol'] ?? '') !== Qualification::PROTOCOL || ($context['manual_approval'] ?? false) !== true) { throw new RuntimeException('Not a Native Wings deployment recovery receipt.'); }
@@ -39,7 +38,11 @@ final class RunningOriginal
             if (!$server || $server->uuid !== $managed->pelican_server_uuid || $server->status !== null || $server->isSuspended() ||
                 $server->backups()->whereNull('completed_at')->exists()) { throw new RuntimeException('Server identity, administrator suspension, or active backup/restore blocks verification.'); }
             if ($managed->operations()->where('id', '!=', $id)->whereNull('completed_at')->exists()) { throw new RuntimeException('Another operation is unfinished.'); }
-            $assertLease = function () use ($lease): void { if (!$lease->isOwnedByCurrentProcess()) { throw new RuntimeException('Verification lease expired or changed owner. No release is authorized.'); } };
+            $identity = CheckpointIdentity::of($operation); $active = $managed->active_operation_id;
+            $assertLease = function () use ($lease, $operation, $managed, $identity, $active): void {
+                if ($lease !== null) { if (!$lease->isOwnedByCurrentProcess()) { throw new RuntimeException('Verification lease expired or changed owner. No release is authorized.'); } }
+                elseif (CheckpointIdentity::of($operation->fresh()) !== $identity || $managed->fresh()->active_operation_id !== $active) { throw new CheckpointChanged('Recovery changed during read-only verification.'); }
+            };
             $power = app(PelicanPowerController::class); $files = new Wings($server, app(DaemonFileRepository::class), $assertLease);
             $sample = function () use ($power, $server): array {
                 $before = microtime(true); $details = $power->details($server);
@@ -162,7 +165,7 @@ final class RunningOriginal
             if (!RunningInstance::advanced($beforeSync, $last)) { throw new RuntimeException('Recovery closed; no advancing Wings uptime sample confirmed the same instance after sync. Pending sync retained; retry only --sync-only --apply.'); }
             $operation->refresh(); $operation->update(['context' => [...$operation->context, 'running_original_sync_pending' => false, 'running_original_sync_verified' => ['instance' => $proof['instance'], 'verified_at' => microtime(true), 'actor_id' => $actor]]]);
             return ['verified' => true, 'applied' => true, 'message' => 'Original recovery closed; Wings suspension cleared and the same running instance confirmed.'];
-        } finally { $lease->release(); }
+        } finally { $lease?->release(); }
     }
 
     private function requireConfiguration(array $details, array $original, $server): void

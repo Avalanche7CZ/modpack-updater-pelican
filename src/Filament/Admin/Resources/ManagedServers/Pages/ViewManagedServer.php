@@ -36,6 +36,7 @@ use Livewire\Attributes\Renderless;
 
 final class ViewManagedServer extends ViewRecord
 {
+    public const CODE_ID = 'manual-handoff-leases-v2';
     protected static string $resource = ManagedServerResource::class;
 
     protected string $view = 'arcturus-modpack-manager::managed-server';
@@ -126,7 +127,7 @@ final class ViewManagedServer extends ViewRecord
     {
         return [
             Action::make('handoffManualStart')->label('Hand over manual start')->color('warning')
-                ->visible(fn () => $this->getRecord()->transport === 'native' && $this->getRecord()->active_operation_id && $this->getRecord()->operations()->whereKey($this->getRecord()->active_operation_id)->whereIn('phase', ['manual_intervention', \Arcturus\ModpackManager\Native\ManualStart::PHASE])->exists())
+                ->visible(fn () => \Arcturus\ModpackManager\Native\HandoffDiagnostics::available(ManagedServer::lightweight()->findOrFail($this->getRecord()->id)))
                 ->schema([TextInput::make('reference')->label('Successful recovery reference UUID (optional)')->nullable()])
                 ->requiresConfirmation()->modalDescription('Release only this plugin’s power/suspension overlay after exact restored/deployed file verification. Keep Minecraft stopped until handoff finishes. The checkpoint and locked backup remain active; this does not start or restore anything and does not declare recovery successful.')
                 ->action(function (array $data): void {

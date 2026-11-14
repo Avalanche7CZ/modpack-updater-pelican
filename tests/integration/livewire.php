@@ -215,6 +215,19 @@ foreach (\Arcturus\ModpackManager\Services\ApplyProgress::STEPS as $step => $lab
     $statusHtml = view('arcturus-modpack-manager::deployment-status', ['operation' => $statusOperation, 'context' => [], 'receiptReadable' => true])->render();
     check(str_contains($statusHtml, $label) && str_contains($statusHtml, '1 / 3') && str_contains($statusHtml, 'confirmed for this step'), 'Applying substep UI counts missing');
 }
+// Existing restored-but-unbooted checkpoint: actual rendered action and waiting wording.
+$handoffCheckpoint = Operation::create(['id' => (string) Str::uuid(), 'managed_server_id' => $record->id,
+    'kind' => 'deploy', 'phase' => 'manual_intervention', 'completed_at' => now(),
+    'context' => ['protocol' => \Arcturus\ModpackManager\Native\Qualification::PROTOCOL, 'restore_files_verified' => true,
+        'recovery_startup_verified' => false, 'native_archive_pending' => false, 'native_checkpoint' => ['step' => 'boot_verification_failed']]]);
+$record->update(['active_operation_id' => $handoffCheckpoint->id]);
+$waitingPage = Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]);
+$waitingPage->call('selectTab', 'updates');
+check(str_contains($waitingPage->html(), 'Hand over manual start') && str_contains($waitingPage->html(), 'Waiting for manual recovery') && ! str_contains($waitingPage->html(), 'An operation is running'), 'Existing recovery did not render handoff or claimed a running worker');
+$handoffCheckpoint->update(['phase' => 'awaiting_manual_start', 'completed_at' => null]);
+$waitingPage->call('selectTab', 'updates');
+check(str_contains($waitingPage->html(), 'waiting for a manual start') && ! str_contains($waitingPage->html(), 'An operation is running'), 'Manual boot wait claimed an active deployment worker');
+$record->update(['active_operation_id' => null]); $handoffCheckpoint->update(['phase' => 'cancelled', 'completed_at' => now()]);
 // Corrupt/unreadable encrypted evidence must not crash the deployment status UI.
 $brokenDeployment = Operation::create(['id' => (string) Str::uuid(), 'managed_server_id' => $record->id,
     'kind' => 'deploy', 'phase' => 'verifying', 'context' => ['from' => 'old', 'to' => 'new'], 'heartbeat_at' => now()]);
@@ -227,6 +240,7 @@ check(str_contains($badStatus->html(), 'encrypted deployment receipt cannot be r
 check(\Illuminate\Support\Facades\DB::table('arcturus_modpack_operations')->where('id', $brokenDeployment->id)->value('context') === '{"plaintext":"must-not-be-trusted"}',
     'Status rendering rewrote recovery evidence');
 Auth::guard()->forgetUser();
+rejects(fn () => (new \Arcturus\ModpackManager\Http\Controllers\HandoffDiagnosticsController)($record->id), 'Guest accessed loaded-code diagnostic');
 rejects(fn () => Livewire\Livewire::test(ViewManagedServer::class, ['record' => $record->id]), 'Guest mounted the managed-server review page');
 echo "All native Livewire detail tabs rendered; destructive control and guest access guards passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

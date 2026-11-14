@@ -90,7 +90,7 @@ final class VerifyDeploymentRecovery implements ShouldQueue
         if (($row->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL &&
             ($this->executionId === null || $this->executionId !== ($row->context['native_execution_id'] ?? null))) { return; }
         $server = ManagedServer::lightweight()->findOrFail($row->managed_server_id);
-        $lease = \Illuminate\Support\Facades\Cache::lock('arcturus-modpack-manager-deploy-'.$server->id, 14400);
+        $lease = new \Arcturus\ModpackManager\Native\DeploymentLease($server->id, $row->id, 'restore_failure');
         if (!$lease->get()) { report(new RuntimeException('Recovery failure handler blocked by another worker lease: '.$row->id)); return; }
         try {
             $row->refresh(); $server->refresh();

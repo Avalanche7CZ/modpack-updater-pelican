@@ -144,6 +144,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     $path = parse_url($url, PHP_URL_PATH); parse_str(parse_url($url, PHP_URL_QUERY) ?? '', $q);
     $requests[] = [$request->method(), $path, $q];
     if (str_ends_with($path, '/logs')) {
+        if (isset($sys['during_console_poll'])) { $interleave = $sys['during_console_poll']; unset($sys['during_console_poll']); $interleave(); }
         check($request->method() === 'GET' && in_array($q['size'] ?? '', ['60','100'], true), 'Console was not queried with a bounded read');
         if (in_array($mode, ['diagnostic_unavailable', 'crucible_offline_failed_boot'], true) && $sys['starts'] > 0) { return Http::response(['error' => 'private remote failure body'], 500, $headers); }
         return Http::response(['data' => $sys['console'] ?? ['Original console before the update']], 200, $headers);

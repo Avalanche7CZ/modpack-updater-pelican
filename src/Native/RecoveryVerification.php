@@ -11,7 +11,6 @@ use Arcturus\ModpackManager\Services\OperationTracker;
 use Arcturus\ModpackManager\Services\PelicanBackupManager;
 use Arcturus\ModpackManager\Services\PelicanPowerController;
 use Arcturus\ModpackManager\Services\SameHostDeployment;
-use Illuminate\Support\Facades\Cache;
 use RuntimeException;
 use Throwable;
 
@@ -33,7 +32,7 @@ final class RecoveryVerification
                 ...(isset($row['boot_attempt']) ? ['native_boot_attempts' => [...($operation->context['native_boot_attempts'] ?? []), $row['boot_attempt']['id'] => [...$row['boot_attempt'], 'execution_id' => $operation->context['native_execution_id'] ?? null, 'restore_callback_id' => $operation->context['native_restore_confirmation']['callback_id'] ?? null]]] : []),
                 ...(array_key_exists('link_stash', $row) ? ['native_link_stash' => $row['link_stash']] : [])]]);
         };
-        $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id, 14400); $locked = false; $ownsRecovery = false;
+        $lock = new DeploymentLease($managed->id, $operation->id, 'restore'); $locked = false; $ownsRecovery = false;
         try {
             $locked = $lock->get();
             if (! $locked) { throw new RuntimeException('The previous deployment worker lease is still held. Keep the server stopped and wait for that lease to expire before recovery; never force-unlock an uncertain apply.'); }

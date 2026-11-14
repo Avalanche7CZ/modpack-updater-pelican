@@ -99,7 +99,16 @@
                     </ol>
                     <p class="font-medium break-all">{{ $record->installed_version }} → {{ $record->targetVersion() ?? 'Select a release' }}</p>
                     @if($record->active_operation_id)
-                        <p class="mt-3 text-sm">An operation is running. Its progress appears above; wait for the result before continuing.</p>
+                        @php($activePhase = $record->operations()->whereKey($record->active_operation_id)->value('phase'))
+                        @if(in_array($activePhase, ['manual_intervention', 'awaiting_manual_start'], true))
+                            <p class="mt-3 text-sm">{{ $activePhase === 'manual_intervention' ? 'Waiting for manual recovery. No deployment worker is being reported as running.' : 'Files verified; waiting for a manual start and fresh boot verification.' }} The active checkpoint blocks another update.</p>
+                            @if(\Arcturus\ModpackManager\Native\HandoffDiagnostics::available($record))
+                                <x-filament::button color="warning" wire:click="mountAction('handoffManualStart')">Hand over manual start</x-filament::button>
+                            @endif
+                            <a class="text-sm underline" href="{{ url('/arcturus-modpack/console/handoff/'.$record->id.'/diagnostics') }}" target="_blank" rel="noopener">Web handoff code / visibility diagnostics</a>
+                        @else
+                            <p class="mt-3 text-sm">An operation is running. Its progress appears above; wait for the result before continuing.</p>
+                        @endif
                     @elseif($record->baseline_status !== 'verified')
                         <p class="mt-3 text-sm">First prepare the installed release in Overview to establish which files belong to the modpack.</p>
                     @elseif(!$record->targetVersion() || $record->targetVersion() === $record->installed_version)

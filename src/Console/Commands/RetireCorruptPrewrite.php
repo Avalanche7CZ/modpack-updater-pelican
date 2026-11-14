@@ -15,7 +15,6 @@ use Arcturus\ModpackManager\Services\PelicanPowerController;
 use Arcturus\ModpackManager\Services\SameHostDeployment;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Encryption\DecryptException;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -47,7 +46,7 @@ final class RetireCorruptPrewrite extends Command
                 // The deployment worker uses this same atomic cache lease. Never force-unlock.
                 $serverId = DB::table('arcturus_modpack_operations')->where('id', $id)->value('managed_server_id');
                 if (! $serverId) { throw new RuntimeException('Operation not found.'); }
-                $lease = Cache::lock('arcturus-modpack-manager-deploy-'.$serverId, 14400);
+                $lease = new \Arcturus\ModpackManager\Native\DeploymentLease((int) $serverId, $id, 'retire_prewrite');
                 if (! $lease->get()) { throw new RuntimeException('Deployment lease is held. Keep the server offline; do not force-unlock.'); }
             }
             $check = $this->inspect($id);

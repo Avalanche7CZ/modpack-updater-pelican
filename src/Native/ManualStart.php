@@ -7,12 +7,13 @@ use App\Models\{Server, User};
 use App\Repositories\Daemon\DaemonFileRepository;
 use Arcturus\ModpackManager\Models\{ManagedServer, Operation};
 use Arcturus\ModpackManager\Services\{BackupExclusions, BackupSafetyGate, OperationTracker, PelicanPowerController, ReleaseStore, SameHostDeployment};
-use Illuminate\Support\Facades\{Cache, DB};
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 /** Retains exclusive update ownership while delegating only power/launcher control to Pelican. */
 final class ManualStart
 {
+    public const CODE_ID = 'manual-handoff-leases-v2';
     public const PHASE = 'awaiting_manual_start';
 
     public static function controlsReleased(Operation $operation): bool
@@ -29,17 +30,67 @@ final class ManualStart
     private function actor(int $actor): void
     { if (! User::find($actor)?->isRootAdmin()) { throw new RuntimeException('An identified root administrator must approve manual handoff/verification.'); } }
 
-    private function locked(string $id, \Closure $work): mixed
+    private function locked(string $id, string $action, \Closure $work, bool $mutation = true): mixed
     {
         if (! \Illuminate\Support\Str::isUuid($id)) { throw new RuntimeException('An exact operation UUID is required.'); }
         $operation = Operation::findOrFail($id); $managed = ManagedServer::lightweight()->findOrFail($operation->managed_server_id);
-        $lease = Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id, 14400);
+        if (! $mutation) {
+            $identity = CheckpointIdentity::of($operation);
+            $fence = function () use ($operation, $managed, $id, $identity): void {
+                if (ManagedServer::whereKey($managed->id)->value('active_operation_id') !== $id || CheckpointIdentity::of($operation->fresh()) !== $identity) { throw new CheckpointChanged('Checkpoint changed during read-only inspection; retry the inspection.'); }
+            };
+            // These callbacks perform GETs only. Avoid decrypting the large recovery receipt
+            // for every streamed chunk; the final proof/row fence is always unconditional.
+            $lastCheck = 0;
+            $pulse = function () use ($fence, &$lastCheck): void {
+                $at = hrtime(true);
+                if ($at - $lastCheck >= 1000000000) { $fence(); $lastCheck = $at; }
+            };
+            if ($action !== 'observe') { DeploymentLease::diagnostic($managed->id, $id, $action, 'read_begin'); }
+            try {
+                $pulse(); $result = $work($operation, $managed, $pulse);
+                if (! in_array($action, ['arm_start', 'observe'], true)) { $fence(); }
+                return $result;
+            } catch (\Throwable $error) {
+                if ($action !== 'observe') { DeploymentLease::diagnostic($managed->id, $id, $action, 'read_failure', ['error_class' => get_class($error)]); }
+                throw $error;
+            } finally { if ($action !== 'observe') { DeploymentLease::diagnostic($managed->id, $id, $action, 'read_end'); } }
+        }
+        $lease = new DeploymentLease($managed->id, $id, $action);
         if (! $lease->get()) { throw new RuntimeException('Deploy/recovery lease is held. Do not force-unlock it.'); }
         $pulse = function () use ($lease, $managed, $id): void {
             if (! $lease->isOwnedByCurrentProcess() || $managed->fresh()->active_operation_id !== $id) { throw new RuntimeException('Manual-start lease or active operation changed.'); }
         };
+        $failure = null;
         try { $operation->refresh(); $managed->refresh(); $pulse(); return $work($operation, $managed, $pulse); }
-        finally { $lease->release(); }
+        catch (\Throwable $error) { $failure = $error; DeploymentLease::diagnostic($managed->id, $id, $action, 'action_failure', ['error_class' => get_class($error)]); throw $error; }
+        finally {
+            if (! $lease->release() && $failure === null) { throw new RuntimeException('Action checkpoint retained, but mutation lease release failed. Inspect the lease diagnostic; never retry restore automatically.'); }
+        }
+    }
+
+    public function orphanLease(string $id, int $actor, bool $apply = false, ?string $confirm = null, bool $writersQuiesced = false, ?string $reference = null): array
+    {
+        $this->actor($actor);
+        return $this->locked($id, 'orphan_inspect', function ($op, $managed, $pulse) use ($actor, $apply, $confirm, $writersQuiesced, $reference): array {
+            if ($op->phase !== 'manual_intervention' || ($op->context['restore_files_verified'] ?? false) !== true || isset($op->context['native_manual_start'])) { throw new RuntimeException('Orphan repair is limited to an exact paused verified-restore checkpoint before handoff. Active deploy/restore is never cleared.'); }
+            $check = $this->handoffLocked($op, $managed, $actor, false, null, $reference, $pulse);
+            $identity = CheckpointIdentity::of($op).':'.$check['proof'];
+            $repair = new FileLeaseRepair; $record = $repair->inspect($managed->id, $identity);
+            if (! $apply) { return $record; }
+            if (! $writersQuiesced) { throw new RuntimeException('Explicit --writers-quiesced attestation is required: quiesce every Panel, queue and Artisan writer on all Panel hosts and verify no Wings mutation is pending. Age/PID guesses are not proof for legacy locks.'); }
+            DB::transaction(function () use ($op, $managed, $actor, $reference, $pulse, $identity, $confirm, $repair, $check): void {
+                $fresh = Operation::lockForUpdate()->findOrFail($op->id); $owner = ManagedServer::lockForUpdate()->findOrFail($managed->id);
+                $pulse();
+                $repair->expire($owner->id, $identity, (string) $confirm, function () use ($fresh, $owner, $actor, $reference, $pulse, $check): void {
+                    $current = $this->handoffLocked($fresh, $owner, $actor, false, null, $reference, $pulse);
+                    if (! hash_equals($check['proof'], $current['proof'])) { throw new RuntimeException('Checkpoint, managed files or launcher changed; orphan not cleared.'); }
+                });
+                $owner->events()->create(['kind' => 'orphan_lease', 'status' => 'released', 'message' => 'Operator attested all writers quiesced; exact FileStore record conditionally expired',
+                    'details' => ['operation_id' => $op->id, 'actor_id' => $actor, 'pid' => getmypid(), 'at_utc' => gmdate('c')]]);
+            }, 1);
+            return ['message' => 'Only this exact FileStore lease expired. Checkpoint, backup and Minecraft untouched. Now run handoff inspection and apply.'];
+        }, false);
     }
 
     private function requireOwner(Operation $op, ManagedServer $managed): void
@@ -141,7 +192,7 @@ final class ManualStart
     public function handoff(string $id, int $actor, bool $apply = false, ?string $confirm = null, ?string $reference = null): array
     {
         $this->actor($actor);
-        return $this->locked($id, fn ($op, $managed, $pulse) => $this->handoffLocked($op, $managed, $actor, $apply, $confirm, $reference, $pulse));
+        return $this->locked($id, $apply ? 'handoff_apply' : 'handoff_read', fn ($op, $managed, $pulse) => $this->handoffLocked($op, $managed, $actor, $apply, $confirm, $reference, $pulse), $apply);
     }
 
     /** The native deployment worker already holds this same lease. */
@@ -208,7 +259,13 @@ final class ManualStart
         if (($op->context['native_manual_start']['state'] ?? '') === 'released') { return; }
         if ($power->state($server) !== 'exited') { throw new RuntimeException('Handoff sync is pending; keep Minecraft stopped until it finishes.'); }
         $files = new Wings($server, app(DaemonFileRepository::class), $pulse);
-        $this->files($op, $managed, $files, $op->context['native_manual_start']['role']);
+        $handoff = $op->context['native_manual_start'];
+        $this->files($op, $managed, $files, $handoff['role']);
+        if (app(SameHostDeployment::class)->panelSnapshot($server->refresh()) !== $handoff['snapshot_at_handoff']) { throw new RuntimeException('Launcher settings changed while handoff sync was pending; no sync was sent.'); }
+        if (! isset($handoff['launcher_at_handoff']['inspection_problem'])) {
+            $manifest = app(ReleaseStore::class)->load($handoff['role'] === 'deploy' ? $managed->target_manifest_path : $managed->base_manifest_path);
+            if ($this->runtime($managed, $files, $manifest) !== $handoff['launcher_at_handoff']) { throw new RuntimeException('Launcher/args bytes changed while handoff sync was pending; no sync was sent.'); }
+        }
         $power->sync($server); $deadline = microtime(true) + 15;
         do {
             $pulse(); $details = $power->details($server);
@@ -229,7 +286,7 @@ final class ManualStart
         $permission = $action === 'restart' ? \App\Enums\SubuserPermission::ControlRestart : \App\Enums\SubuserPermission::ControlStart;
         if ($actor !== null) { $this->actor($actor); }
         elseif (! auth()->user()?->can($permission, $server)) { abort(403); }
-        $this->locked($id, function ($op, $managed, $pulse) use ($server, $action, $actor): void {
+        $this->locked($id, 'arm_start', function ($op, $managed, $pulse) use ($server, $action, $actor): void {
             $this->requireOwner($op, $managed);
             if ($managed->pelican_server_uuid !== $server->uuid || ! self::controlsReleased($op) || ($op->context['native_manual_start']['state'] ?? '') !== 'released') { throw new RuntimeException('Manual controls are not released for this server.'); }
             $power = app(PelicanPowerController::class); $state = $power->state($server);
@@ -249,21 +306,30 @@ final class ManualStart
             } catch (\Throwable $error) {
                 $boundary['available'] = false; $boundary['problem'] = $error instanceof RuntimeException ? $error->getMessage() : 'Manual boot boundary could not be read. Stop, repair the launcher, then use Start again.';
             }
-            $pulse(); $op->refresh(); $handoff = $op->context['native_manual_start'];
-            $history = $handoff['attempts'] ?? []; $history[] = $boundary; $handoff['attempts'] = array_slice($history, -16);
-            $op->update(['context' => [...$op->context, 'native_manual_start' => $handoff]]);
-        });
+            $pulse(); $identity = CheckpointIdentity::of($op);
+            DB::transaction(function () use ($op, $managed, $identity, $boundary): void {
+                $fresh = Operation::lockForUpdate()->findOrFail($op->id);
+                if ($managed->fresh()->active_operation_id !== $op->id || CheckpointIdentity::of($fresh) !== $identity) { throw new CheckpointChanged('Manual start checkpoint changed; no power was sent.'); }
+                $this->requireOwner($fresh, $managed->fresh());
+                $handoff = $fresh->context['native_manual_start'];
+                $history = $handoff['attempts'] ?? []; $history[] = $boundary; $handoff['attempts'] = array_slice($history, -16);
+                unset($handoff['console_evidence']);
+                $fresh->update(['context' => [...$fresh->context, 'native_manual_start' => $handoff]]);
+            }, 1);
+        }, false);
     }
 
     /** Optional CLI observer for GTNH stdout headers that latest.log does not contain.
-     * Each short checkpoint takes the same lease; waiting never owns power or excludes a normal Start.
+     * Network reads never take the mutation lease; evidence commits use a short row lock and exact attempt fencing.
      */
     public function observe(string $id, int $actor, int $seconds = 900): array
     {
         $this->actor($actor); $deadline = microtime(true) + max(1, min(3600, $seconds));
         $console = null; $attemptId = null; $instance = null;
-        do {
-            $result = $this->locked($id, function ($op, $managed, $pulse) use (&$console, &$attemptId, &$instance): ?array {
+        $serverId = (int) Operation::findOrFail($id)->managed_server_id;
+        DeploymentLease::diagnostic($serverId, $id, 'observe', 'read_begin');
+        try { do {
+            try { $result = $this->locked($id, 'observe', function ($op, $managed, $pulse) use (&$console, &$attemptId, &$instance): ?array {
                 $this->requireOwner($op, $managed);
                 if (! self::controlsReleased($op) || ($op->context['native_manual_start']['state'] ?? '') !== 'released') { throw new RuntimeException('Manual handoff is not released.'); }
                 $handoff = $op->context['native_manual_start']; $attempts = $handoff['attempts'] ?? []; $attempt = end($attempts);
@@ -279,21 +345,30 @@ final class ManualStart
                 if ($instance !== null) { $sample = RunningInstance::same($instance, $sample); }
                 $instance = $sample; $proof = $console->proof();
                 if ($proof['lines'] > 0 && (($handoff['console_evidence']['attempt_id'] ?? null) !== $attemptId || ($handoff['console_evidence']['proof']['sha256'] ?? null) !== $proof['sha256'])) {
-                    $handoff['console_evidence'] = ['attempt_id' => $attemptId, 'instance' => $instance, 'proof' => $proof];
-                    $pulse(); $op->update(['context' => [...$op->context, 'native_manual_start' => $handoff]]);
+                    $pulse();
+                    DB::transaction(function () use ($op, $managed, $handoff, $attemptId, $instance, $proof): void {
+                        $fresh = Operation::lockForUpdate()->findOrFail($op->id);
+                        $current = $fresh->context['native_manual_start'] ?? [];
+                        $attempts = $current['attempts'] ?? []; $latest = end($attempts);
+                        if ($managed->fresh()->active_operation_id !== $op->id || ! self::controlsReleased($fresh) || ($current['state'] ?? '') !== 'released' || ($current['id'] ?? null) !== $handoff['id'] || ($latest['id'] ?? null) !== $attemptId) { throw new CheckpointChanged('Observer attempt changed; stale evidence discarded.'); }
+                        $current['console_evidence'] = ['attempt_id' => $attemptId, 'instance' => $instance, 'proof' => $proof];
+                        $fresh->update(['context' => [...$fresh->context, 'native_manual_start' => $current]]);
+                    }, 1);
                 }
                 return StartupEvidence::matches($proof, $handoff['expected_runtime']) ? ['message' => 'Fresh native console boot facts retained. Now use verify; no operation was closed and no power or restore was sent.'] : null;
-            });
+            }, false); } catch (CheckpointChanged) { $console = null; $attemptId = null; $instance = null; $result = null; }
             if ($result !== null) { return $result; }
             sleep(1);
         } while (microtime(true) < $deadline);
         throw new RuntimeException('Observation ended without complete fresh console runtime/Done evidence. Checkpoint remains pending; no power or restore was sent.');
+        } catch (\Throwable $error) { DeploymentLease::diagnostic($serverId, $id, 'observe', 'read_failure', ['error_class' => get_class($error)]); throw $error; }
+        finally { DeploymentLease::diagnostic($serverId, $id, 'observe', 'read_end'); }
     }
 
     public function requestRollback(string $id, int $actor): void
     {
         $this->actor($actor);
-        $this->locked($id, function ($op, $managed, $pulse) use ($actor): void {
+        $this->locked($id, 'explicit_rollback', function ($op, $managed, $pulse) use ($actor): void {
             $this->requireOwner($op, $managed); $this->backup($op, $managed);
             if ($op->phase !== self::PHASE || ! isset($op->context['native_manual_start'])) { throw new RuntimeException('An active manual-start checkpoint is required.'); }
             if (app(PelicanPowerController::class)->state($managed->pelicanServer) !== 'exited') { throw new RuntimeException('Stop Minecraft using normal Pelican controls before explicitly requesting rollback.'); }
@@ -309,7 +384,7 @@ final class ManualStart
     public function verify(string $id, int $actor, bool $apply = false, ?string $confirm = null): array
     {
         $this->actor($actor);
-        return $this->locked($id, function ($op, $managed, $pulse) use ($actor, $apply, $confirm): array {
+        return $this->locked($id, $apply ? 'verify_apply' : 'verify_read', function ($op, $managed, $pulse) use ($actor, $apply, $confirm): array {
             $this->requireOwner($op, $managed); $backup = $this->backup($op, $managed);
             $handoff = $op->context['native_manual_start'] ?? null;
             if (! self::controlsReleased($op) || ($handoff['state'] ?? '') !== 'released') { throw new RuntimeException('A synced manual-start handoff is required.'); }
@@ -378,6 +453,6 @@ final class ManualStart
             }, 1);
             // Already released controls. Finalizing ownership never sends power or restore.
             return ['message' => $handoff['role'] === 'deploy' ? 'Completed: target boot verified; installed version/baseline updated.' : 'Recovery verified and closed. Locked backup and original audit retained.'];
-        });
+        }, $apply);
     }
 }
