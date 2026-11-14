@@ -38,6 +38,8 @@ return [
     'default_policy' => 'approve',
     'default_backup_exclusions' => ['backup', 'backups'],
     'download_concurrency' => 1,
+    // Maximum cached Wings uptime age / wait for an advancing resource sample (1–60 seconds).
+    'running_instance_sample_timeout' => 10,
     // Legacy global flags do not enable scheduling; use explicit per-server maintenance settings.
     'automatic_deploy' => false,
     'enable_deploy' => (bool) env('ARCTURUS_MODPACK_MANAGER_ENABLE_DEPLOY', false),

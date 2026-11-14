@@ -67,8 +67,10 @@ final class Boot
                 foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
                     if (isset($target[$key]) && $observed[$key] !== $target[$key]) { throw new RuntimeException('Fresh Minecraft boot did not confirm target '.$key.'. Keep this runtime blocked until its boot evidence can be verified.'); }
                 }
-                $lastQuery = microtime(true); $lastDetails = $power->details($server);
-                $instance = RunningInstance::same($instance, RunningInstance::sample($lastDetails, $lastQuery, microtime(true)));
+                [, $instance] = RunningInstance::confirm($instance, function () use ($power, $server): array {
+                    $before = microtime(true); $details = $power->details($server);
+                    return [$details, RunningInstance::sample($details, $before, microtime(true))];
+                }, $deadline, $heartbeat);
                 $proof['instance'] = $instance; $proof['log_sha256'] = $logEvidence['sha256'];
                 $journal(['step' => 'boot_verified', 'runtime' => $observed, 'boot_attempt' => $proof]);
                 return [...$target, ...$observed, 'java_confidence' => 'verified'];

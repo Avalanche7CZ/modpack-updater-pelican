@@ -52,7 +52,7 @@ final class RunningOriginal
             if ($retry) {
                 $proof = $context['running_original_verification'];
                 if (($proof['server_uuid'] ?? null) !== $server->uuid || ($proof['server_id'] ?? null) !== $server->id || ($proof['operation_id'] ?? null) !== $id) { throw new RuntimeException('Sync proof belongs to a different server/operation.'); }
-                $instance = RunningInstance::same($instance, $proof['instance']);
+                $instance = RunningInstance::same($instance, RunningInstance::receipt($proof['instance']));
             } else {
                 $confirmation = $this->restoreProof($operation, $server, $context);
                 $critical = $context['native_restore_receipt'] ?? $context['native_before'] ?? null;
@@ -73,7 +73,7 @@ final class RunningOriginal
                 }
                 $attempt = $this->bootProof($operation, $server, $files, $context, $confirmation);
                 $instance = RunningInstance::same($instance, $attempt['start_window'] ?? ['min' => $attempt['requested_at'] - 0.01, 'max' => $attempt['accepted_at'] + $attempt['ack_seconds']]);
-                if (isset($attempt['instance'])) { $instance = RunningInstance::same($instance, $attempt['instance']); }
+                if (isset($attempt['instance'])) { $instance = RunningInstance::same($instance, RunningInstance::receipt($attempt['instance'])); }
                 $proof = ['server_uuid' => $server->uuid, 'server_id' => $server->id, 'operation_id' => $operation->id, 'backup_uuid' => $confirmation['backup_uuid'], 'restore' => $confirmation, 'boot_id' => $attempt['id'], 'instance' => $instance, 'actor_id' => $actor];
             }
             try { $evidence = $files->bootLogEvidence(); }
@@ -85,7 +85,7 @@ final class RunningOriginal
             foreach (['minecraft', 'loader', 'loader_version', 'java'] as $key) {
                 if (!array_key_exists($key, $runtime) || ($observed[$key] ?? null) !== $runtime[$key]) { throw new RuntimeException('Running original log does not confirm '.$key.'.'); }
             }
-            [, $second] = $sample(); $proof['instance'] = RunningInstance::same($instance, $second);
+            [, $proof['instance']] = RunningInstance::confirm($instance, $sample, microtime(true) + RunningInstance::observationTimeout(), $assertLease);
             $proof['log_sha256'] = $evidence['sha256']; $proof['verified_at'] = microtime(true);
             if (!$apply) { return ['verified' => true, 'applied' => false, 'message' => $retry ? 'Pending sync verified for the same running instance. No changes made.' : 'Original restore, files, configuration and running startup verified. No changes made.']; }
             $assertLease();
@@ -108,17 +108,21 @@ final class RunningOriginal
             if ($managed->fresh()->active_operation_id !== null || $managed->pelican_server_uuid !== $server->uuid) { throw new RuntimeException('Another operation now owns the server; sync was not attempted.'); }
             $assertLease();
             if ($server->refresh()->status !== null) { throw new RuntimeException('Administrator status changed; configuration sync not attempted.'); }
+            // Anchor immediately before sync, including time spent finalizing the receipt.
+            [, $beforeSync] = $sample();
+            $proof['instance'] = RunningInstance::same($proof['instance'], $beforeSync);
             $power->sync($server);
             $releaseDeadline = microtime(true) + 15;
             do {
                 $assertLease();
                 [$afterSync, $last] = $sample(); $proof['instance'] = RunningInstance::same($proof['instance'], $last);
                 $this->requireConfiguration($afterSync, $original, $server);
-                if (($afterSync['configuration']['suspended'] ?? null) === false) { break; }
+                if (($afterSync['configuration']['suspended'] ?? null) === false && RunningInstance::advanced($beforeSync, $last)) { break; }
                 if ($server->fresh()->status !== null) { throw new RuntimeException('Administrator status changed; pending sync retained.'); }
                 sleep(1);
             } while (microtime(true) < $releaseDeadline);
             if (($afterSync['configuration']['suspended'] ?? null) !== false) { throw new RuntimeException('Recovery closed; Wings suspension release unconfirmed. Retry only sync with --sync-only --apply.'); }
+            if (!RunningInstance::advanced($beforeSync, $last)) { throw new RuntimeException('Recovery closed; no advancing Wings uptime sample confirmed the same instance after sync. Pending sync retained; retry only --sync-only --apply.'); }
             $operation->refresh(); $operation->update(['context' => [...$operation->context, 'running_original_sync_pending' => false, 'running_original_sync_verified' => ['instance' => $proof['instance'], 'verified_at' => microtime(true), 'actor_id' => $actor]]]);
             return ['verified' => true, 'applied' => true, 'message' => 'Original recovery closed; Wings suspension cleared and the same running instance confirmed.'];
         } finally { $lease->release(); }

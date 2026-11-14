@@ -140,6 +140,8 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
         if ($syncFail) { return Http::response([], 500, $headers); }
         $cfg = app(\App\Services\Servers\ServerConfigurationStructureService::class)->handle(Server::where('uuid', $uuid)->firstOrFail());
         $sys['configuration'] = array_replace(['crash_detection_enabled' => true], $cfg);
+        if (($sys['sampled_sync'] ?? '') === 'plateau') { $sys['uptime_repeat'] = 3; $sys['post_sync_samples'] = []; }
+        if (($sys['sampled_sync'] ?? '') === 'restart') { $sys['boot_started'] = microtime(true); }
         return Http::response([], 204, $headers);
     }
     if (str_ends_with($path, '/files/list-directory')) {
@@ -257,7 +259,11 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     }
     $observedState = $sys['state'];
     if ($observedState === 'offline' && $sys['starts'] === 1 && ($sys['polls_since_start'] ?? 0) === 0) { $sys['polls_since_start'] = 1; $observedState = 'starting'; }
-    return Http::response(['state' => $observedState, 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => max(1, (microtime(true) - ($sys['boot_started'] ?? (microtime(true) - 60))) * 1000)]], 200, $headers);
+    $uptime = max(1, (microtime(true) - ($sys['boot_started'] ?? (microtime(true) - 60))) * 1000);
+    if (($sys['uptime_repeat'] ?? 0) > 0) { $uptime = $sys['sampled_uptime']; $sys['uptime_repeat']--; }
+    $sys['sampled_uptime'] = $uptime;
+    if (isset($sys['post_sync_samples'])) { $sys['post_sync_samples'][] = $uptime; }
+    return Http::response(['state' => $observedState, 'configuration' => $sys['configuration'], 'utilization' => ['uptime' => $uptime]], 200, $headers);
 };
 try {
     foreach ((getenv('ARCTURUS_RECOVERY_ONLY') ? [] : [
@@ -565,8 +571,19 @@ try {
     };
     $forbidden = fn ($rows) => array_filter($rows, fn ($r) => preg_match('~/(?:power|restore|files/(?:write|rename|chmod|delete|create-directory))$~', $r[1]));
     $verifier = app(\Arcturus\ModpackManager\Native\RunningOriginal::class);
-    foreach ([false,true] as $legacy) {
-        $resetOrphan($legacy); $start=count($requests); $ctx=$orphanOp->getRawOriginal('context');
+    foreach (['new','legacy','v1_uptime'] as $format) {
+        $resetOrphan($format === 'legacy');
+        if ($format === 'v1_uptime') {
+            $ctx = $orphanOp->context;
+            foreach ($ctx['native_boot_attempts'] as &$boot) {
+                if (isset($boot['instance'])) {
+                    // Old receipts inferred birth at request time from an already cached uptime.
+                    $boot['instance'] = ['min'=>$boot['instance']['min']+0.5, 'max'=>$boot['instance']['max']+0.5];
+                }
+            }
+            unset($boot); $orphanOp->update(['context'=>$ctx]);
+        }
+        $start=count($requests); $ctx=$orphanOp->getRawOriginal('context');
         $dry=$verifier->run($orphanOp->id);
         check($dry['verified'] && !$dry['applied'] && $orphanOp->fresh()->getRawOriginal('context')===$ctx, 'Dry run changed retained recovery evidence');
         check(!$forbidden(array_slice($requests,$start)) && !array_filter(array_slice($requests,$start),fn($r)=>str_ends_with($r[1],'/sync')), 'Dry run mutated server');
@@ -574,6 +591,23 @@ try {
         check($result['applied'] && $orphanOp->fresh()->phase==='restored' && $orphan->fresh()->active_operation_id===null && !$systems[$ouuid]['configuration']['suspended'], 'Running original did not release modpack suspension');
         check(!$forbidden(array_slice($requests,$start)), 'Finalization issued power/restore/file writes');
     }
+    // Several HTTP requests return the same resource sample, including immediately after sync.
+    $resetOrphan(); $start=count($requests);
+    $systems[$ouuid]['sampled_uptime'] = (microtime(true)-$systems[$ouuid]['boot_started'])*1000;
+    $systems[$ouuid]['uptime_repeat'] = 4; $systems[$ouuid]['sampled_sync'] = 'plateau';
+    $sampled=$verifier->run($orphanOp->id,true,1);
+    $samples=$systems[$ouuid]['post_sync_samples'];
+    check($sampled['applied'] && count($samples)>=4 && $samples[0]===$samples[1] && $samples[1]===$samples[2] && $samples[3]>$samples[2], 'Post-sync identity did not wait through repeated resource samples');
+    check(!$forbidden(array_slice($requests,$start)) && !$orphanOp->fresh()->context['running_original_sync_pending'], 'Sampled finalization mutated or failed to release the original');
+    unset($systems[$ouuid]['sampled_sync'],$systems[$ouuid]['post_sync_samples']);
+    $resetOrphan(); $savedBoot=$systems[$ouuid]['boot_started']; $start=count($requests);
+    $systems[$ouuid]['sampled_sync']='restart';
+    rejects(fn()=>$verifier->run($orphanOp->id,true,1), 'A genuine restart during sync accepted');
+    check($orphanOp->fresh()->phase==='restored' && $orphanOp->fresh()->context['running_original_sync_pending'] && !$forbidden(array_slice($requests,$start)), 'Sync identity failure lost the pending receipt or powered/restored the server');
+    rejects(fn()=>$verifier->run($orphanOp->id,true,1,true), 'Sync retry accepted a restarted instance with the old Done log');
+    check(!$forbidden(array_slice($requests,$start)), 'Rejected sync retry performed power/restore/file writes');
+    $systems[$ouuid]['boot_started']=$savedBoot; unset($systems[$ouuid]['sampled_sync']);
+    echo "Sampled running-original inspection and post-sync plateau/restart fixtures passed\n";
     $resetOrphan(); $start=count($requests);
     $foreign=\Illuminate\Support\Facades\Cache::lock('arcturus-modpack-manager-deploy-'.$orphan->id,14400); check($foreign->get(),'Cannot acquire foreign test lease');
     rejects(fn()=>$verifier->run($orphanOp->id,true,1),'Foreign lease accepted');
