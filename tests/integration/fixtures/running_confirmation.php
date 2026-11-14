@@ -27,6 +27,10 @@ foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as
     file_put_contents($stage.'/config/railcraft.cfg', 'upstream railcraft');
     if (getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY')) {
         $configTargets = ['config/Botania.cfg' => "B:feature=true\n", 'config/Another.cfg' => "B:feature=true\n", 'config/binary.cfg' => "valid target text\n", 'config/runtime.cfg' => "required runtime text\n", 'config/strict.jar' => $crucibleJar()];
+        if (getenv('ARCTURUS_CONFIG_SET_ONLY')) {
+            foreach (['default', 'gregtech', 'other'] as $recipe) { $configTargets['config/opencomputers/'.$recipe.'.recipes'] = '# verified '.$recipe."\n"; }
+            mkdir($stage.'/config/opencomputers', 0700, true);
+        }
         foreach ($configTargets as $configPath => $bytes) { $target['files'][$configPath] = hash('sha256', $bytes); file_put_contents($stage.'/'.$configPath, $bytes); }
         $base['files']['config/removed.cfg'] = hash('sha256', 'old removed config');
         $systems[$uuid]['data']['config/removed.cfg'] = 'old removed config';

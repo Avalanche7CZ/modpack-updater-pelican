@@ -32,7 +32,8 @@ final class DeploymentConfigChanges
         if (array_key_exists($path, $op->context['native_target_runtime_plan']['dependency_hashes'] ?? [])) { return 'Runtime dependency: strict hash required.'; }
         if (array_key_exists($path, $op->context['native_target_runtime_plan']['retained_launcher_files'] ?? [])) { return 'Retained runtime launcher/argument: strict hash required.'; }
         if ($configurationSet && $path === 'server.properties') { return null; }
-        if (! str_starts_with($path, 'config/') || ! in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), ['cfg', 'conf', 'properties', 'json', 'json5', 'toml', 'yaml', 'yml', 'ini', 'txt', 'xml', 'hocon', 'snbt'], true)) {
+        $recipeConfig = $configurationSet && in_array($path, ['config/opencomputers/default.recipes', 'config/opencomputers/gregtech.recipes'], true);
+        if (! str_starts_with($path, 'config/') || (! $recipeConfig && ! in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), ['cfg', 'conf', 'properties', 'json', 'json5', 'toml', 'yaml', 'yml', 'ini', 'txt', 'xml', 'hocon', 'snbt'], true))) {
             return 'Only text configuration files under config/ may be accepted; JARs and other deployed files remain strict.';
         }
         if (($target['files'][$path] ?? null) !== $expected) { return 'The deployed digest is not the authenticated target manifest digest.'; }

@@ -481,7 +481,9 @@ final class ManualStart
                     throw new RuntimeException('Deployment not closed. '.($runtimeError ?? '').' Unaccepted deployed differences: '.implode('; ', $problems));
                 }
                 return ['operation_id' => $op->id, 'target_version' => $target['version'], 'target_manifest_sha256' => $targetSha, 'backup_uuid' => $backup->uuid,
-                    'can_confirm' => false, 'differences' => $fileReport['differences'], 'runtime_error' => $runtimeError, 'message' => 'Review every deployed difference. Only individually reviewed text config hashes can be accepted; strict files must match.'];
+                    'can_confirm' => false, 'differences' => $fileReport['differences'], 'runtime_error' => $runtimeError, 'message' => $configurationSet
+                        ? 'Review the complete configuration list and confirm it once; individual diff approval is not required. Strict files must match.'
+                        : 'Review every deployed difference. Only individually reviewed text config hashes can be accepted; strict files must match.'];
             }
             $scopeSha = $fileReport['scope_sha256'];
             [$details, $instance] = RunningInstance::confirm($instance, $sample, microtime(true) + RunningInstance::observationTimeout(), $pulse);
