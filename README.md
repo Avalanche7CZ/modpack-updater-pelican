@@ -1,5 +1,7 @@
 # Arcturus Modpack Manager
 
+Native Wings bulk staging, failure recovery and performance verification: [implementation report and benchmark](docs/native-bulk-staging.md).
+
 Native Pelican tooling for adopting customized Minecraft servers, checking releases, preparing verified upstream files and updating through native Wings services with three-way file protection and Pelican backups.
 
 **Read the [native deployment guide](docs/native-deployment.md) and [capability matrix](docs/capabilities.md) before enabling updates. Installer migrations require the optional isolated-build capabilities described in that guide.** Adoption, checking, staging and preview do not stop, restart or reinstall the server.

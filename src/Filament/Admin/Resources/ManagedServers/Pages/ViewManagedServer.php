@@ -136,11 +136,19 @@ final class ViewManagedServer extends ViewRecord
                     } catch (\Throwable $error) { report($error); Notification::make()->title('Running original verification not completed')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Inspect the private Panel log. If recovery is restored, retry only the configuration sync.')->danger()->send(); }
                 }),
             Action::make('syncRunningOriginal')->label('Retry verified recovery sync')->color('warning')
-                ->visible(fn () => $this->getRecord()->transport === 'native' && !$this->getRecord()->active_operation_id && $this->getRecord()->operations()->where('phase', 'restored')->latest()->first()?->context['running_original_sync_pending'] ?? false)
+                ->visible(function (): bool {
+                    $record = $this->getRecord();
+                    if ($record->transport !== 'native' || $record->active_operation_id) { return false; }
+                    $operation = $record->operations()->where('kind', 'deploy')->where('phase', 'restored')->latest()->first();
+                    try { $context = $operation?->context ?? []; }
+                    catch (\Illuminate\Contracts\Encryption\DecryptException) { return false; }
+                    return ($context['running_original_sync_pending'] ?? false) === true;
+                })
                 ->action(function (): void {
                     Access::requireAdmin();
-                    $operation = $this->getRecord()->operations()->where('phase', 'restored')->latest()->firstOrFail();
-                    try { $result = app(\Arcturus\ModpackManager\Native\RunningOriginal::class)->run($operation->id, true, (int)auth()->id(), true); $this->queued($result['message']); }
+                    try {
+                        $operation = $this->getRecord()->operations()->where('kind', 'deploy')->where('phase', 'restored')->latest()->firstOrFail();
+                        $result = app(\Arcturus\ModpackManager\Native\RunningOriginal::class)->run($operation->id, true, (int)auth()->id(), true); $this->queued($result['message']); }
                     catch (\Throwable $error) { report($error); Notification::make()->title('Recovery sync not confirmed')->body(get_class($error) === \RuntimeException::class ? $error->getMessage() : 'Configuration sync remains pending. No power or restore was requested.')->danger()->send(); }
                 }),
             Action::make('verifyRecovery')->label(fn () => $this->getRecord()->transport === 'native' ? 'Recover original installation' : 'Verify restored original snapshot')->button()->color('warning')

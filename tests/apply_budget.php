@@ -17,6 +17,14 @@ $budget->run(function () use ($budget, &$clock): void {
 $clock = 91;
 rejects(fn () => $budget->run(function () use (&$calls): void { $calls++; }), 'Unit admitted without maximum-time reserve');
 check($calls === 0, 'Budget exhaustion started work');
+// The native request profile admits verified follow-up work regardless of cumulative elapsed time.
+$requests = ApplyBudget::requestsOnly(); $clock = 3721;
+$requests->run(function () use ($requests, &$clock, &$calls): void {
+    check($requests->timeout(60) === 60.0, 'Performance elapsed time shortened an HTTP deadline');
+    $clock += 3482;
+    $requests->run(function () use ($requests, &$calls): void { $calls++; check($requests->timeout(600) === 600.0, 'Nested verified work inherited a phase reserve'); });
+});
+check($calls === 1, 'A verified follow-up batch was not admitted');
 $metrics = new DeploymentMetrics; $metrics->phase('upload');
 rejects(fn () => $metrics->measure('upload', function (): void { throw new RuntimeException('ambiguous'); }), 'Metrics swallowed a transfer failure');
 check($metrics->snapshot()['work']['upload']['failed'] === 1, 'Failed transfer omitted from metrics');

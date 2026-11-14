@@ -23,6 +23,7 @@ final class ModpackManagerServiceProvider extends ServiceProvider
     {
         if ($this->app->runningInConsole()) {
             $this->commands([
+                \Arcturus\ModpackManager\Console\Commands\ConfirmArchiveQuiesced::class,
                 \Arcturus\ModpackManager\Console\Commands\RetireCorruptPrewrite::class,
                 \Arcturus\ModpackManager\Console\Commands\BootDiagnostics::class,
                 \Arcturus\ModpackManager\Console\Commands\NativeMeasurements::class,

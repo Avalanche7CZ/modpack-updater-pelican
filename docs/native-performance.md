@@ -1,5 +1,7 @@
 # Native Applying and Comparison measurements
 
+For the subsequent ZIP bulk staging implementation, recovery rules and reproducible 8,132-file benchmark, see [native bulk staging](native-bulk-staging.md). The measurements and serial upload description below belong to `339d3fe` and its predecessors.
+
 Baseline: GitHub `main` **695318811360f1c3c617383571d833dc1a04c590**, verified with `git ls-remote` on 2026-11-14. The uptime intersection fix from that commit is retained. These changes use standard authenticated Wings endpoints only. They do not upload while Minecraft is running, change backup exclusions/restore rules, follow world paths, skip SHA-256, or extend the 10,800-second job timeout.
 
 ## Staging and persistence boundaries

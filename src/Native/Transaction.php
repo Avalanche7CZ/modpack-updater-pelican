@@ -42,7 +42,7 @@ final class Transaction
      * $before/$after contain ONLY approved mutations; null means an absent file.
      * Every journal intent must be durably saved before its corresponding remote mutation.
      */
-    public function apply(string $id, string $stage, array $before, array $after, array $safetyRoots, \Closure $journal, array $moves = [], ?\Closure $progress = null): void
+    public function apply(string $id, string $stage, array $before, array $after, array $safetyRoots, \Closure $journal, array $moves = [], ?\Closure $progress = null, ?PreparedStaging $prepared = null, string $verification = 'parallel'): void
     {
         if (! preg_match('/^[a-f0-9-]{32,36}$/D', $id) || array_keys($before) !== array_keys($after)) { throw new RuntimeException('Invalid native transaction identity or scope.'); }
         $remote = '.arcturus-update-'.$id;
@@ -63,10 +63,14 @@ final class Transaction
         }
         $installs = array_keys(array_filter(array_diff_key($after, $moved), fn ($h) => $h !== null));
         $report = fn (string $step, int $done, int $total) => $progress?->__invoke($step, $done, $total);
-        $report('stage_verification', 0, count($installs));
+        if ($prepared !== null) {
+            if (! $this->files instanceof BulkStaging) { throw new RuntimeException('Bulk transport was not selected before mutation.'); }
+            $prepared->requirePlan($after, $moves);
+        }
+        $report('stage_verification', $prepared !== null ? count($installs) : 0, count($installs));
         $expected = array_filter(array_diff_key($after, $moved), fn ($h) => $h !== null); ksort($expected);
         $actual = []; $localDone = 0;
-        foreach (array_chunk($installs, 32) as $batch) {
+        foreach ($prepared !== null ? [] : array_chunk($installs, 32) as $batch) {
             $this->unit(function () use ($installs, $stage, $report, $expected, &$actual, &$localDone, $batch): void {
                 $checked = (new DirectoryInventory)->hashPaths($stage, $batch, function () use ($report, &$localDone, $installs): void { $this->budget?->timeout(600); $report('stage_verification', $localDone, count($installs)); });
                 $wanted = array_intersect_key($expected, array_flip($batch));
@@ -76,9 +80,11 @@ final class Transaction
             });
         }
         ksort($actual);
-        if ($actual !== $expected) { throw new RuntimeException('Private stage differs from the approved target manifest.'); }
-        $report('live_verification', 0, count($before));
-        $this->verify($before, fn ($done, $total) => $report('live_verification', $done, $total));
+        if ($prepared === null && $actual !== $expected) { throw new RuntimeException('Private stage differs from the approved target manifest.'); }
+        if ($prepared === null) {
+            $report('live_verification', 0, count($before));
+            $this->verify($before, fn ($done, $total) => $report('live_verification', $done, $total));
+        }
         $permissionPaths = array_keys(array_filter($before, fn ($h) => $h !== null));
         $report('permissions', 0, count($permissionPaths)); $modes = [];
         usort($permissionPaths, fn ($a, $b) => [dirname($a), $a] <=> [dirname($b), $b]);
@@ -94,8 +100,44 @@ final class Transaction
             $this->files->mkdir($remote.'/new'); $this->files->mkdir($remote.'/old');
         });
         $report('upload', 0, count($installs));
-        $stageModes = []; $uploaded = 0;
-        if ($this->files instanceof StagingUploads) {
+        $stageModes = []; $uploaded = 0; $candidates = [];
+        if ($prepared !== null) {
+            foreach ($prepared->bundles as $bundleIndex => $bundle) {
+                foreach ($bundle['members'] as $index => $row) { $candidates[$row['path']] = $remote.'/new/b'.$bundleIndex.'/'.$index; }
+            }
+        }
+        if ($prepared !== null) {
+            foreach ($installs as $index => $path) { if (isset($modes[$path])) { $stageModes[$candidates[$path]] = $modes[$path]; } }
+            foreach ($prepared->bundles as $bundleIndex => $bundle) {
+                $directory = $remote.'/new/b'.$bundleIndex;
+                $this->unit(function () use ($remote, $directory, $bundle, $verification, $journal): void {
+                    $journal(['step' => 'bundle_intent', 'stage' => $remote, 'directory' => $directory, 'archive_pending' => true,
+                        'bundle_sha256' => $bundle['sha256'], 'members' => array_map(fn ($r) => array_diff_key($r, ['local' => true]), $bundle['members'])]);
+                    $this->files->mkdir($directory);
+                    $this->files->uploadBundle($directory, $bundle, $verification);
+                    $journal(['step' => 'bundle_verified', 'archive_pending' => false, 'members' => array_keys($bundle['members'])]);
+                });
+                $uploaded += count($bundle['members']); $report('upload', $uploaded, count($installs));
+            }
+            $rootMembers = [];
+            foreach ($this->files->listing($remote.'/new') as $row) {
+                if ($row['file'] || ! $row['directory'] || $row['symlink']) { throw new RuntimeException('Unexpected staging directory type.'); }
+                $rootMembers[] = $row['name'];
+            }
+            $wantedRoots = [];
+            foreach ($prepared->bundles as $bundleIndex => $bundle) {
+                $wantedRoots[] = 'b'.$bundleIndex;
+                $wanted = array_map('strval', array_keys($bundle['members'])); $found = [];
+                foreach ($this->files->listing($remote.'/new/b'.$bundleIndex) as $row) {
+                    if (! $row['file'] || $row['directory'] || $row['symlink']) { throw new RuntimeException('Unexpected staging member type.'); }
+                    $found[] = $row['name'];
+                }
+                sort($wanted, SORT_STRING); sort($found, SORT_STRING);
+                if ($found !== $wanted) { throw new RuntimeException('Extracted staging member set differs from the approved plan.'); }
+            }
+            sort($rootMembers, SORT_STRING); sort($wantedRoots, SORT_STRING);
+            if ($rootMembers !== $wantedRoots) { throw new RuntimeException('Unexpected staging bundle directory.'); }
+        } elseif ($this->files instanceof StagingUploads) {
             // Four files and normally <=64 MiB per unit; one larger file is its own unit.
             $batches = []; $batch = []; $bytes = 0;
             foreach ($installs as $index => $path) {
@@ -136,8 +178,11 @@ final class Transaction
             });
         }
         // All target bytes are present and verified before the first live-path mutation.
-        $report('live_recheck', 0, count($before));
-        $this->verify($before, fn ($done, $total) => $report('live_recheck', $done, $total));
+        // Bulk path checks every live batch immediately before its mutations below.
+        if ($prepared === null) {
+            $report('live_recheck', 0, count($before));
+            $this->verify($before, fn ($done, $total) => $report('live_recheck', $done, $total));
+        }
         $deployed = 0; $report('deploy', 0, count($after));
         foreach ($moves as $from => $to) {
             $this->unit(function () use ($from, $to, $before, $after, $modes, $journal, &$deployed, $report): void {
@@ -152,8 +197,9 @@ final class Transaction
         $order = [...$installs, ...array_keys(array_filter(array_diff_key($after, $moved), fn ($h) => $h === null))];
         if ($this->files instanceof MutationBatches) {
             $installIndexes = array_flip($installs);
-            foreach (array_chunk($order, 16, true) as $batch) {
-                $this->unit(function () use ($batch, $before, $after, $modes, $remote, $installIndexes, $journal, &$deployed, $report): void {
+            $oldDirectories = [];
+            foreach (array_chunk($order, $prepared !== null ? 64 : 16, true) as $batch) {
+                $this->unit(function () use ($batch, $before, $after, $modes, $remote, $installIndexes, $journal, &$deployed, $report, $prepared, $candidates, &$oldDirectories): void {
                     $live = array_intersect_key($before, array_flip($batch));
                     $this->verify($live);
                     $existing = array_keys(array_filter($live, fn ($h) => $h !== null));
@@ -163,23 +209,31 @@ final class Transaction
                     foreach ($batch as $index => $path) {
                         if ($before[$path] !== null) {
                             if ($currentModes[$path] !== $modes[$path]) { throw new RuntimeException('Live permissions changed during transfer.'); }
-                            $retire[$path] = $remote.'/old/'.$index;
-                            $retiredExpected[$remote.'/old/'.$index] = $before[$path];
+                            $oldDirectory = $remote.'/old'.($prepared !== null ? '/b'.intdiv($index, 256) : '');
+                            if ($prepared !== null && ! isset($oldDirectories[$oldDirectory])) {
+                                $this->files->mkdir($oldDirectory); $oldDirectories[$oldDirectory] = true;
+                            }
+                            $retire[$path] = $oldDirectory.'/'.$index;
+                            $retiredExpected[$oldDirectory.'/'.$index] = $before[$path];
                         }
                         if ($after[$path] !== null) {
                             $parent = dirname($path); if ($parent !== '.' && ! isset($parents[$parent])) { $this->files->mkdir($parent); $parents[$parent] = true; }
-                            $candidate = $remote.'/new/'.$installIndexes[$path];
+                            $candidate = $candidates[$path] ?? $remote.'/new/'.$installIndexes[$path];
                             $replace[$candidate] = $path; $candidateExpected[$candidate] = $after[$path];
                         }
                     }
                     $this->verify($candidateExpected);
+                    if ($prepared !== null) {
+                        // One intent contains both independent legs; partial rename is never replayed.
+                        $journal(['step' => 'apply_batch_intent', 'retire' => $retire, 'replace' => $replace, 'before' => $live, 'after' => array_intersect_key($after, $live)]);
+                    }
                     if ($retire !== []) {
-                        $journal(['step' => 'retire_batch_intent', 'moves' => $retire]);
+                        if ($prepared === null) { $journal(['step' => 'retire_batch_intent', 'moves' => $retire]); }
                         $this->files->renameBatch($retire);
                         $this->verify($retiredExpected);
                     }
                     if ($replace !== []) {
-                        $journal(['step' => 'replace_batch_intent', 'moves' => $replace]);
+                        if ($prepared === null) { $journal(['step' => 'replace_batch_intent', 'moves' => $replace]); }
                         $this->files->renameBatch($replace);
                     }
                     $this->verify(array_intersect_key($after, $live));

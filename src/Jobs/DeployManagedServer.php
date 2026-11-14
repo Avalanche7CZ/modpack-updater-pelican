@@ -382,22 +382,33 @@ final class DeployManagedServer implements ShouldQueue
         if (! $this->operationId) { return; }
         $operation = Operation::where('managed_server_id', $this->managedServerId)->find($this->operationId);
         if (! $operation || $operation->completed_at) { return; }
-        if (in_array($operation->phase, ['queued', 'verifying'], true)) {
-            $message = 'Queue worker failed before deployment began. No Minecraft files were changed; compare and approve again.';
-            $operation->update(['error' => $message]);
-            ManagedServer::whereKey($this->managedServerId)->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
-            app(OperationTracker::class)->transition($operation, 'cancelled');
-            return;
+        $failureLease = null;
+        if (($operation->context['protocol'] ?? '') === \Arcturus\ModpackManager\Native\Qualification::PROTOCOL) {
+            $failureLease = Cache::lock('arcturus-modpack-manager-deploy-'.$this->managedServerId, 14400);
+            if (! $failureLease->get()) { report(new RuntimeException('Native failure callback deferred: another worker owns the deployment lease. Retain its checkpoint.')); return; }
         }
-        $server = ManagedServer::lightweight()->findOrFail($this->managedServerId);
-        $message = 'Worker interrupted. Do not replay the deployment. Inspect the locked backup and retained deployment journal before recovery.';
-        $operation->update(['context' => [...$operation->context, 'interrupted_phase' => $operation->phase], 'phase' => 'restoring']);
-        try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); }
-        catch (Throwable) { $message .= ' Wings could not confirm offline state; stop the server manually first.'; }
-        $operation->update(['error' => $message]);
-        $server->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
-        app(OperationTracker::class)->transition($operation, 'manual_intervention');
-        app(DiscordNotifier::class)->criticalRecovery($server, $message, $operation->id);
+        try {
+            $operation->refresh();
+            if ($operation->completed_at || ($failureLease !== null &&
+                (ManagedServer::lightweight()->findOrFail($this->managedServerId)->active_operation_id !== $operation->id ||
+                    in_array($operation->phase, ['recovery_queued', 'checking_recovery', 'recovery_starting'], true)))) { return; }
+            if (in_array($operation->phase, ['queued', 'verifying'], true)) {
+                $message = 'Queue worker failed before deployment began. No Minecraft files were changed; compare and approve again.';
+                $operation->update(['error' => $message]);
+                ManagedServer::whereKey($this->managedServerId)->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
+                app(OperationTracker::class)->transition($operation, 'cancelled');
+                return;
+            }
+            $server = ManagedServer::lightweight()->findOrFail($this->managedServerId);
+            $message = 'Worker interrupted. Do not replay the deployment. Inspect the locked backup and retained deployment journal before recovery.';
+            $operation->update(['context' => [...$operation->context, 'interrupted_phase' => $operation->phase], 'phase' => 'restoring']);
+            try { app(PelicanPowerController::class)->guardAndStop($server->pelicanServer); }
+            catch (Throwable) { $message .= ' Wings could not confirm offline state; stop the server manually first.'; }
+            $operation->update(['error' => $message]);
+            $server->update(['last_error' => $message, 'last_preview_at' => null, 'approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null]);
+            app(OperationTracker::class)->transition($operation, 'manual_intervention');
+            app(DiscordNotifier::class)->criticalRecovery($server, $message, $operation->id);
+        } finally { $failureLease?->release(); }
     }
 
 }

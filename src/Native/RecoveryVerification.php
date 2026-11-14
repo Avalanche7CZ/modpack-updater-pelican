@@ -46,6 +46,9 @@ final class RecoveryVerification
             if ($power->state($server) !== 'exited' || $server->status !== null || $server->backups()->whereNull('completed_at')->exists()) {
                 throw new RuntimeException('Confirm Wings offline state and completed backup/restore callbacks before native recovery.');
             }
+            if ($operation->context['native_archive_pending'] ?? false) {
+                throw new RuntimeException('Archive outcome is unknown. Confirm Wings archive work has ended and record operator clearance before recovery; no restore or stage deletion is allowed.');
+            }
             $original = $operation->context['runtime_original'] ?? null;
             $runtime = $operation->context['native_original_runtime'] ?? null;
             $critical = $operation->context['native_restore_receipt'] ?? $operation->context['native_before'] ?? null;

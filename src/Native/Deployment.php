@@ -28,15 +28,19 @@ final class Deployment
     public function run(DeployManagedServer $job): void
     {
         $jobStarted = microtime(true); $metrics = new DeploymentMetrics; $metrics->phase('verifying');
-        $receipt = null; $files = null;
+        $receipt = null; $files = null; $prepared = null;
         $lock = Cache::lock('arcturus-modpack-manager-deploy-'.$job->managedServerId, 14400);
         if (! $lock->get()) { return; }
         $operation = null; $execution = null; $stopped = false; $changed = false; $committed = false;
         $backup = null; $backupComplete = false; $before = []; $original = []; $expected = [];
         $power = app(PelicanPowerController::class); $backups = app(PelicanBackupManager::class);
-        $heartbeat = function (bool $force = false) use (&$receipt): void { $receipt?->heartbeat($force); };
+        $heartbeat = function (bool $force = false) use (&$receipt, $lock): void {
+            if (! $lock->isOwnedByCurrentProcess()) { throw new RuntimeException('Native deployment lease lost; stop mutations and retain recovery evidence.'); }
+            $receipt?->heartbeat($force);
+        };
         $checkpoint = function (array $row) use (&$operation, &$receipt): void {
             $receipt->save(fn (array $context) => ['context' => [...$context, ...(array_key_exists('link_stash', $row) ? ['native_link_stash' => $row['link_stash']] : []), 'native_checkpoint' => $row,
+                ...(array_key_exists('archive_pending', $row) ? ['native_archive_pending' => $row['archive_pending']] : []),
                 ...(isset($row['restore_confirmation']) ? ['native_restore_confirmation' => [...$row['restore_confirmation'], 'execution_id' => $context['native_execution_id'] ?? null]] : []),
                 ...(isset($row['boot_attempt']) ? ['native_boot_attempts' => [...($context['native_boot_attempts'] ?? []), $row['boot_attempt']['id'] => [...$row['boot_attempt'], 'execution_id' => $context['native_execution_id'] ?? null, 'restore_callback_id' => $context['native_restore_confirmation']['callback_id'] ?? null]]] : []),
                 'native_checkpoint_sequence' => (int) ($context['native_checkpoint_sequence'] ?? 0) + 1]]);
@@ -64,6 +68,7 @@ final class Deployment
                 $row->update(['phase' => 'verifying', 'heartbeat_at' => now(), 'context' => [...$row->context, 'native_execution_id' => bin2hex(random_bytes(16))]]); return $row;
             });
             if (! $operation) { return; }
+            $metrics->record('queue-wait', max(0, $jobStarted - $operation->created_at->getTimestamp()));
             $execution = $operation->context['native_execution_id'];
             $receipt = new DeploymentReceipt($operation, $execution, $metrics);
             if ($job->automatic) { app(ScheduledMaintenance::class)->requireEnabled($managed); }
@@ -94,10 +99,19 @@ final class Deployment
             $scope = Transaction::scope($preview['changes']);
             $before = $scope['before']; $after = $scope['after']; $moves = $scope['moves'];
             $excluded = BackupExclusions::normalize($managed->backup_excluded_directories ?? BackupExclusions::DEFAULT_FOLDERS);
+            // Purely local preparation belongs before Stop; remote staging remains after the locked backup.
+            $bulk = (bool) config('arcturus-modpack-manager.native_bulk_staging', true) && count(array_filter($after, fn ($h) => $h !== null)) >= 16;
+            $verification = (string) config('arcturus-modpack-manager.native_bulk_verification', 'parallel');
+            if (! in_array($verification, ['parallel', 'archive'], true)) { throw new RuntimeException('Invalid native bulk verification strategy.'); }
+            if ($bulk) {
+                $phase('verifying', 'Preparing verified local Wings staging bundles before stopping Minecraft');
+                $metrics->phase('preparing_bundles');
+                $prepared = $metrics->measure('bundle-prepare', fn () => new PreparedStaging($stage, $after, $moves, $heartbeat));
+            }
             $phase('stopping', 'Stopping Minecraft and confirming the native Wings maintenance guard', ['native_before' => $before, 'native_after' => $after, 'native_disabled_mod_moves' => $moves,
                 'native_world_properties_sha256' => $preview['qualification']['properties_sha256'], 'runtime_original' => $original, 'runtime_expected' => $expected, 'native_original_runtime' => $preview['qualification']['current'],
                 'native_retained_launcher' => $retainedLauncher, 'excluded_directories' => $excluded]);
-            $stopped = true;
+            $metrics->mark('stop_requested'); $stopped = true;
             $power->guardAndStop($server, $heartbeat); $metrics->mark('offline_confirmed');
             $verify($before, 'verifying_before_backup', 'Verifying files before backup');
             CrucibleRuntime::verify($files, $retainedLauncher);
@@ -114,16 +128,22 @@ final class Deployment
             $verify($critical, 'verifying_after_backup', 'Verifying files after backup');
             CrucibleRuntime::verify($files, $retainedLauncher);
             app(Runtime::class)->requireSnapshot($server, $original);
-            // Admission includes maximum unit time, target boot, and the existing recovery path.
-            $bootReserve = max(1, (int) config('arcturus-modpack-manager.deployment_start_timeout', 900)) + max(1, (int) config('arcturus-modpack-manager.deployment_start_ack_timeout', 60)) + 120;
-            $recoveryReserve = max(1, (int) config('arcturus-modpack-manager.deployment_restore_timeout', 3600)) + $bootReserve + 600
-                + max(600, (int) config('arcturus-modpack-manager.native_recovery_verification_reserve', 600));
-            $deadline = $jobStarted + $job->timeout - $bootReserve - $recoveryReserve;
-            $budget = new ApplyBudget($deadline, max(1, min(600, (int) config('arcturus-modpack-manager.native_apply_unit_seconds', 120))));
+            // Performance is measured, not enforced by subtracting boot/restore reserves.
+            // Each request keeps its own deadline. The existing queue worker deadline and
+            // independently queued recovery remain separate, with no replay of an uncertain intent.
+            $budget = ApplyBudget::requestsOnly();
             $files->budget($budget); $transaction = new Transaction($files, $budget);
-            $phase('applying', 'Transferring and verifying approved candidate files through Wings', ['backup_complete' => true, 'native_writes_started' => true, 'native_apply_budget' => ['job_seconds' => $job->timeout, 'prior_seconds' => microtime(true) - $jobStarted, 'apply_deadline' => $deadline, 'target_boot_reserve_seconds' => $bootReserve, 'recovery_reserve_seconds' => $recoveryReserve]]);
+            $phase('applying', 'Transferring and verifying approved candidate files through Wings', [
+                'backup_complete' => true, 'native_writes_started' => true,
+                'native_apply_budget' => ['mode' => 'per-request', 'worker_timeout_seconds' => $job->timeout,
+                    'prior_seconds' => microtime(true) - $jobStarted, 'performance_target_seconds' => DeploymentMetrics::PERFORMANCE_TARGET_SECONDS],
+                'native_transfer' => ['strategy' => $prepared !== null ? 'zip-bundles' : 'per-file',
+                    'verification' => $prepared !== null ? $verification : 'per-file-sha256',
+                    'bundles' => $prepared !== null ? count($prepared->bundles) : 0,
+                    'bundle_bytes' => $prepared !== null ? array_sum(array_column($prepared->bundles, 'size')) : 0],
+            ]);
             $changed = true;
-            $transaction->apply($operation->id, $stage, $before, $after, $preview['policy_context']['safety_roots'] ?? [], $checkpoint, $moves, app(\Arcturus\ModpackManager\Services\ApplyProgress::class)->reporter($operation, $metrics, $receipt));
+            $transaction->apply($operation->id, $stage, $before, $after, $preview['policy_context']['safety_roots'] ?? [], $checkpoint, $moves, app(\Arcturus\ModpackManager\Services\ApplyProgress::class)->reporter($operation, $metrics, $receipt), $prepared, $verification);
             $transaction->verify($runtime['dependency_hashes']);
             $budget->run(fn () => CrucibleRuntime::verify($files, $retainedLauncher));
             $budget->run(fn () => $heartbeat(true));
@@ -155,6 +175,8 @@ final class Deployment
             if ($files !== null) { $transaction = new Transaction($files); }
             report($error);
             if ($committed || ! $operation) { throw $error; }
+            // A lost cache lease must not let an old worker take over power or recovery.
+            if (! $lock->isOwnedByCurrentProcess()) { throw $error; }
             $owner = $operation->fresh();
             if ($owner->completed_at || ($owner->context['native_execution_id'] ?? null) !== $execution) { throw $error; }
             $restored = false; $recovery = '';
@@ -162,6 +184,9 @@ final class Deployment
                 try {
                     $phase('restoring', 'Keeping Minecraft stopped while verifying recovery prerequisites');
                     $power->guardAndStop($server, $heartbeat);
+                    if (($operation->fresh()->context['native_archive_pending'] ?? false) === true || $error instanceof ArchiveOutcomeUnknown) {
+                        throw new RuntimeException('Wings archive work may still be running. Keep maintenance, stage and locked backup; confirm daemon completion before operator recovery. Never replay this operation.');
+                    }
                     if ($changed && $backup && $backupComplete) {
                         // Wings restore clears suspension even on failure. Use an inert startup as a
                         // second barrier so a concurrent direct Wings start cannot launch Minecraft.
@@ -217,6 +242,7 @@ final class Deployment
                     }, 1);
                 } catch (Throwable $failure) { report($failure); }
             }
+            $prepared?->close();
             $lock->release();
         }
     }

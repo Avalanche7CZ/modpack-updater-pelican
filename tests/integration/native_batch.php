@@ -47,7 +47,7 @@ $install = function () use (&$counts, &$mode, &$reads, &$maxChunk, &$dirs, &$dat
             return Http::response($rows, 200, $headers);
         }
         $counts['contents']++; $reads++;
-        check(($options['stream'] ?? false) === true && ($options['allow_redirects'] ?? true) === false && ($options['read_timeout'] ?? 0) === 5, 'Unbounded or buffered contents request');
+        check((is_resource($options['sink'] ?? null) || (($options['stream'] ?? false) === true && ($options['read_timeout'] ?? 0) === 5)) && ($options['allow_redirects'] ?? true) === false, 'Unbounded or buffered contents request');
         $path = ltrim($q['file'], '/');
         if ($mode === 'failure' && $reads === 2) { return Http::response('', 500, $headers); }
         if ($mode === 'large') {
@@ -78,7 +78,7 @@ $new = $counts + ['seconds' => (hrtime(true) - $start) / 1e9];
 check($new['list'] <= 600 && $new['contents'] === count($data), 'Directory sharing exceeded the request budget or skipped file hashes');
 if ($old !== null) { check($new['list'] < $old['list'] / 10 && $new['contents'] === $old['contents'], 'Historical directory-sharing comparison failed'); }
 check(end($progress) === [2049, 2049], 'Proven absence not counted');
-echo json_encode(['paths' => count($expected), 'serial_before' => $old, 'batch_after' => $new, 'contents_concurrency' => 1], JSON_PRETTY_PRINT)."\n";
+echo json_encode(['paths' => count($expected), 'serial_before' => $old, 'batch_after' => $new, 'contents_concurrency_limit' => 8], JSON_PRETTY_PRINT)."\n";
 $sample = array_slice($expected, 0, 3, true);
 foreach (['missing_metadata', 'changed', 'leaf_changed', 'leaf_link', 'parent_link', 'parent_swap', 'truncated', 'failure', 'denied'] as $mode) {
     $install(); $reported = 0;
@@ -95,7 +95,7 @@ $mode = 'large'; $install();
 $dirs['config/nested/g0']['large.bin'] = $row('large.bin', false, 64 * 1048576);
 $ctx = hash_init('sha256'); for ($i = 0; $i < 64; $i++) { hash_update($ctx, str_repeat('x', 1048576)); }
 $largeHash = hash_final($ctx); gc_collect_cycles(); memory_reset_peak_usage(); $baseMemory = memory_get_usage(true);
-check($files->hashBatch(['config/nested/g0/large.bin'])['config/nested/g0/large.bin'] === $largeHash, 'Large file hash differs');
+check($files->hash('config/nested/g0/large.bin') === $largeHash, 'Large file hash differs');
 $growth = memory_get_peak_usage(true) - $baseMemory;
 check($maxChunk <= 1048576 && $growth < 16 * 1048576, 'Large content was buffered in memory');
 echo '64 MiB stream: peak growth '.$growth.' bytes; max requested read '.$maxChunk." bytes\n";

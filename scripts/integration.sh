@@ -23,6 +23,7 @@ PELICAN_SOURCE="$TEST_PANEL" php tests/integration/discord.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/discord_deployment.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_wings.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_batch.php
+PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_bulk.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/apply_batches.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/native_deployment.php
 PELICAN_SOURCE="$TEST_PANEL" php tests/integration/boot_race.php

@@ -9,7 +9,7 @@ use Arcturus\ModpackManager\Services\UpdatePlanner;
 use RuntimeException;
 
 /** Pelican rc.2 authenticated binary streams; no client token and no host-volume access. */
-final class Wings implements StagingUploads
+final class Wings implements BulkStaging
 {
     public const MAX_FILE_BYTES = 2147483648;
 
@@ -28,7 +28,10 @@ final class Wings implements StagingUploads
     private function mutation(string $endpoint, array $payload, string $method = 'post'): void
     {
         $this->heartbeat?->__invoke(true);
-        $this->measured($endpoint, fn () => $this->boundedClient(60)->{$method}('/api/servers/'.$this->server->uuid.'/files/'.$endpoint, $payload)->throw());
+        $this->measured($endpoint, function () use ($endpoint, $payload, $method): void {
+            $response = $this->boundedClient(60)->{$method}('/api/servers/'.$this->server->uuid.'/files/'.$endpoint, $payload)->throw();
+            if ($response->status() !== 204) { throw new RuntimeException('Wings mutation did not return its direct completed response; never replay it.'); }
+        });
     }
 
     // Share only the transport pool within this server operation. Every request still
@@ -82,6 +85,7 @@ final class Wings implements StagingUploads
                 $response = $this->measured('list-directory', fn () => $this->boundedClient(30)->get('/api/servers/'.$this->server->uuid.'/files/list-directory',
                     ['directory' => $directory === '' ? '/' : '/'.$directory])->throw());
                 if ($response->status() !== 200) { throw new RuntimeException('Wings directory listing requires a direct complete response.'); }
+                $this->metrics?->bytes('list-directory', $response->toPsrResponse()->getBody()->getSize() ?? 0);
                 $rows = $response->json();
                 break;
             } catch (\Illuminate\Http\Client\ConnectionException $e) {
@@ -200,10 +204,8 @@ final class Wings implements StagingUploads
     public function hashBatch(array $paths): array
     {
         if (count($paths) > 32 || ! array_is_list($paths)) { throw new RuntimeException('Native hash batch must contain at most 32 explicit paths.'); }
-        $before = $this->batchMetadata($paths); $hashes = [];
-        foreach ($paths as $path) {
-            $hashes[$path] = $before[0][$path] === null ? null : $this->streamHash($path, self::MAX_FILE_BYTES, 600, null, $before[0][$path]);
-        }
+        $before = $this->batchMetadata($paths);
+        $hashes = $this->parallelHashes($paths, $before[0]);
         if ($this->batchMetadata($paths) !== $before) { throw new RuntimeException('Native batch file or ancestor changed during verification.'); }
         return $hashes;
     }
@@ -212,13 +214,77 @@ final class Wings implements StagingUploads
     public function inventoryBatch(array $paths): array
     {
         if (count($paths) > 32 || ! array_is_list($paths)) { throw new RuntimeException('Invalid native inventory batch.'); }
-        $before = $this->batchMetadata($paths, true); $hashes = [];
-        foreach ($paths as $path) {
-            if (isset($before[2][$path])) { continue; }
-            $hashes[$path] = $before[0][$path] === null ? null : $this->streamHash($path, self::MAX_FILE_BYTES, 600, null, $before[0][$path]);
-        }
+        $before = $this->batchMetadata($paths, true);
+        $hashes = $this->parallelHashes(array_values(array_diff($paths, array_keys($before[2]))), $before[0]);
         if ($this->batchMetadata($paths, true) !== $before) { throw new RuntimeException('Inventory file, missing path, symlink or ancestor changed during inspection.'); }
         return ['hashes' => $hashes, 'links' => $before[2]];
+    }
+
+    /** Async curl transfers use disk sinks: stream=true would select Guzzle's synchronous handler. */
+    private function parallelHashes(array $paths, array $metadata): array
+    {
+        $hashes = [];
+        $batches = []; $batch = []; $bytes = 0;
+        foreach ($paths as $path) {
+            $size = $metadata[$path]['size'] ?? 0;
+            if ($batch !== [] && (count($batch) >= 8 || $bytes + $size > 67108864)) { $batches[] = $batch; $batch = []; $bytes = 0; }
+            $batch[] = $path; $bytes += $size;
+        }
+        if ($batch !== []) { $batches[] = $batch; }
+        foreach ($batches as $batch) {
+            $free = disk_free_space(sys_get_temp_dir());
+            $needed = array_sum(array_map(fn ($path) => $metadata[$path]['size'] ?? 0, $batch));
+            if ($free === false || $free < $needed + 1048576) { throw new RuntimeException('Insufficient private disk for bounded Wings verification sinks.'); }
+            $sinks = []; $promises = [];
+            try {
+                foreach ($batch as $path) {
+                    if ($metadata[$path] === null) { $hashes[$path] = null; continue; }
+                    $sink = tmpfile();
+                    if ($sink === false) { throw new RuntimeException('Cannot allocate private verification disk sink.'); }
+                    $sinks[$path] = $sink; $limit = $metadata[$path]['size'];
+                    $this->heartbeat?->__invoke();
+                    $promises[$path] = $this->boundedClient(600)->withOptions([
+                        'sink' => $sink,
+                        'on_stats' => function (\GuzzleHttp\TransferStats $stats): void {
+                            $this->metrics?->record('contents-request', (float) $stats->getTransferTime(), (int) ($stats->getHandlerStats()['size_download'] ?? 0), ! $stats->hasResponse() || $stats->getResponse()->getStatusCode() !== 200);
+                        },
+                        'progress' => function ($total, $received) use ($limit): void {
+                            if ($received > $limit) { throw new RuntimeException('Wings verification exceeds approved metadata size.'); }
+                            $this->budget?->timeout(600); $this->heartbeat?->__invoke();
+                        },
+                    ])->async()->get('/api/servers/'.$this->server->uuid.'/files/contents', ['file' => '/'.$path]);
+                    // RC2 Laravel returns lazy promises: build ALL before waiting on any.
+                    if (method_exists($promises[$path], 'buildPromise')) { $promises[$path] = $promises[$path]->buildPromise(); }
+                }
+                // Settle every launched read before releasing resources, even if another read failed.
+                $results = \GuzzleHttp\Promise\Utils::settle($promises)->wait();
+                foreach ($results as $path => $result) {
+                    $this->measured('hash-read', function () use ($result, $path, $metadata, &$hashes): void {
+                        if ($result['state'] !== 'fulfilled') { throw $result['reason']; }
+                        $response = $result['value'];
+                        if ($response instanceof \Throwable) { throw $response; }
+                        if ($response->status() !== 200) { throw new RuntimeException('Wings parallel read requires a direct complete response.'); }
+                        $stream = $response->toPsrResponse()->getBody(); $hash = hash_init('sha256'); $bytes = 0;
+                        try {
+                            if ($stream->isSeekable()) { $stream->rewind(); }
+                            while (! $stream->eof()) {
+                                $chunk = $stream->read(1048576); $bytes += strlen($chunk);
+                                $this->metrics?->bytes('hash-read', strlen($chunk));
+                                if ($bytes > $metadata[$path]['size'] || ($chunk === '' && ! $stream->eof())) { throw new RuntimeException('Invalid Wings verification stream.'); }
+                                hash_update($hash, $chunk); $this->heartbeat?->__invoke(); $this->budget?->timeout(600);
+                            }
+                        } finally { $stream->close(); }
+                        if ($bytes !== $metadata[$path]['size']) { throw new RuntimeException('Truncated parallel Wings read.'); }
+                        $hashes[$path] = hash_final($hash);
+                    });
+                }
+            } finally {
+                // Requests may have been scheduled before a local allocation/ownership failure.
+                if ($promises !== []) { \GuzzleHttp\Promise\Utils::settle($promises)->wait(); }
+                foreach ($sinks as $sink) { if (is_resource($sink)) { fclose($sink); } }
+            }
+        }
+        return array_replace(array_fill_keys($paths, null), $hashes);
     }
 
     private function batchMetadata(array $paths, bool $protectLinks = false): array
@@ -322,9 +388,10 @@ final class Wings implements StagingUploads
                 if (microtime(true) - $lastPulse >= 10) { $this->heartbeat?->__invoke(); $lastPulse = microtime(true); }
             };
             try {
-                $this->boundedClient(600)->withOptions(['progress' => $progress])->withQueryParameters(['file' => '/'.$path])
+                $response = $this->boundedClient(600)->withOptions(['progress' => $progress])->withQueryParameters(['file' => '/'.$path])
                     ->withHeaders(['Content-Length' => (string) filesize($localFile)])
                     ->withBody($stream, 'application/octet-stream')->post('/api/servers/'.$this->server->uuid.'/files/write')->throw();
+                if ($response->status() !== 204) { throw new RuntimeException('Wings upload outcome is not confirmed; never replay it.'); }
                 $sent = max($sent, filesize($localFile));
             } finally {
                 $this->metrics?->bytes('upload', $sent);
@@ -363,6 +430,65 @@ final class Wings implements StagingUploads
         if ($this->batchMetadata($paths) !== $written) { throw new RuntimeException('Staging batch changed during hash verification; do not replay.'); }
     }
 
+    /** Called only after exact locked backup and maintenance, with a durable bundle intent. */
+    public function uploadBundle(string $directory, array $bundle, string $verification): void
+    {
+        if (! preg_match('/^\.arcturus-update-[a-f0-9-]{32,36}\/new\/b[0-9]+$/D', $directory) ||
+            ! in_array($verification, ['parallel', 'archive'], true) || count($bundle['members']) > PreparedStaging::FILES) {
+            throw new RuntimeException('Invalid bulk staging request.');
+        }
+        $expected = [];
+        foreach ($bundle['members'] as $name => $row) {
+            if (! preg_match('/^(0|[1-9][0-9]*)$/D', (string) $name)) { throw new RuntimeException('Invalid numeric staging member.'); }
+            $expected[$directory.'/'.$name] = $row['sha256'];
+        }
+        if ($expected === []) { throw new RuntimeException('Empty staging bundle.'); }
+        $archive = $directory.'/bundle-'.array_key_first($bundle['members']).'.zip';
+        $before = $this->batchMetadata([...array_keys($expected), $archive]);
+        foreach ($before[0] as $meta) { if ($meta !== null) { throw new RuntimeException('Bulk staging destination exists; never replay.'); } }
+        foreach ([dirname($directory), $directory] as $ancestor) {
+            if (! isset($before[1][$ancestor])) { throw new RuntimeException('Bulk staging directory is missing.'); }
+        }
+        // Verify private bytes again before submitting the one non-retried write.
+        if (hash_file('sha256', $bundle['local']) !== $bundle['sha256']) { throw new RuntimeException('Private bundle drift.'); }
+        $this->writeUpload($bundle['local'], $archive);
+        if ($this->hash($archive) !== $bundle['sha256']) { throw new RuntimeException('Remote staging archive SHA-256 differs; refuse extraction.'); }
+        try {
+            $this->mutation('decompress', ['root' => '/'.$directory, 'file' => basename($archive)]);
+        } catch (\Throwable $e) {
+            throw new ArchiveOutcomeUnknown('Wings decompression outcome unknown; retain maintenance and stage until daemon work is confirmed finished.', 0, $e);
+        }
+        $this->delete($archive);
+        if ($verification === 'archive') { $this->verifyCompressed($directory, $bundle['members']); }
+        else {
+            foreach (array_chunk($expected, 32, true) as $batch) {
+                if ($this->hashBatch(array_keys($batch)) !== $batch) { throw new RuntimeException('Extracted Wings member SHA-256 differs.'); }
+            }
+        }
+        // Exact set across ALL completed bundles is checked by the transaction before live mutation.
+    }
+
+    private function verifyCompressed(string $directory, array $members): void
+    {
+        $name = 'readback-'.array_key_first($members);
+        $this->heartbeat?->__invoke(true);
+        try {
+            $response = $this->measured('compress', fn () => $this->boundedClient(60)->post('/api/servers/'.$this->server->uuid.'/files/compress',
+                ['root' => '/'.$directory, 'files' => array_map('strval', array_keys($members)), 'name' => $name, 'extension' => 'zip'])->throw());
+        } catch (\Throwable $e) { throw new ArchiveOutcomeUnknown('Wings compression outcome unknown; retain stage and maintenance.', 0, $e); }
+        $row = $response->json();
+        if ($response->status() !== 200 || ($row['name'] ?? null) !== $name.'.zip') { throw new ArchiveOutcomeUnknown('Unexpected Wings archive identity; retain stage and maintenance.'); }
+        $path = $directory.'/'.$row['name']; $sink = tmpfile();
+        if ($sink === false) { throw new RuntimeException('Cannot allocate private readback disk.'); }
+        try {
+            $max = array_sum(array_column($members, 'size')) + count($members) * 4096 + 1048576;
+            if ($this->streamHash($path, $max, 600, $sink) === null) { throw new RuntimeException('Wings readback is missing.'); }
+            fflush($sink);
+            PreparedStaging::verifyArchive(stream_get_meta_data($sink)['uri'], $members, $this->heartbeat);
+        } finally { fclose($sink); }
+        $this->delete($path);
+    }
+
     public function permissions(string $path, ?int $mode = null): ?int
     {
         $meta = $this->regular($path);
@@ -377,7 +503,7 @@ final class Wings implements StagingUploads
 
     public function permissionsBatch(array $paths): array
     {
-        if (count($paths) > 32 || ! array_is_list($paths)) { throw new RuntimeException('Invalid permission batch.'); }
+        if (count($paths) > 64 || ! array_is_list($paths)) { throw new RuntimeException('Invalid permission batch.'); }
         $before = $this->batchMetadata($paths); $modes = [];
         foreach ($before[0] as $path => $meta) {
             if ($meta === null || ! is_string($meta['mode_bits'] ?? null) || ! preg_match('/^[0-7]{1,3}$/D', $meta['mode_bits'])) { throw new RuntimeException('Missing regular file permissions.'); }
@@ -402,7 +528,7 @@ final class Wings implements StagingUploads
 
     public function renameBatch(array $moves): void
     {
-        if (count($moves) > 16) { throw new RuntimeException('Native rename batch exceeds 16 independent moves.'); }
+        if (count($moves) > 64) { throw new RuntimeException('Native rename batch exceeds 64 independent moves.'); }
         $paths = [...array_keys($moves), ...array_values($moves)];
         if (count(array_unique($paths)) !== count($paths)) { throw new RuntimeException('Dependent or overlapping rename batch.'); }
         foreach ($paths as $path) {

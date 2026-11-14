@@ -185,6 +185,8 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
         }
         if ($mode === 'interrupted') {
             $mode = 'success'; $managed = ManagedServer::where('pelican_server_uuid', $uuid)->firstOrFail();
+            // Model a dead worker whose cache lease was lost, rather than a second callback taking over a live lease.
+            \Illuminate\Support\Facades\Cache::lock('arcturus-modpack-manager-deploy-'.$managed->id)->forceRelease();
             (new DeployManagedServer($managed->id, false, $managed->approved_plan_sha256, $managed->active_operation_id))->failed(null);
         }
         return Http::response([], 204, $headers);
@@ -495,9 +497,15 @@ try {
         $operation->refresh(); $managed->refresh();
         if ($scenario === 'success') {
             $measurements = $operation->context['native_metrics'];
-            check(isset($measurements['phases_seconds']['verifying_before_backup'], $measurements['phases_seconds']['backing_up'], $measurements['phases_seconds']['verifying_after_backup']), 'Backup verification and wait timings were combined');
+            check(isset($measurements['phases_seconds']['verifying_before_backup'], $measurements['phases_seconds']['backing_up'], $measurements['phases_seconds']['verifying_after_backup']), 'Backup verification and wait timings were combined: '.json_encode(['phase' => $operation->phase, 'error' => $operation->error, 'metrics' => $measurements]));
             check(is_numeric($measurements['offline_to_verified_boot_seconds'] ?? null) && $measurements['offline_to_verified_boot_seconds'] >= 0, 'Verified boot did not record its offline interval');
             check(($measurements['work']['upload']['bytes'] ?? 0) > 0 && ($measurements['work']['db-checkpoint']['calls'] ?? 0) > 0 && ($measurements['work']['list-directory']['calls'] ?? 0) > 0, 'Endpoint/byte/checkpoint measurements missing');
+        }
+        if ($operation->phase === 'restored' && ! array_key_exists('running_original_sync_pending', $operation->context)) {
+            $page = app(ViewManagedServer::class); $page->record = $managed;
+            $actions = (new ReflectionMethod($page, 'getHeaderActions'))->invoke($page);
+            $sync = array_values(array_filter($actions, fn ($action) => $action->getName() === 'syncRunningOriginal'))[0];
+            check(! $sync->isVisible(), 'Ordinary rollback without a sync-pending key exposed recovery sync or broke the page');
         }
         if ($crucible) {
             foreach (['Crucible-1.7.10-server.jar', 'java9args.txt', 'lwjgl3ify-forgePatches.jar'] as $path) {
@@ -815,7 +823,7 @@ try {
     $budgetFault = null;
     Operation::saved(function (Operation $row) use (&$budgetFault): void {
         if ($budgetFault !== null && ($row->context['native_checkpoint']['step'] ?? null) === $budgetFault) {
-            $budgetFault = null; \Arcturus\ModpackManager\Tests\FixtureClock::advance(10000);
+            $budgetFault = null; \Arcturus\ModpackManager\Tests\FixtureClock::advance(3721);
         }
     });
     foreach (['before_apply', 'upload_batch_verified', 'retire_batch_intent'] as $boundary) {
@@ -829,11 +837,13 @@ try {
         $timedJob = new DeployManagedServer($timed->id, false, $timedPlan['plan_sha256'], $timedOp->id);
         if ($boundary === 'before_apply') { $timedJob->timeout = 100; }
         $requestStart = count($requests); Auth::guard()->forgetUser();
-        rejects(fn () => app()->call([$timedJob, 'handle']), 'Applying budget unexpectedly completed: '.$boundary);
+        app()->call([$timedJob, 'handle']);
         $timedOp->refresh();
-        check($timedOp->phase === 'restored' && $systems[$timedUuid]['data']['config/options.cfg'] === 'old' && ! isset($systems[$timedUuid]['data']['config/added.cfg']), 'Soft budget bypassed existing verified recovery: '.$timedOp->error);
+        check($timedOp->phase === 'completed' && $systems[$timedUuid]['data']['config/options.cfg'] === 'new' && isset($systems[$timedUuid]['data']['config/added.cfg']), 'Healthy verified work was stopped by elapsed reserve time: '.$timedOp->error);
+        check(($timedOp->context['native_apply_budget']['mode'] ?? null) === 'per-request' && ! isset($timedOp->context['native_apply_budget']['apply_deadline']), 'Cumulative reserve deadline leaked into native deployment');
         $gameRenames = array_filter(array_slice($requests, $requestStart), fn ($r) => str_ends_with($r[1], '/files/rename') && array_filter($r[3], fn ($move) => str_starts_with($move['from'], 'config/') || str_starts_with($move['to'], 'config/')));
-        check($gameRenames === [], 'Exhausted/uncertain budget proceeded to live rename');
+        check($gameRenames !== [], 'Verified deployment never reached its approved renames');
+        check(! array_filter(array_slice($requests, $requestStart), fn ($r) => str_contains($r[1], '/restore')), 'Elapsed reserves triggered restore');
     }
     Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings);
     $mode = 'success'; Auth::guard()->setUser($adminUser); $fenced = $make(false); $fencedUuid = $fenced->pelican_server_uuid;
@@ -845,7 +855,7 @@ try {
     check($fencedOp->phase === 'applying' && $fencedOp->getRawOriginal('context') === $foreignReceiptCipher, 'Old worker overwrote the newer execution receipt');
     check(count(array_filter($fencedCalls, fn ($r) => str_ends_with($r[1], '/files/write'))) === 1 && ! array_filter($fencedCalls, fn ($r) => str_contains($r[1], '/restore') || str_ends_with($r[1], '/files/rename')), 'Old worker wrote another member or took over recovery');
     check($systems[$fencedUuid]['state'] === 'offline' && $systems[$fencedUuid]['data']['config/options.cfg'] === 'old', 'Ownership loss released guard or changed live game files');
-    echo "Backup failure blocked all writes; soft Applying limits recovered before staging, after staging and at a live intent without replay\n";
+    echo "Backup failure blocked all writes; verified checkpoints continued without cumulative boot/recovery reserve rollback\n";
 
     $mode = 'success'; Auth::guard()->forgetUser();
     // An old receipt truncated by MySQL TEXT can only be retired after an
@@ -900,6 +910,33 @@ try {
         $systems[$prewriteUuid]['data']['config/options.cfg'] === 'old',
         'Prewrite retirement removed evidence, changed files, started Minecraft, or retained the lock');
     echo "Guarded pre-backup retirement preserved damaged ciphertext, original files and offline state\n";
+
+    $leased = $make(false);
+    $leasedOp = app(\Arcturus\ModpackManager\Services\OperationTracker::class)->create($leased, 'deploy', ['protocol' => \Arcturus\ModpackManager\Native\Qualification::PROTOCOL]);
+    $leasedOp->update(['phase' => 'applying']);
+    $foreignLease = \Illuminate\Support\Facades\Cache::lock('arcturus-modpack-manager-deploy-'.$leased->id, 14400); check($foreignLease->get(), 'Cannot acquire fixture lease');
+    $requestStart = count($requests);
+    (new DeployManagedServer($leased->id, false, 'fixture', $leasedOp->id))->failed(null);
+    check(count($requests) === $requestStart && $leasedOp->fresh()->phase === 'applying', 'Old failure callback took over a held lease');
+    $foreignLease->release();
+
+    // Unknown context.Background archive jobs cannot be cleared by ordinary recovery or a bare CLI flag.
+    $uncertain = $make(false); $uncertainUuid = $uncertain->pelican_server_uuid;
+    $pending = app(\Arcturus\ModpackManager\Services\OperationTracker::class)->create($uncertain, 'deploy', [
+        'protocol' => \Arcturus\ModpackManager\Native\Qualification::PROTOCOL, 'native_execution_id' => 'fixture-execution',
+        'native_archive_pending' => true, 'native_checkpoint' => ['step' => 'bundle_intent', 'archive_pending' => true]]);
+    app(\Arcturus\ModpackManager\Services\OperationTracker::class)->transition($pending, 'manual_intervention');
+    $systems[$uncertainUuid]['state'] = 'offline'; $systems[$uncertainUuid]['configuration']['suspended'] = true;
+    $app->make(\Illuminate\Contracts\Console\Kernel::class)->registerCommand(new \Arcturus\ModpackManager\Console\Commands\ConfirmArchiveQuiesced);
+    $args = ['operation' => $pending->id]; $requestStart = count($requests); $cipher = $pending->fresh()->getRawOriginal('context');
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:confirm-archive-quiesced', $args) === 0, 'Archive read-only inspection failed');
+    $proof = hash('sha256', $pending->id."\n".$cipher);
+    check($pending->fresh()->getRawOriginal('context') === $cipher, 'Archive dry run modified evidence');
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:confirm-archive-quiesced', [...$args, '--apply' => true, '--confirm' => $proof]) !== 0, 'Archive uncertainty cleared without restart attestation');
+    check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:confirm-archive-quiesced', [...$args, '--apply' => true, '--daemon-restarted' => true, '--confirm' => $proof]) === 0, 'Exact archive clearance failed');
+    check($pending->fresh()->context['native_archive_pending'] === false && $pending->phase === 'manual_intervention', 'Archive clearance released operation maintenance');
+    check(! array_filter(array_slice($requests, $requestStart), fn ($r) => $r[0] !== 'GET'), 'Archive clearance mutated Wings');
+    echo "Unknown archive clearance: read-only default, restart attestation, exact receipt proof and retained maintenance passed\n";
 
     // Native Schedules bridge: real task handler, no-update restart, and prepared update.
     \App\Models\User::retrieved(function ($user): void {

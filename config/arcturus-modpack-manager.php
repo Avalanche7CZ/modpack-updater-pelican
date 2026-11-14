@@ -40,7 +40,11 @@ return [
     'download_concurrency' => 1,
     // Maximum cached Wings uptime age / wait for an advancing resource sample (1–60 seconds).
     'running_instance_sample_timeout' => 10,
-    // Applying admits complete units only when target boot and existing recovery still fit.
+    // Disable before starting an operation on a confirmed incompatible Wings; never fallback after a write.
+    'native_bulk_staging' => true,
+    'native_bulk_verification' => 'parallel', // 'archive' enables stock compress + ZIP readback.
+    // Legacy settings retained for existing configs; native deployment no longer subtracts
+    // these reserves or imposes a cumulative Applying deadline. HTTP/worker timeouts are independent.
     'native_apply_unit_seconds' => 120,
     'native_recovery_verification_reserve' => 600,
     // Legacy global flags do not enable scheduling; use explicit per-server maintenance settings.
