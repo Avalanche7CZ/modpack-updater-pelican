@@ -268,7 +268,16 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     }
     $observedState = $sys['state'];
     if ($observedState === 'offline' && $sys['starts'] === 1 && ($sys['polls_since_start'] ?? 0) === 0) { $sys['polls_since_start'] = 1; $observedState = 'starting'; }
-    $uptime = max(1, (microtime(true) - ($sys['boot_started'] ?? (microtime(true) - 60))) * 1000);
+    if (isset($sys['uptime_cache_ages'])) {
+        // Cached sample acquisition can predate the previous HTTP request, even if uptime grows.
+        \Arcturus\ModpackManager\Tests\FixtureClock::advance(2);
+        check($sys['uptime_cache_ages']!==[], 'Unexpected extra details request in cached sync fixture');
+        $age=array_shift($sys['uptime_cache_ages']);
+        $at=microtime(true); $uptime=($at-$sys['boot_started']-$age)*1000;
+        $sys['cached_samples'][]=['at'=>$at,'uptime'=>$uptime,'age'=>$age];
+    } else {
+        $uptime = max(1, (microtime(true) - ($sys['boot_started'] ?? (microtime(true) - 60))) * 1000);
+    }
     if (($sys['uptime_repeat'] ?? 0) > 0) { $uptime = $sys['sampled_uptime']; $sys['uptime_repeat']--; }
     $sys['sampled_uptime'] = $uptime;
     if (isset($sys['post_sync_samples'])) { $sys['post_sync_samples'][] = $uptime; }
@@ -663,8 +672,41 @@ try {
         // The source must survive a failed sync and retry without re-import, restart or latest.log headers.
         $resetOrphan(); $makeEvidence(); $verifier->run($orphanOp->id,false,1,false,$evidenceDir); $syncFail=true; $start=count($requests);
         rejects(fn()=>$verifier->run($orphanOp->id,true,1,false,$evidenceDir),'Failed Docker-proof sync unexpectedly succeeded');
-        $syncFail=false; $retry=$verifier->run($orphanOp->id,true,1,true);
-        check($retry['applied'] && !$orphanOp->fresh()->context['running_original_sync_pending'] && !$forbidden(array_slice($requests,$start)), 'Docker-proof sync retry required another log import or mutated the server');
+        $syncFail=false;
+        // Entire CLI retry, using a retained Docker start window of +/-2ms and variable cached ages.
+        $pending=$orphanOp->fresh()->context;
+        $dockerStart=\Arcturus\ModpackManager\Native\OperatorBootEvidence::timestamp($pending['running_original_verification']['startup_evidence']['started_at']);
+        $pending['running_original_verification']['instance']['min']=$dockerStart-0.002;
+        $pending['running_original_verification']['instance']['max']=$dockerStart+0.002;
+        $orphanOp->update(['context'=>$pending]);
+        \Arcturus\ModpackManager\Tests\FixtureClock::advance(12);
+        $systems[$ouuid]['uptime_cache_ages']=[6.0,6.2,5.8,6.1]; $systems[$ouuid]['cached_samples']=[];
+        $start=count($requests);
+        $syncArgs=['operation'=>$orphanOp->id,'--sync-only'=>true,'--apply'=>true,'--actor'=>1];
+        check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:verify-running-original',$syncArgs)===0, 'CLI sync-only apply rejected variable cached Wings samples');
+        $syncRows=array_filter(array_slice($requests,$start),fn($r)=>$r[0]==='POST' && str_ends_with($r[1],'/sync'));
+        check(count($syncRows)===1 && !$orphanOp->fresh()->context['running_original_sync_pending'] && !$systems[$ouuid]['configuration']['suspended'], 'Cached uptime retry skipped sync or failed to clear pending/suspension');
+        check(!$forbidden(array_slice($requests,$start)), 'Cached uptime retry powered/restored/wrote the server');
+        $verifiedInstance=$orphanOp->fresh()->context['running_original_sync_verified']['instance'];
+        check($verifiedInstance['min']===$dockerStart-0.002 && $verifiedInstance['max']===$dockerStart+0.002, 'Sync widened or excluded the retained Docker start window');
+        $samples=$systems[$ouuid]['cached_samples'];
+        check(count($samples)===4 && $systems[$ouuid]['uptime_cache_ages']===[], 'Full cached sequence was not exercised across sync');
+        foreach ($samples as $i=>$sample) {
+            $apparentStart=$sample['at']-$sample['uptime']/1000;
+            check(abs($apparentStart-$dockerStart-6)<0.3, 'Fixture did not model cache-age windows around -4 / +6 seconds');
+            if($i>0)check($sample['uptime']>$samples[$i-1]['uptime'], 'Cached fixture uptime was not increasing');
+        }
+        unset($systems[$ouuid]['uptime_cache_ages'],$systems[$ouuid]['cached_samples']);
+        // The same retained pending proof must refuse a genuinely restarted instance BEFORE sync.
+        $orphanOp->refresh(); $orphanOp->update(['context'=>$pending]); $systems[$ouuid]['configuration']['suspended']=true;
+        $savedBoot=$systems[$ouuid]['boot_started']; $systems[$ouuid]['boot_started']=microtime(true); $start=count($requests);
+        try {
+            check(\Illuminate\Support\Facades\Artisan::call('arcturus-modpack:verify-running-original',$syncArgs)!==0, 'CLI sync-only apply accepted a restarted instance');
+            check(str_contains(\Illuminate\Support\Facades\Artisan::output(),'uptime decreased'), 'Sync-only failure did not detect the actual restarted instance');
+            check(!array_filter(array_slice($requests,$start),fn($r)=>str_ends_with($r[1],'/sync')) && $orphanOp->fresh()->context['running_original_sync_pending'], 'Restart rejection sent sync or lost pending state');
+            check(!$forbidden(array_slice($requests,$start)), 'Restart rejection issued power/restore/file writes');
+        } finally { $systems[$ouuid]['boot_started']=$savedBoot; }
+        echo "CLI Docker sync-only: +/-2ms receipt, cached -4/+6s windows, actual sync and restart-before-sync rejection passed\n";
         // Same state transition, but using facts captured automatically by Boot during this exact attempt.
         $resetOrphan(); $ctx=$orphanOp->context; $bootId=$orphanOp->id.'-old'; $facts=new \Arcturus\ModpackManager\Native\StartupEvidence;
         foreach(explode("\n",$crucibleBootLog()) as $line) $facts->line($line);
@@ -674,7 +716,7 @@ try {
         check($verifier->run($orphanOp->id)['verified'] && $verifier->run($orphanOp->id,true,1)['applied'] && !$forbidden(array_slice($requests,$start)), 'Retained Wings boot evidence did not survive missing latest.log header');
         echo "GTNH headerless latest.log: audited operator dry run/apply, retained Wings proof and safe sync retry passed\n";
     } finally {
-        $syncFail=false; $systems[$ouuid]['data']['logs/latest.log']=$savedLog;
+        $syncFail=false; unset($systems[$ouuid]['uptime_cache_ages'],$systems[$ouuid]['cached_samples']); $systems[$ouuid]['data']['logs/latest.log']=$savedLog;
         unlink($evidenceDir.'/metadata.json'); unlink($evidenceDir.'/console.log'); rmdir($evidenceDir);
     }
     // Several HTTP requests return the same resource sample, including immediately after sync.

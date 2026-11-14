@@ -17,6 +17,16 @@ foreach ([101.25, 101.5, 102, 103] as $at) {
 $instance = RunningInstance::same($instance, $sample(104, 4000));
 check(RunningInstance::advanced($baseline, $instance), 'Real sampled jump was not recognized');
 check($instance['min'] <= 100 && $instance['max'] >= 100, 'Sampled jump lost the original instance');
+// No acquisition timestamp: growing cached samples may imply birth windows around -4 / +6 s.
+$dockerWindow=['min'=>99.998,'max'=>100.002];
+$cached=RunningInstance::same($dockerWindow,$sample(200,94000));
+foreach ([[202,95800],[204,98200],[206,99900]] as [$at,$uptime]) {
+    $cached=RunningInstance::same($cached,$sample($at,$uptime));
+    check($cached['min']===$dockerWindow['min'] && $cached['max']===$dockerWindow['max'], 'Growing cached uptime excluded or widened the verified Docker window');
+}
+rejects(fn()=>RunningInstance::same($cached,$sample(208,1000)), 'Restart accepted after cached-uptime observations');
+rejects(fn()=>RunningInstance::same($cached,$sample(250,130000)), 'Non-overlapping cache-age interval accepted with increasing uptime');
+
 // Persisted receipts may be supplied after a newer observation; chronology must be preserved.
 $reverse = RunningInstance::same($sample(105, 5000), $instance);
 check($reverse['uptime'] === 5000.0, 'Persisted receipt replaced a newer observation');

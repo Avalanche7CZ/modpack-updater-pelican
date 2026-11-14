@@ -47,9 +47,8 @@ final class RunningInstance
                 $latest['min'] = $old['min']; $latest['max'] = $old['max'];
                 $a = $old; $b = $latest;
             } else {
-                // The new sample was produced after the request which still returned the old sample.
-                // This observed transition tightens the birth window without assuming HTTP freshness.
-                $latest['min'] = max($new['min'], $old['before'] - $new['uptime'] / 1000 - 0.002);
+                // Increasing uptime does not date the cached sample. Intersect its age-bounded
+                // interval with the verified window without deriving a tighter acquisition bound.
                 $a = $old; $b = $latest;
             }
         }
