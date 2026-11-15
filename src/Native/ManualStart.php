@@ -450,15 +450,31 @@ final class ManualStart
         return $this->confirmRunningDeployment($id, $actor, $apply, $confirm, $apply, null, true);
     }
 
+    private function admittedRunningReview(Operation $op, ManagedServer $managed, int $actor, string $kind, ?string $proof, \Carbon\CarbonInterface $admittedAt): \Arcturus\ModpackManager\Models\UpdateEvent
+    {
+        $review = $managed->events()->where('kind', $kind)->where('status', 'reviewed')
+            ->where('details->operation_id', $op->id)->where('details->actor_id', $actor)->latest('id')->cursor()->first(function ($event) use ($actor, $proof): bool {
+                $digest = $event->details['digest'] ?? null;
+                return is_string($digest) && hash_equals(hash_hmac('sha256', $event->id.':'.$digest.':'.$actor, (string) config('app.key')), (string) $proof);
+            });
+        if (! $review) { throw new RuntimeException('Potvrzení neodpovídá schválenému přehledu této operace a administrátora. Zobrazte nový přehled.'); }
+        if ($review->created_at->lt($admittedAt->copy()->subMinutes(15))) { throw new RuntimeException('Potvrzení vypršelo před spuštěním kontroly. Zobrazte nový přehled a potvrďte jej znovu.'); }
+        return $review;
+    }
+
     /** Root attestation of a running target, intentionally independent of missing boot evidence. */
     public function confirmRunningDeployment(string $id, int $actor, bool $apply = false, ?string $confirm = null, bool $adminConfirmsRunning = false, ?string $version = null, bool $configurationSet = false): array
     {
         $this->actor($actor);
         if ($apply && ! $adminConfirmsRunning) { throw new RuntimeException('Explicit administrator confirmation of the running target is required (--admin-confirms-running). This is not automatic boot verification.'); }
         return $this->locked($id, $apply ? 'admin_running_apply' : 'admin_running_review', function ($op, $managed, $pulse) use ($actor, $apply, $confirm, $version, $configurationSet): array {
+            $admittedAt = now();
+            $reviewKind = $configurationSet ? 'running_config_set_review' : 'running_deploy_review';
+            $review = $apply ? $this->admittedRunningReview($op, $managed, $actor, $reviewKind, $confirm, $admittedAt) : null;
             $this->requireOwner($op, $managed); $backup = $this->backup($op, $managed);
             if (! self::canConfirmRunningDeployment($op)) { throw new RuntimeException('Only this active, file-verified Native manual deployment with released controls may be confirmed.'); }
             [$target, $targetSha] = $this->confirmationTarget($op, $managed, $version);
+            if ($apply && ($review->details['target_manifest_sha256'] ?? null) !== $targetSha) { throw new RuntimeException('Od přehledu se něco změnilo: cílový manifest. Zobrazte nový přehled.'); }
             $server = $managed->pelicanServer; $power = app(PelicanPowerController::class); $files = new Wings($server, app(DaemonFileRepository::class), $pulse);
             $sample = function () use ($server, $power): array { $at = microtime(true); $details = $power->details($server); return [$details, RunningInstance::sample($details, $at, microtime(true))]; };
             [$details, $instance] = $sample();
@@ -478,7 +494,7 @@ final class ManualStart
             if (! $fileReport['can_confirm'] || $runtimeError !== null) {
                 if ($apply) {
                     $problems = array_map(fn ($row) => $row['path'].' expected '.($row['expected_sha256'] ?? '[absent]').', observed '.($row['actual_sha256'] ?? '[absent]').($row['reason'] ? ' ('.$row['reason'].')' : ' (explicit config acceptance required)'), array_filter($fileReport['differences'], fn ($row) => $configurationSet ? $row['reason'] !== null : ! $row['accepted']));
-                    throw new RuntimeException('Deployment not closed. '.($runtimeError ?? '').' Unaccepted deployed differences: '.implode('; ', $problems));
+                    throw new RuntimeException('Od přehledu se něco změnilo; nasazení nebylo uzavřeno. '.($runtimeError ?? '').' Unaccepted deployed differences: '.implode('; ', $problems));
                 }
                 return ['operation_id' => $op->id, 'target_version' => $target['version'], 'target_manifest_sha256' => $targetSha, 'backup_uuid' => $backup->uuid,
                     'can_confirm' => false, 'differences' => $fileReport['differences'], 'runtime_error' => $runtimeError, 'message' => $configurationSet
@@ -497,7 +513,6 @@ final class ManualStart
                 if (! Runtime::configurationMatches($lastDetails['configuration'] ?? [], $snapshot) || app(SameHostDeployment::class)->panelSnapshot($server->refresh()) !== $snapshot) { throw new RuntimeException('Pelican/Wings settings changed before configuration-set confirmation.'); }
             }
             $digest = hash('sha256', json_encode([$op->id, $op->context['native_manual_start']['id'], $targetSha, $snapshot, $runtime, $scopeSha, $configurationSet, $configurationSet ? CheckpointIdentity::of($op) : null], JSON_THROW_ON_ERROR));
-            $reviewKind = $configurationSet ? 'running_config_set_review' : 'running_deploy_review';
             $identity = CheckpointIdentity::of($op); $this->actor($actor); $pulse();
             if (! $apply) {
                 $review = DB::transaction(function () use ($op, $managed, $actor, $instance, $digest, $targetSha, $identity, $version, $reviewKind, $fileReport) {
@@ -511,13 +526,10 @@ final class ManualStart
                     'startup_template' => $snapshot['startup'], 'image' => $snapshot['image'], 'runtime' => $runtime,
                     'target_manifest_sha256' => $targetSha, 'can_confirm' => true, 'differences' => $fileReport['differences'], 'startup_verified' => false, 'message' => 'Files and running instance inspected. Explicitly attest that you connected and confirmed this target version; boot evidence remains unverified.'];
             }
-            $review = $managed->events()->where('kind', $reviewKind)->where('status', 'reviewed')->where('created_at', '>=', now()->subMinutes(15))->latest('id')->get()->first(function ($event) use ($op, $actor, $digest, $confirm): bool {
-                return ($event->details['operation_id'] ?? null) === $op->id && ($event->details['actor_id'] ?? null) === $actor && ($event->details['digest'] ?? null) === $digest
-                    && hash_equals(hash_hmac('sha256', $event->id.':'.$digest.':'.$actor, (string) config('app.key')), (string) $confirm);
-            });
-            if (! $review) { throw new RuntimeException('No matching recent administrator review. Inspect again; file, launcher, manifest or proof may have changed.'); }
-            $instance = RunningInstance::same($review->details['instance'], $instance);
-            DB::transaction(function () use ($op, $managed, $actor, $instance, $runtime, $snapshot, $scopeSha, $target, $targetSha, $backup, $review, $identity, $version, $fileReport, $configurationSet): void {
+            if (! hash_equals((string) ($review->details['digest'] ?? ''), $digest)) { throw new RuntimeException('Od přehledu se něco změnilo: hashe souborů, launcher, nastavení, manifest nebo checkpoint. Zobrazte nový přehled.'); }
+            try { $instance = RunningInstance::same($review->details['instance'], $instance); }
+            catch (RuntimeException $error) { throw new RuntimeException('Od přehledu se něco změnilo: běžící instance. '.$error->getMessage(), 0, $error); }
+            DB::transaction(function () use ($op, $managed, $actor, $instance, $runtime, $snapshot, $scopeSha, $target, $targetSha, $backup, $review, $identity, $version, $fileReport, $configurationSet, $admittedAt): void {
                 $fresh = Operation::lockForUpdate()->findOrFail($op->id); $owner = ManagedServer::lockForUpdate()->findOrFail($managed->id);
                 if ($owner->active_operation_id !== $op->id || CheckpointIdentity::of($fresh) !== $identity || $this->confirmationTarget($fresh, $owner, $version)[1] !== $targetSha) { throw new CheckpointChanged('Exact active deployment or target manifest changed before confirmation.'); }
                 if ($configurationSet) {
@@ -531,7 +543,7 @@ final class ManualStart
                         'message' => 'Root admin accepted the exact current configuration list and confirmed the running deployment',
                         'details' => ['operation_id' => $op->id, 'actor_id' => $actor, 'target_manifest_sha256' => $targetSha, 'accepted_local_configs' => $fileReport['accepted'], 'review_event_id' => $review->id]]);
                 }
-                $audit = ['actor_id' => $actor, 'confirmed_at' => microtime(true), 'review_event_id' => $review->id, 'operation_id' => $op->id,
+                $audit = ['actor_id' => $actor, 'confirmed_at' => microtime(true), 'confirmation_admitted_at' => $admittedAt->toIso8601String(), 'review_event_id' => $review->id, 'operation_id' => $op->id,
                     'target_manifest_sha256' => $targetSha, 'backup_uuid' => $backup->uuid, 'instance' => $instance, 'snapshot' => $snapshot,
                     'configured_runtime' => $runtime, 'deployed_scope_sha256' => $scopeSha, 'accepted_local_configs' => $fileReport['accepted'], 'attestation' => 'Administrator connected and confirmed the running target; automatic boot evidence is unavailable'];
                 $fresh->update(['context' => [...$fresh->context, 'native_admin_running_confirmation' => $audit], 'error' => null,

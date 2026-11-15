@@ -68,7 +68,7 @@ sudo -u www-data php /var/www/pelican/artisan arcturus-modpack:manual-start "$OP
   --apply --admin-confirms-running --confirm=PROOF_Z_REVIEW
 ```
 
-Apply získá existující deploy/recovery lease, zopakuje kontroly a požaduje vlastní platné review stejného admina i stejnou běžící instanci. Při změně souboru, proměnné, launcheru, manifestu nebo operace odmítne starý proof. Baseline/verze a uzavření se provedou ve stávající DB transakci. Audit ukládá aktuální konfiguraci/launcher, root aktéra, running instance a manifest digest; `startup_verified=false`, `running_confirmed_by_admin=true`. Normální **Verify running server** nadále vyžaduje skutečný čerstvý boot a automatické Schedules tuto admin akci nepoužívají.
+Apply získá existující deploy/recovery lease a ještě před prvním čtením z Wings vybere přesné review podle proof, operace a admina. Jeho stáří ověří jednou při zahájení apply. Včas přijaté ANO neztratí platnost jen proto, že následná kontrola překročí 15 minut. Po kontrole musí nové hashe, launcher, manifest, nastavení a běžící instance odpovídat tomu samému přehledu; nepoužije se jiný novější přehled. Chyby rozlišují „Potvrzení vypršelo před spuštěním kontroly“ a „Od přehledu se něco změnilo“. Při změně souboru, proměnné, launcheru, manifestu nebo operace odmítne starý proof. Baseline/verze a uzavření se provedou ve stávající DB transakci. Audit ukládá aktuální konfiguraci/launcher, root aktéra, running instance a manifest digest; `startup_verified=false`, `running_confirmed_by_admin=true`. Normální **Verify running server** nadále vyžaduje skutečný čerstvý boot a automatické Schedules tuto admin akci nepoužívají.
 
 ## SERVER_JARFILE a upstream kontrakt
 

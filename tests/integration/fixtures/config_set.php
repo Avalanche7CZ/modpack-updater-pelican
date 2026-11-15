@@ -35,6 +35,17 @@ $operation->update(['context' => $ctx]); unset($systems[$uuid]['data']['other/se
 $review = $service->acceptCurrentConfiguration($operation->id, 1);
 check($review['can_confirm'] && count($review['differences']) === 6, 'Bulk config set was not confirmable without per-file diffs');
 check(empty($operation->fresh()->context['native_admin_config_acceptances']), 'Read-only list accepted configs');
+$reviewEvent = $managed->events()->where('kind', 'running_config_set_review')->latest('id')->firstOrFail();
+$reviewCreated = $reviewEvent->created_at->copy(); $beforeExpired = count($requests);
+$reviewEvent->update(['created_at' => now()->subMinutes(16)]);
+try { $service->acceptCurrentConfiguration($operation->id, 1, true, $review['proof']); throw new LogicException('Expired proof accepted'); }
+catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'Potvrzení vypršelo před spuštěním'), 'Expired admission reported content drift instead'); }
+check(count($requests) === $beforeExpired, 'Expired proof read Wings before admission');
+$reviewEvent->update(['created_at' => $reviewCreated]);
+try { $service->acceptCurrentConfiguration($operation->id, 1, true, 'wrong proof'); throw new LogicException('Unknown proof accepted'); }
+catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'neodpovídá schválenému přehledu'), 'Unknown proof reported expiry instead'); }
+check(count($requests) === $beforeExpired, 'Unknown proof read Wings before admission');
+
 // Only the two exact recipe paths are eligible, and only in bulk mode.
 foreach ($recipePaths as $path) {
     $sha = hash('sha256', $systems[$uuid]['data'][$path]);
@@ -59,7 +70,8 @@ foreach ($recipePaths as $path) {
 }
 // Hash drift, a changed set, operation/manifest identity and a new process all invalidate the exact list.
 $systems[$uuid]['data']['config/Botania.cfg'] .= '# changed again';
-rejects(fn () => $service->acceptCurrentConfiguration($operation->id, 1, true, $review['proof']), 'Old config hash accepted');
+try { $service->acceptCurrentConfiguration($operation->id, 1, true, $review['proof']); throw new LogicException('Old config hash accepted'); }
+catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'Od přehledu se něco změnilo'), 'Hash drift incorrectly reported expired approval'); }
 $systems[$uuid]['data']['config/Botania.cfg'] = $local;
 $systems[$uuid]['data']['config/Another.cfg'] = $configTargets['config/Another.cfg'];
 rejects(fn () => $service->acceptCurrentConfiguration($operation->id, 1, true, $review['proof']), 'Changed list accepted');
@@ -83,9 +95,14 @@ foreach ([...$recipePaths, 'config/Botania.cfg', 'config/Another.cfg', 'server.p
 $systems[$uuid]['data']['server.properties'] .= '# stale UI';
 $component->call('acceptCurrentConfiguration');
 check($operation->fresh()->phase === ManualStart::PHASE, 'UI accepted an undisplayed properties hash');
-$component->call('reviewCurrentConfiguration', $operation->id)->call('acceptCurrentConfiguration');
+$component->call('reviewCurrentConfiguration', $operation->id);
+$slowReview = $managed->events()->where('kind', 'running_config_set_review')->latest('id')->firstOrFail();
+$slowReview->update(['created_at' => now()->subMinutes(14)]);
+$systems[$uuid]['during_file_read'] = static function (): void { \Arcturus\ModpackManager\Tests\FixtureClock::advance(120); };
+$component->call('acceptCurrentConfiguration');
 $operation->refresh(); $managed->refresh();
 check($operation->phase === 'completed' && $managed->installed_version === '2.9.0' && $managed->active_operation_id === null, 'One configuration-set confirmation did not complete 2.9.0');
+check(now()->diffInSeconds($slowReview->created_at, true) > 900 && $operation->context['native_admin_running_confirmation']['review_event_id'] === $slowReview->id, 'Slow apply did not retain the review admitted before expiry');
 $accepted = $operation->context['native_admin_running_confirmation']['accepted_local_configs'];
 check(count($accepted) === 6 && $accepted['server.properties']['actual_sha256'] === hash('sha256', $systems[$uuid]['data']['server.properties']), 'Accepted config receipt omitted exact root properties');
 foreach ($recipePaths as $path) { check($accepted[$path]['actual_sha256'] === hash('sha256', $systems[$uuid]['data'][$path]) && $accepted[$path]['expected_sha256'] === $originalAfter[$path], 'Final recipe receipt did not retain exact hashes'); }
@@ -96,4 +113,4 @@ check($operation->context['native_after'] === $originalAfter && $managed->base_m
 check($systems[$uuid]['data']['config/Botania.cfg'] === $local && $operation->context['startup_verified'] === false && Backup::where('uuid', $operation->context['backup_uuid'])->firstOrFail()->is_locked, 'Config content, boot attestation or locked backup changed');
 check($managed->events()->where('kind', 'deployment_config_set_acceptance')->count() === 1 && $managed->events()->where('kind', 'deployment_config_review')->count() === 0, 'Bulk action required individual diffs or omitted audit');
 check(! array_filter(array_slice($requests, $beforeConfirmation), fn ($r) => $r[0] !== 'GET'), 'Bulk confirmation wrote files/power/restore/sync');
-echo "Configuration set: exact OpenComputers recipes (bulk only, UTF-8, manifest and stale hash checks), one root confirmation, exact config and root properties list, strict paths, stale hashes/list/identity/instance refusal, atomic completion and immutable upstream baseline without power/restore passed\n";
+echo "Configuration set: early expiry refusal without Wings reads, timely YES survives slow verification with the same review, exact OpenComputers recipes (bulk only, UTF-8, manifest and stale hash checks), one root confirmation, exact config and root properties list, strict paths, stale hashes/list/identity/instance refusal, atomic completion and immutable upstream baseline without power/restore passed\n";

@@ -110,10 +110,14 @@ foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as
         check(str_contains($component->html(), 'Potvrdit běžící nasazení'), 'Confirmation action not in the waiting deployment card');
         $component->call('confirmRunningDeployment', $operation->id);
     } else {
+        $slowReview = $managed->events()->where('kind', 'running_deploy_review')->latest('id')->firstOrFail();
+        $slowReview->update(['created_at' => now()->subMinutes(14)]);
+        $systems[$uuid]['during_file_read'] = static function (): void { \Arcturus\ModpackManager\Tests\FixtureClock::advance(120); };
         $args = ['operation' => $operation->id, '--action' => 'confirm-running', '--actor' => 1, '--managed-server' => $managed->id, '--backup' => $operation->context['backup_uuid'], '--target-version' => '2.9.0', '--apply' => true, '--admin-confirms-running' => true, '--confirm' => $review['proof']];
         check(Artisan::call('arcturus-modpack:manual-start', $args) === 0, 'CLI running confirmation failed: '.Artisan::output());
     }
     $operation->refresh(); $managed->refresh();
+    if (! $placeholder) { check(now()->diffInSeconds($slowReview->created_at, true) > 900 && $operation->context['native_admin_running_confirmation']['review_event_id'] === $slowReview->id, 'Normal confirmation expired after timely admission during slow verification'); }
     check($operation->phase === 'completed' && $managed->active_operation_id === null && $managed->installed_version === '2.9.0', 'Administrator confirmation failed to close only the active target deploy');
     check($managed->base_manifest_path === $targetPath && file_get_contents($targetPath) === $targetBytes && $store->load($managed->base_manifest_path)['files']['config/railcraft.cfg'] === hash('sha256', 'upstream railcraft'), 'Local configuration/launcher replaced the upstream baseline');
     check($systems[$uuid]['data']['config/railcraft.cfg'] === 'local railcraft repair still retained' && $managed->pelicanServer->startup === $startup, 'Confirmation mutated local config or the Startup template');

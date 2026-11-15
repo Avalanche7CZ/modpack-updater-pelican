@@ -167,6 +167,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
         return Http::response(array_values($rows), 200, $headers);
     }
     if (str_ends_with($path, '/files/contents')) {
+        if (isset($sys['during_file_read'])) { $interleave = $sys['during_file_read']; unset($sys['during_file_read']); $interleave(); }
         $file = ltrim($q['file'], '/'); check(! str_starts_with($file, 'world/'), 'Plugin attempted to read world data');
         $contents = $sys['data'][$file];
         if ($mode === 'prebackup_failure' && $sys['state'] === 'offline' && $file === 'config/options.cfg') { $contents = 'bad'; }
