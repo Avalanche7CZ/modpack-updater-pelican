@@ -563,7 +563,7 @@ try {
         if ($operation->phase === 'restored' && ! array_key_exists('running_original_sync_pending', $operation->context)) {
             $page = app(ViewManagedServer::class); $page->record = $managed;
             $actions = (new ReflectionMethod($page, 'getHeaderActions'))->invoke($page);
-            $sync = array_values(array_filter($actions, fn ($action) => $action->getName() === 'syncRunningOriginal'))[0];
+            $sync = array_values(array_filter($actions, fn ($action) => $action instanceof \Filament\Actions\Action && $action->getName() === 'syncRunningOriginal'))[0];
             check(! $sync->isVisible(), 'Ordinary rollback without a sync-pending key exposed recovery sync or broke the page');
         }
         if ($crucible) {

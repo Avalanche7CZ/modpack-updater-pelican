@@ -107,7 +107,7 @@ foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as
     check($managed->fresh()->installed_version === '2.8.1' && $managed->fresh()->active_operation_id === $operation->id, 'Review completed the operation');
     if ($placeholder) {
         $component = \Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\DeploymentStatus::class, ['managedServerId' => $managed->id]);
-        check(str_contains($component->html(), 'Potvrdit běžící nasazení'), 'Confirmation action not in the waiting deployment card');
+        check(str_contains($component->html(), 'Confirm running server'), 'Confirmation action not in the waiting deployment card');
         $component->call('confirmRunningDeployment', $operation->id);
     } else {
         $slowReview = $managed->events()->where('kind', 'running_deploy_review')->latest('id')->firstOrFail();

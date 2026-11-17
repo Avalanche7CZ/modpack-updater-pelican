@@ -18,6 +18,7 @@ use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\PreviewService;
 use Arcturus\ModpackManager\Services\QueuePreparation;
 use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -171,23 +172,26 @@ final class ManagedServerResource extends Resource
         return $table->modifyQueryUsing(fn ($query) => $query->with('latestOperationEvent'))->columns([
             TextColumn::make('label')->label('Server')->searchable()->sortable()
                 ->description(fn (ManagedServer $record) => strtoupper($record->provider).' · '.$record->source),
-            TextColumn::make('runtime_report.state')->label('Last observed state')->badge()->placeholder('Unknown'),
-            TextColumn::make('baseline_status')->label('Upstream baseline')->badge()->color(fn ($state) => $state === 'verified' ? 'success' : 'warning'),
+            TextColumn::make('runtime_report.state')->label('Last observed state')->badge()->placeholder('Unknown')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('baseline_status')->label('Upstream baseline')->badge()->color(fn ($state) => $state === 'verified' ? 'success' : 'warning')->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('comparison_status')->label('Installation comparison')->badge()->formatStateUsing(fn (ManagedServer $record) => $record->comparisonLabel())
-                ->color(fn ($state) => match ($state) { 'complete' => 'success', 'failed' => 'danger', default => 'warning' }),
+                ->color(fn ($state) => match ($state) { 'complete' => 'success', 'failed' => 'danger', default => 'warning' })->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('installed_version')->label('Installed')->badge()->color('gray'),
             TextColumn::make('available_version')->label('Latest')
                 ->placeholder('Not checked')->badge()
                 ->color(fn (ManagedServer $record) => $record->hasUpdate() ? 'warning' : 'success'),
-            TextColumn::make('operation_status')->label('Operation')->badge()->color(fn ($state) => in_array($state, ['Failed', 'Comparison failed'], true) ? 'danger' : 'gray'),
-            TextColumn::make('failure_summary')->label('Blocked / failed')->wrap()->limit(100)->placeholder('—'),
-            TextColumn::make('backup_mode')->label('Backup')->badge()->color('gray'),
+            TextColumn::make('operation_status')->label('Activity')->badge()->color(fn ($state) => match ($state) {
+                'Failed', 'Comparison failed' => 'danger', 'Waiting for recovery', 'Waiting for manual boot' => 'warning',
+                'In progress' => 'primary', 'Completed' => 'success', default => 'gray',
+            }),
+            TextColumn::make('failure_summary')->label('Blocked / failed')->wrap()->limit(100)->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('backup_mode')->label('Backup')->badge()->color('gray')->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('last_backup_uuid')->label('Latest backup UUID')->placeholder('—')->copyable()->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('policy')->badge()->color(fn ($state) => match ($state) {
                 'auto' => 'warning', 'approve' => 'info', default => 'gray',
             }),
-            IconColumn::make('enabled')->boolean(),
-            TextColumn::make('last_checked_at')->label('Checked')->since()->placeholder('Never'),
+            IconColumn::make('enabled')->boolean()->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('last_checked_at')->label('Checked')->since()->placeholder('Never')->toggleable(isToggledHiddenByDefault: true),
         ])->filters([
             SelectFilter::make('provider')->options(ReleaseSourceFields::PROVIDERS),
             SelectFilter::make('baseline_status')->options(['verified' => 'Upstream verified', 'unverified' => 'Upstream unverified']),
@@ -203,39 +207,41 @@ final class ManagedServerResource extends Resource
                 Notification::make()->title('Release checks queued')->success()->send();
             })->deselectRecordsAfterCompletion(),
         ])->defaultSort('label')->recordUrl(fn (ManagedServer $record) => self::getUrl('view', ['record' => $record]))->recordActions([
-            Action::make('details')->icon('heroicon-o-eye')->label('Details')->url(fn (ManagedServer $record) => self::getUrl('view', ['record' => $record])),
-            Action::make('checkNow')->label('Check now')->icon('heroicon-o-arrow-path')
-                ->action(function (ManagedServer $record): void {
-                    Access::requireAdmin();
-                    CheckRelease::dispatch($record->id);
-                    Notification::make()->title('Update check queued')->success()->send();
-                }),
-            Action::make('preview')->label('Preview changes')->icon('heroicon-o-document-magnifying-glass')
-                ->action(function (ManagedServer $record): void {
-                    Access::requireAdmin();
-                    try {
-                        app(QueuePreparation::class)->comparison($record, true);
-                        Notification::make()->title('Read-only comparison queued')->success()->send();
-                    } catch (\Throwable $e) {
-                        Notification::make()->title('Preview unavailable')
-                            ->body($e->getMessage())->danger()->send();
-                    }
-                }),
-            Action::make('prepare')->label('Prepare release')->icon('heroicon-o-arrow-down-tray')
-                ->visible(fn (ManagedServer $record) => $record->hasUpdate())
-                ->requiresConfirmation()
-                ->modalDescription('Download the new server pack into staging. This does not restart the server.')
-                ->action(function (ManagedServer $record): void {
-                    Access::requireAdmin();
-                    try {
-                        app(QueuePreparation::class)->queue($record);
-                        Notification::make()->title('Preparation queued')->success()->send();
-                    } catch (\Throwable $error) {
-                        Notification::make()->title('Preparation unavailable')->body($error->getMessage())->danger()->send();
-                    }
-                }),
-            EditAction::make(),
-            DeleteAction::make()->requiresConfirmation(),
+            Action::make('details')->icon('heroicon-o-arrow-right')->label('Open')->url(fn (ManagedServer $record) => self::getUrl('view', ['record' => $record])),
+            ActionGroup::make([
+                Action::make('checkNow')->label('Check now')->icon('heroicon-o-arrow-path')
+                    ->action(function (ManagedServer $record): void {
+                        Access::requireAdmin();
+                        CheckRelease::dispatch($record->id);
+                        Notification::make()->title('Update check queued')->success()->send();
+                    }),
+                Action::make('preview')->label('Preview changes')->icon('heroicon-o-document-magnifying-glass')
+                    ->action(function (ManagedServer $record): void {
+                        Access::requireAdmin();
+                        try {
+                            app(QueuePreparation::class)->comparison($record, true);
+                            Notification::make()->title('Read-only comparison queued')->success()->send();
+                        } catch (\Throwable $e) {
+                            Notification::make()->title('Preview unavailable')
+                                ->body($e->getMessage())->danger()->send();
+                        }
+                    }),
+                Action::make('prepare')->label('Prepare release')->icon('heroicon-o-arrow-down-tray')
+                    ->visible(fn (ManagedServer $record) => $record->hasUpdate())
+                    ->requiresConfirmation()
+                    ->modalDescription('Download the new server pack into staging. This does not restart the server.')
+                    ->action(function (ManagedServer $record): void {
+                        Access::requireAdmin();
+                        try {
+                            app(QueuePreparation::class)->queue($record);
+                            Notification::make()->title('Preparation queued')->success()->send();
+                        } catch (\Throwable $error) {
+                            Notification::make()->title('Preparation unavailable')->body($error->getMessage())->danger()->send();
+                        }
+                    }),
+                EditAction::make(),
+                DeleteAction::make()->requiresConfirmation(),
+            ])->label('Server actions')->icon('heroicon-m-ellipsis-horizontal')->tooltip('Server actions'),
         ])->emptyStateHeading('No modpacks connected')
             ->emptyStateDescription('Add an existing Pelican server to begin checking releases.')
             ->emptyStateIcon('heroicon-o-server-stack');

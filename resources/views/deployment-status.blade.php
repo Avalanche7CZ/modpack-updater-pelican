@@ -1,22 +1,32 @@
-<div wire:poll.3s.visible>
+<div @if(($isActive ?? false) && !$operation->completed_at && !in_array($operation->phase, ['awaiting_manual_start', 'manual_intervention'], true)) wire:poll.3s.visible @endif>
     @if($operation)
-        <x-filament::section heading="Manual deployment">
-            <p class="font-medium">{{ str_replace('_', ' ', ucfirst($operation->phase)) }} · {{ $context['from'] ?? '' }} → {{ $context['to'] ?? '' }}</p>
+        @php($phaseLabel = match ($operation->phase) { 'completed' => 'Update complete', 'awaiting_manual_start' => 'Waiting for startup confirmation', 'manual_intervention' => 'Recovery needs attention', 'restored' => 'Original installation restored', default => str_replace('_', ' ', ucfirst($operation->phase)) })
+        @php($phaseColor = match ($operation->phase) { 'completed', 'restored' => 'success', 'manual_intervention', 'awaiting_manual_start' => 'warning', 'failed', 'interrupted' => 'danger', 'cancelled' => 'gray', default => 'primary' })
+        <x-filament::section :heading="($isActive ?? false) ? 'Current deployment' : 'Last deployment'" icon="heroicon-o-arrow-path">
+            <div class="flex flex-wrap items-center gap-3">
+                <x-filament::badge :color="$phaseColor">{{ $phaseLabel }}</x-filament::badge>
+                @if(isset($context['from'], $context['to']))<span class="font-semibold break-all">{{ $context['from'] }} → {{ $context['to'] }}</span>@endif
+            </div>
             @if(!$receiptReadable)
                 <p class="mt-2 text-sm">The encrypted deployment receipt cannot be read. The displayed phase is the last recorded database state, not confirmation that deployment succeeded. Do not repeat the update or delete its recovery evidence. Check Panel and queue logs and the original APP_KEY configuration.</p>
             @endif
-            <p class="mt-2 text-sm">{{ $operation->progress['message'] ?? 'Waiting for a queue worker.' }}</p>
+            @if(!in_array($operation->phase, ['completed', 'restored', 'awaiting_manual_start', 'manual_intervention'], true))
+                <p class="mt-3 text-sm">{{ $operation->progress['message'] ?? ($operation->phase === 'queued' ? 'Waiting for a queue worker.' : $phaseLabel) }}</p>
+            @endif
             @if(in_array($operation->phase, ['verifying_before_backup', 'verifying_after_backup', 'applying'], true) && is_int($operation->progress['files_done'] ?? null) && is_int($operation->progress['files_total'] ?? null))
+                @if($operation->progress['files_total'] > 0 && $operation->progress['files_done'] >= 0 && $operation->progress['files_done'] <= $operation->progress['files_total'])
+                    <progress class="mt-3 w-full" max="{{ $operation->progress['files_total'] }}" value="{{ $operation->progress['files_done'] }}" aria-label="Current deployment step progress"></progress>
+                @endif
                 <p class="mt-2 text-sm">{{ number_format($operation->progress['files_done'], 0, '.', ' ') }} / {{ number_format($operation->progress['files_total'], 0, '.', ' ') }} {{ $operation->phase === 'applying' ? 'confirmed for this step.' : 'paths verified (including expected absence).' }}</p>
             @endif
             @if($receiptReadable && is_array($context['native_metrics'] ?? null))
                 @php($metrics = $context['native_metrics'])
-                <p class="mt-2 text-sm">Recorded elapsed: {{ number_format($metrics['elapsed_seconds'] ?? 0, 1) }} s. Measurements update at checkpoints and periodic heartbeats.</p>
-                @if(is_numeric($metrics['offline_to_verified_boot_seconds'] ?? null))
-                    <p class="mt-2 text-sm">Confirmed offline → verified Minecraft boot: {{ number_format($metrics['offline_to_verified_boot_seconds'], 1) }} s.</p>
-                @endif
-                <details class="mt-2 text-sm">
-                    <summary>Native deployment measurements</summary>
+                <details class="mt-3 text-sm">
+                    <summary class="cursor-pointer">Timing and measurements</summary>
+                    <p class="mt-2">Recorded elapsed: {{ number_format($metrics['elapsed_seconds'] ?? 0, 1) }} s. Measurements update at checkpoints and periodic heartbeats.</p>
+                    @if(is_numeric($metrics['offline_to_verified_boot_seconds'] ?? null))
+                        <p class="mt-2">Confirmed offline → verified Minecraft boot: {{ number_format($metrics['offline_to_verified_boot_seconds'], 1) }} s.</p>
+                    @endif
                     <p class="mt-2">Export: <code>php artisan arcturus-modpack:native-measurements {{ $operation->id }}</code></p>
                     <div class="overflow-x-auto">
                         <table class="mt-2 w-full text-left">
@@ -39,7 +49,7 @@
                 </details>
             @endif
             @if($receiptReadable && $operation->phase === 'completed')
-                <p class="mt-2 text-sm">{{ ($context['running_confirmed_by_admin'] ?? false) === true ? 'Nasazení dokončeno. Běh potvrdil admin; boot nebyl automaticky ověřen.' : 'Update completed. Minecraft reached a fresh startup marker.' }}</p>
+                <p class="mt-3 text-sm">{{ ($context['running_confirmed_by_admin'] ?? false) === true ? 'An administrator confirmed the server is running. Startup was not automatically verified.' : (($context['startup_verified'] ?? false) === true ? 'Minecraft startup was verified.' : 'Startup verification was not recorded.') }}</p>
             @endif
             @if($receiptReadable && $operation->phase === 'completed' && ($context['native_admin_running_confirmation']['accepted_local_configs'] ?? []))
                 <details class="mt-2 text-sm"><summary>Přijaté lokální configy: {{ count($context['native_admin_running_confirmation']['accepted_local_configs']) }}</summary>
@@ -53,36 +63,52 @@
             @endif
             @if($receiptReadable && (($context['running_original_sync_pending'] ?? false) === true))<p class="mt-2 text-sm text-amber-600">Original installation verified; Wings configuration release is pending. Use Retry verified recovery sync. No restore or restart is needed.</p>@endif
             @if($operation->phase === 'awaiting_manual_start')
-                <p class="mt-2 text-sm text-amber-600">{{ ($context['native_manual_start']['role'] ?? '') === 'deploy' ? 'Nasazeno, start neověřen.' : 'Soubory obnoveny, původní start neověřen.' }} Use normal Pelican power controls and launcher settings, then Verify running server. The active checkpoint and locked backup block another update. A manual crash does not initiate rollback.</p>
+                <p class="mt-3 text-sm">{{ ($context['native_manual_start']['role'] ?? '') === 'deploy' ? 'Updated files are in place.' : 'The original files have been restored.' }} Use Pelican to start Minecraft if it is stopped, then verify startup. Another update is blocked until this one is closed.</p>
             @endif
             @if($canConfirmRunning ?? false)
-                <x-filament::button color="warning" wire:click="reviewCurrentConfiguration('{{ $operation->id }}')" wire:loading.attr="disabled">Přijmout aktuální konfiguraci a dokončit nasazení</x-filament::button>
+                <div class="mt-4 flex flex-wrap items-center gap-2">
+                    <x-filament::button color="primary" wire:click="reviewCurrentConfiguration('{{ $operation->id }}')" wire:loading.attr="disabled" wire:target="reviewCurrentConfiguration,acceptCurrentConfiguration">Review current configuration</x-filament::button>
+                    <span wire:loading wire:target="reviewCurrentConfiguration,acceptCurrentConfiguration" role="status" class="text-sm">Checking through Wings. This can take a while.</span>
+                </div>
                 @if(($configurationSetReview ?? null) && ($configurationSetReview['operation_id'] ?? null) === $operation->id)
                     <div class="mt-3 overflow-x-auto">
-                        <p class="text-sm">Potvrzujete celý tento seznam pro nasazení {{ $operation->id }}, verzi {{ $configurationSetReview['target_version'] }} a manifest {{ $configurationSetReview['target_manifest_sha256'] }}. Configy zůstanou lokálními změnami; upstream baseline a záloha zůstanou zachovány.</p>
+                        <p class="text-sm font-semibold">{{ count($configurationSetReview['differences']) }} differences for {{ $configurationSetReview['target_version'] }}</p>
+                        <p class="mt-1 text-sm">Accept the listed configurations as local changes without rewriting files or restarting Minecraft.</p>
                         @if($configurationSetReview['runtime_error'] ?? null)<p>{{ $configurationSetReview['runtime_error'] }}</p>@endif
-                        <table class="mt-2 w-full text-left text-sm">
-                            <thead><tr><th>Cesta</th><th>Původní ověřený SHA-256</th><th>Aktuální SHA-256 k přijetí</th><th>Kontrola</th></tr></thead>
+                        <table class="amm-review-table mt-2 text-left text-sm">
+                            <thead><tr><th scope="col" class="p-2">File</th><th scope="col" class="p-2">Review</th></tr></thead>
                             <tbody>
                                 @forelse($configurationSetReview['differences'] as $difference)
-                                    <tr><td class="break-all">{{ $difference['path'] }}</td><td class="break-all">{{ $difference['expected_sha256'] ?? '[očekávána nepřítomnost]' }}</td><td class="break-all">{{ $difference['actual_sha256'] ?? '[nepřítomný nebo nečitelný]' }}</td><td>{{ $difference['reason'] ?? 'Lokální textová konfigurace k přijetí' }}</td></tr>
+                                    <tr class="border-t border-gray-200 dark:border-gray-700">
+                                        <td class="p-2 break-all">
+                                            <details><summary class="cursor-pointer">{{ $difference['path'] }}</summary>
+                                                <p class="mt-1 text-xs">Expected <code>{{ $difference['expected_sha256'] ?? '[absent]' }}</code></p>
+                                                <p class="text-xs">Current <code>{{ $difference['actual_sha256'] ?? '[absent or unreadable]' }}</code></p>
+                                            </details>
+                                        </td>
+                                        <td class="p-2">{{ $difference['reason'] ?? 'Can keep locally' }}</td>
+                                    </tr>
                                 @empty
-                                    <tr><td colspan="4">Všechny ověřované cesty souhlasí.</td></tr>
+                                    <tr><td colspan="2" class="p-2">All checked files match.</td></tr>
                                 @endforelse
                             </tbody>
                         </table>
                         @if($configurationSetReview['can_confirm'])
-                            <x-filament::button color="warning" wire:click="acceptCurrentConfiguration" wire:loading.attr="disabled"
-                                wire:confirm="Přijímám celý zobrazený seznam přesných cest a aktuálních hashů jako lokální konfiguraci této operace. Připojil jsem se k serveru a potvrzuji běh cílové verze {{ $configurationSetReview['target_version'] }}. Dokončit nasazení bez automatického důkazu bootu?">Potvrdit celý seznam a dokončit nasazení</x-filament::button>
+                            <x-filament::button class="mt-3" color="primary" wire:click="acceptCurrentConfiguration" wire:loading.attr="disabled" wire:target="reviewCurrentConfiguration,acceptCurrentConfiguration"
+                                wire:confirm="I accept the displayed file paths and hashes as local configuration and confirm that I connected to the server running {{ $configurationSetReview['target_version'] }}. Finish without automatic startup verification?">Accept configuration and finish update</x-filament::button>
                         @else
                             <p class="text-amber-600">Nasazení nelze dokončit: striktní cesty a runtime musí souhlasit.</p>
                         @endif
                     </div>
                 @endif
-                <x-filament::button color="gray" wire:click="reviewRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled">Zkontrolovat všechny rozdíly nasazení</x-filament::button>
-                <x-filament::button color="warning" wire:click="confirmRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled"
-                    wire:confirm="Potvrzuji, že jsem se připojil k tomuto serveru a ručně potvrdil běh cílové verze {{ $context['to'] ?? '' }}. Boot nebude označen za automaticky ověřený. Souborové nesoulady uzavření zablokují. Pokračovat?">Potvrdit běžící nasazení</x-filament::button>
-                <p class="mt-2 text-sm">Root-admin confirmation checks this exact running deployment, launcher and deployed files without power or restore. It records administrator attestation instead of automatic boot evidence.</p>
+                <details class="mt-3 text-sm" @if(($deploymentReview ?? null) || ($configReview ?? null)) open @endif>
+                    <summary class="cursor-pointer">Individual verification options</summary>
+                    <div class="mt-2 flex flex-wrap gap-2">
+                        <x-filament::button color="gray" wire:click="reviewRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled">Review files individually</x-filament::button>
+                        <x-filament::button color="gray" wire:click="confirmRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled"
+                            wire:confirm="I connected to the server and verified it is running {{ $context['to'] ?? '' }}. Continue without automatic startup verification? Unresolved file differences will block completion.">Confirm running server</x-filament::button>
+                    </div>
+                </details>
             @endif
             @if($canConfirmRunning ?? false)
                 @if(($deploymentReview ?? null) && ($deploymentReview['operation_id'] ?? null) === $operation->id)
@@ -135,10 +161,13 @@
                 <p class="mt-2 text-sm">Keep Minecraft stopped. Check the locked backup and retained deployment journal before restoring. Do not retry Apply Update or delete recovery evidence. If Wings could not confirm stopped state, stop the server through the node first. After an operator restores the correct snapshot and original launch settings, use Verify restored original snapshot; it never reapplies the update.</p>
             @endif
             @if($operation->phase === 'manual_intervention' && isset($context['panel_snapshot']['image']))<p class="mt-2 break-all text-sm">Original container image: {{ $context['panel_snapshot']['image'] }}. Full launcher settings are retained in the encrypted operation receipt.</p>@endif
-            @if($context['backup_uuid'] ?? null)<p class="mt-2 break-all text-sm">Locked Pelican backup: {{ $context['backup_uuid'] }}</p>@endif
-            @if($operation->phase === 'manual_intervention' && ($context['journal'] ?? null))<p class="mt-2 break-all text-sm">Retained deployment journal: {{ $context['journal'] }}</p>@endif
-            @if($context['preserved_stash'] ?? null)<p class="mt-2 break-all text-sm">Preserved excluded folders: {{ $context['preserved_stash'] }}</p>@endif
-            <p class="mt-2 text-xs">Operation: {{ $operation->id }} · Last report {{ $operation->heartbeat_at?->diffForHumans() ?? 'unavailable' }}</p>
+            <details class="mt-3 text-sm">
+                <summary class="cursor-pointer">Operation details</summary>
+                <p class="mt-2 break-all">Operation: {{ $operation->id }} · Last report {{ $operation->heartbeat_at?->diffForHumans() ?? 'unavailable' }}</p>
+                @if($context['backup_uuid'] ?? null)<p class="mt-2 break-all">Locked Pelican backup: {{ $context['backup_uuid'] }}</p>@endif
+                @if($operation->phase === 'manual_intervention' && ($context['journal'] ?? null))<p class="mt-2 break-all">Retained deployment journal: {{ $context['journal'] }}</p>@endif
+                @if($context['preserved_stash'] ?? null)<p class="mt-2 break-all">Preserved excluded folders: {{ $context['preserved_stash'] }}</p>@endif
+            </details>
         </x-filament::section>
     @endif
 </div>

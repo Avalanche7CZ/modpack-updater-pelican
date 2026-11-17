@@ -203,6 +203,14 @@ $test->call('selectTab', 'overview');
 check(str_contains($test->html(), 'Update backend: Native Pelican / Wings') && ! str_contains($test->html(), 'Complete Local filesystem setup once'), 'Native overview still requires legacy host setup');
 $test->call('selectTab', 'backups');
 check(! str_contains($test->html(), 'Installation comparison') && ! str_contains($test->html(), 'outside-volume preservation is available') && str_contains($test->html(), 'without truncation'), 'Native recovery screen retained obsolete or unrelated status');
+$finished = Operation::create(['id' => (string) Str::uuid(), 'managed_server_id' => $record->id, 'kind' => 'deploy',
+    'phase' => 'completed', 'completed_at' => now(), 'context' => ['from' => '2.8.0', 'to' => '2.9.0', 'running_confirmed_by_admin' => true]]);
+$test->call('selectTab', 'overview');
+check(str_contains($test->html(), 'Modpack status') && str_contains($test->html(), 'Server tools') && ! str_contains($test->html(), 'Last deployment'), 'Idle detail became cluttered with old deployment output');
+$test->call('selectTab', 'history');
+check(str_contains($test->html(), 'Last deployment') && str_contains($test->html(), 'confirmed the server is running') && str_contains($test->html(), $finished->id), 'Previous deployment and its verification status disappeared from History');
+$fleet = Livewire\Livewire::test(\Arcturus\ModpackManager\Filament\Admin\Pages\Overview::class);
+check(str_contains($fleet->html(), 'Updates available') && str_contains($fleet->html(), 'Open operations'), 'Fleet summary is missing');
 foreach (['verifying_before_backup' => 'Verifying files before backup', 'verifying_after_backup' => 'Verifying files after backup'] as $phase => $label) {
     $statusOperation = new Operation;
     $statusOperation->forceFill(['id' => (string) Str::uuid(), 'phase' => $phase, 'progress' => ['message' => $label, 'files_done' => 8870, 'files_total' => 9208], 'heartbeat_at' => now()]);

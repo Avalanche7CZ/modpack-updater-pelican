@@ -30,17 +30,34 @@ final class ConsoleHistory
         });
     }
 
-    public static function read(int $serverId, ?int $after): array
+    /** The server console is live status, not the administrator's operation history. */
+    public static function live(int $serverId, ?string $operationId, ?int $after): array
+    {
+        $operation = $operationId ? Operation::where('managed_server_id', $serverId)
+            ->whereIn('kind', ['prepare', 'baseline', 'comparison', 'deploy'])
+            ->whereNotIn('phase', ['completed', 'restored', 'cancelled'])
+            ->find($operationId, ['id']) : null;
+
+        if (! $operation) {
+            return ['operation_id' => null, 'lines' => [], 'cursor' => (int) ($after ?? 0)];
+        }
+
+        return ['operation_id' => $operation->id, ...self::read($serverId, $after, $operation->id)];
+    }
+
+    public static function read(int $serverId, ?int $after, ?string $operationId = null): array
     {
         // On first connection after an upgrade, show the latest real receipt even if it predates this projection.
         // This records its current state only; it never invents missing historical transitions.
         if ($after === null) {
-            $operation = Operation::where('managed_server_id', $serverId)->latest('created_at')->first();
+            $operation = Operation::where('managed_server_id', $serverId)
+                ->when($operationId !== null, fn ($query) => $query->whereKey($operationId))->latest('created_at')->first();
             if ($operation && ! DB::table(self::TABLE)->where('operation_id', $operation->id)->exists()) {
                 (new self)->record($operation);
             }
         }
-        $query = DB::table(self::TABLE)->where('managed_server_id', $serverId)->select(['id', 'message']);
+        $query = DB::table(self::TABLE)->where('managed_server_id', $serverId)
+            ->when($operationId !== null, fn ($query) => $query->where('operation_id', $operationId))->select(['id', 'message']);
         $rows = $after === null ? $query->latest('id')->limit(40)->get()->reverse()->values()
             : $query->where('id', '>', $after)->orderBy('id')->limit(100)->get();
         return ['lines' => $rows->map(fn ($row) => ['id' => (int) $row->id, 'text' => $row->message])->all(),

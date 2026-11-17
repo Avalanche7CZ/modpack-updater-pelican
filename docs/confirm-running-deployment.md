@@ -1,12 +1,12 @@
 # Potvrdit běžící nasazení bez restartu
 
-Po aktualizaci pluginu je přímo v kartě čekajícího nasazení akce **Potvrdit běžící nasazení**. Použije ji root admin, který se připojil k cílovému Minecraft serveru a výslovně potvrzuje běh nasazené verze. Nejde o automatický důkaz bootu. Akce neodesílá Start, Stop, Restart, Restore, sync ani nový deploy.
+Po aktualizaci pluginu je přímo v kartě čekajícího nasazení akce **Confirm running server**. Použije ji root admin, který se připojil k cílovému Minecraft serveru a výslovně potvrzuje běh nasazené verze. Nejde o automatický důkaz bootu. Akce neodesílá Start, Stop, Restart, Restore, sync ani nový deploy.
 
 ## Jedno potvrzení celé aktuální konfigurace
 
-Root admin může v kartě aktivního ověřeného deploye zvolit **Přijmout aktuální konfiguraci a dokončit nasazení**. Akce nejprve zobrazí celý seznam odlišných cest s původním ověřeným a aktuálním SHA-256, cílovou verzí, ID operace a manifestem. Zahrnuje nasazený rozsah, cílové configy pod `config/` včetně dříve zachovaných lokálních configů a přesně kořenový `server.properties` z původního world-properties receipt. Nezahrnuje obecnou výjimku pro jiné cesty pojmenované `server.properties`.
+Root admin může v kartě aktivního ověřeného deploye zvolit **Review current configuration**. Akce nejprve zobrazí celý seznam odlišných cest s původním ověřeným a aktuálním SHA-256, cílovou verzí, ID operace a manifestem. Zahrnuje nasazený rozsah, cílové configy pod `config/` včetně dříve zachovaných lokálních configů a přesně kořenový `server.properties` z původního world-properties receipt. Nezahrnuje obecnou výjimku pro jiné cesty pojmenované `server.properties`.
 
-Po kontrole seznamu stačí jednou zvolit **Potvrdit celý seznam a dokončit nasazení** a potvrdit běh cílové verze. Otevírání jednotlivých diffů není potřeba. Všechny přijímané rozdíly musí být běžné UTF-8 textové configy do 1 MiB; JARy, runtime závislosti/launcher, chybějící soubory, očekávané odstraněné cesty a ostatní cesty zůstávají striktní. Blokující rozdíly se zobrazí ve stejném přehledu a dokončení nepovolí.
+Po kontrole seznamu stačí jednou zvolit **Accept configuration and finish update** a potvrdit běh cílové verze. Otevírání jednotlivých diffů není potřeba. Všechny přijímané rozdíly musí být běžné UTF-8 textové configy do 1 MiB; JARy, runtime závislosti/launcher, chybějící soubory, očekávané odstraněné cesty a ostatní cesty zůstávají striktní. Blokující rozdíly se zobrazí ve stejném přehledu a dokončení nepovolí.
 
 Závěrečná akce znovu získá mutation lease, ověří přesnou aktivní operaci, autentizovaný cílový manifest, dokončenou zamčenou zálohu, launcher/nastavení i stejnou běžící instanci. Znovu načte přesné hashe celého potvrzeného seznamu i striktních cest. Změna hashe, množiny rozdílů, manifestu, checkpointu nebo běžící instance zneplatní původní proof; UI jej nesmí nahradit novým neviděným seznamem. Přijetí všech lokálních hashů, audit a dokončení verze/baseline proběhnou v jedné DB transakci. Původní souborový receipt a upstream manifest zůstanou nezměněny, záloha zamčená. Akce neprovádí souborový zápis, Start/Stop/Restart, Restore, sync ani nový deploy. Běh potvrzuje admin; nevzniká automaticky ověřený boot.
 
@@ -16,8 +16,8 @@ Pro již běžící GTNH 2.9.0 s chybějícím boot záznamem:
 
 1. Načti nový kód pluginu také ve webovém PHP runtime podle běžného upgrade postupu. Nic na maty zde nebylo provedeno.
 2. Otevři ManagedServer 2 a kartu **konkrétního aktivního nasazení do 2.9.0**. Ponech původní checkpoint i zamčenou zálohu. Nepoužívej staré UUID rollbacku 2.8.1.
-3. Jako root admin klikni **Zkontrolovat všechny rozdíly nasazení**. Přehled obsahuje všechny odlišné nasazené cesty a jejich očekávané/skutečné SHA-256. U `config/Botania.cfg` (a každého dalšího configu, který chceš přijmout) klikni **Ověřit text a zobrazit diff**, zkontroluj změnu proti ověřenému cíli a výslovně zvol **Přijmout tuto cestu a hash jako lokální změnu**. Přijetí samo deploy neuzavírá.
-4. Po vyřešení všech rozdílů klikni **Potvrdit běžící nasazení** a potvrď, že ses připojil a ověřil běh této cílové verze.
+3. Jako root admin klikni **Review files individually**. Přehled obsahuje všechny odlišné nasazené cesty a jejich očekávané/skutečné SHA-256. U `config/Botania.cfg` (a každého dalšího configu, který chceš přijmout) klikni **Ověřit text a zobrazit diff**, zkontroluj změnu proti ověřenému cíli a výslovně zvol **Přijmout tuto cestu a hash jako lokální změnu**. Přijetí samo deploy neuzavírá.
+4. Po vyřešení všech rozdílů klikni **Confirm running server** a potvrď, že ses připojil a ověřil běh této cílové verze.
 5. Pokud kontroly projdou, historie uvede „Běh nasazení potvrdil admin; boot nebyl automaticky ověřen“, installed_version bude 2.9.0 a baseline bude přesný původní upstream manifest připravené 2.9.0. Pouze tento checkpoint se uzavře. Záloha a audit zůstanou.
 
 Akce vyžaduje aktivní Native deploy v `awaiting_manual_start`, `native_deploy_files_verified=true`, předané ovládání v roli deploy, žádný nejasný Wings zápis a přesnou dokončenou zamčenou zálohu. Kontroluje aktuální běžící instanci včetně postupujícího uptime, Startup/image/proměnné Wings, obsah aktivního launcheru a argumentů, očekávaný cílový runtime, identitu operace a neměnný autentizovaný cílový manifest. Nepotřebuje původní použitelný Start záznam ani Done log.

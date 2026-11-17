@@ -14,6 +14,9 @@ final class DeploymentStatus extends Component
     public int $managedServerId;
 
     #[Locked]
+    public bool $showLast = true;
+
+    #[Locked]
     public ?array $deploymentReview = null;
 
     #[Locked]
@@ -44,7 +47,12 @@ final class DeploymentStatus extends Component
         } catch (\Throwable $error) { $this->configurationSetReview = null; $this->reviewFailure($error); }
     }
 
-    public function mount(int $managedServerId): void { Access::requireAdmin(); $this->managedServerId = $managedServerId; }
+    public function mount(int $managedServerId, bool $showLast = true): void
+    {
+        Access::requireAdmin();
+        $this->managedServerId = $managedServerId;
+        $this->showLast = $showLast;
+    }
 
     public function confirmRunningDeployment(string $operationId): void
     {
@@ -106,7 +114,8 @@ final class DeploymentStatus extends Component
         Access::requireAdmin();
         $active = \Arcturus\ModpackManager\Models\ManagedServer::whereKey($this->managedServerId)->value('active_operation_id');
         $operation = ($active ? Operation::where('managed_server_id', $this->managedServerId)->where('kind', 'deploy')->find($active) : null)
-            ?? Operation::where('managed_server_id', $this->managedServerId)->where('kind', 'deploy')->latest('created_at')->first();
+            ?? ($this->showLast ? Operation::where('managed_server_id', $this->managedServerId)->where('kind', 'deploy')->latest('created_at')->first() : null);
+        $isActive = $operation && $operation->id === $active;
         $context = []; $receiptReadable = true;
         if ($operation) {
             try { $context = $operation->context ?? []; }
@@ -116,7 +125,7 @@ final class DeploymentStatus extends Component
                 $receiptReadable = false;
             }
         }
-        $canConfirmRunning = $receiptReadable && $operation && $operation->id === $active && \Arcturus\ModpackManager\Native\ManualStart::canConfirmRunningDeployment($operation);
-        return view('arcturus-modpack-manager::deployment-status', compact('operation', 'context', 'receiptReadable', 'canConfirmRunning'));
+        $canConfirmRunning = $receiptReadable && $isActive && \Arcturus\ModpackManager\Native\ManualStart::canConfirmRunningDeployment($operation);
+        return view('arcturus-modpack-manager::deployment-status', compact('operation', 'context', 'isActive', 'receiptReadable', 'canConfirmRunning'));
     }
 }

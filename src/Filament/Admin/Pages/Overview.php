@@ -50,26 +50,38 @@ final class Overview extends Page implements HasTable
         return [Action::make('adopt')->button()->icon('heroicon-o-plus')->label('Adopt Existing Server')->url(ManagedServerResource::getUrl('create'))];
     }
 
+    public function fleetSummary(): array
+    {
+        Access::requireAdmin();
+
+        return (array) ManagedServer::query()->toBase()->selectRaw('COUNT(*) AS servers,
+            COUNT(CASE WHEN available_version IS NOT NULL AND available_version <> installed_version THEN 1 END) AS updates,
+            COUNT(active_operation_id) AS active')->first();
+    }
+
     public function table(Table $table): Table
     {
         return $table->query(ManagedServer::query()->lightweight()->with(['pelicanServer', 'latestOperationEvent']))->columns([
             TextColumn::make('label')->label('Server')->searchable()->sortable(),
-            TextColumn::make('pelicanServer.name')->label('Pelican server')->searchable()->placeholder('Missing server'),
-            TextColumn::make('runtime_report.state')->label('Last observed state')->badge()->placeholder('Unknown'),
-            TextColumn::make('provider')->badge(),
+            TextColumn::make('pelicanServer.name')->label('Pelican server')->searchable()->placeholder('Missing server')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('runtime_report.state')->label('Last observed state')->badge()->placeholder('Unknown')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('provider')->badge()->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('installed_version')->label('Installed')->wrap(),
             TextColumn::make('available_version')->label('Latest')->wrap()->placeholder('Not checked')
                 ->color(fn ($record) => $record->hasUpdate() ? 'warning' : 'gray'),
-            TextColumn::make('baseline_status')->label('Upstream baseline')->badge(),
+            TextColumn::make('baseline_status')->label('Upstream baseline')->badge()->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('comparison_status')->label('Installation comparison')->badge()->formatStateUsing(fn (ManagedServer $record) => $record->comparisonLabel())
-                ->color(fn ($state) => match ($state) { 'complete' => 'success', 'failed' => 'danger', default => 'warning' }),
-            TextColumn::make('operation_status')->label('Operation')->badge(),
+                ->color(fn ($state) => match ($state) { 'complete' => 'success', 'failed' => 'danger', default => 'warning' })->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('operation_status')->label('Activity')->badge()->color(fn ($state) => match ($state) {
+                'Failed', 'Comparison failed' => 'danger', 'Waiting for recovery', 'Waiting for manual boot' => 'warning',
+                'In progress' => 'primary', 'Completed' => 'success', default => 'gray',
+            }),
             TextColumn::make('policy')->badge(),
-            TextColumn::make('backup_mode')->label('Backup'),
-            TextColumn::make('last_checked_at')->label('Last successful check')->since()->placeholder('Never'),
-            TextColumn::make('failure_summary')->label('Failure / blocked')->limit(80)->wrap()->placeholder('—'),
+            TextColumn::make('backup_mode')->label('Backup')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('last_checked_at')->label('Last successful check')->since()->placeholder('Never')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('failure_summary')->label('Failure / blocked')->limit(80)->wrap()->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
         ])->filters([SelectFilter::make('provider')->options(ReleaseSourceFields::PROVIDERS)])
             ->recordUrl(fn ($record) => ManagedServerResource::getUrl('view', ['record' => $record]))
-            ->defaultSort('label')->poll('15s');
+            ->defaultSort('label');
     }
 }

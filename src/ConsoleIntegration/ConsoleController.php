@@ -19,7 +19,7 @@ final class ConsoleController
         abort_unless($managed, 404);
         $data = $request->validate(['after' => ['nullable', 'integer', 'min:0', 'max:9007199254740991']]);
 
-        return response()->json(ConsoleHistory::read($managed->id, isset($data['after']) ? (int) $data['after'] : null))
+        return response()->json(ConsoleHistory::live($managed->id, $managed->active_operation_id, isset($data['after']) ? (int) $data['after'] : null))
             ->header('Cache-Control', 'private, no-store');
     }
 }

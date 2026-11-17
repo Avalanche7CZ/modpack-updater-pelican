@@ -23,6 +23,7 @@ use Arcturus\ModpackManager\Services\ProtectionPolicy;
 use Arcturus\ModpackManager\Services\ServerPolicyService;
 use Arcturus\ModpackManager\Services\UpdatePlanner;
 use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Hidden;
@@ -40,6 +41,11 @@ final class ViewManagedServer extends ViewRecord
     protected static string $resource = ManagedServerResource::class;
 
     protected string $view = 'arcturus-modpack-manager::managed-server';
+
+    public function getTitle(): string
+    {
+        return $this->getRecord()->label;
+    }
 
     #[\Livewire\Attributes\Url]
     public string $tab = 'overview';
@@ -76,8 +82,7 @@ final class ViewManagedServer extends ViewRecord
         Access::requireAdmin();
         if ($this->tab === 'updates' && $this->refreshExpiredComparison()) { return; }
         $record = ManagedServer::query()->select(['id', 'policy_revision', 'comparison_status', 'active_operation_id', 'updated_at'])->findOrFail($this->getRecord()->id);
-        $working = $record->active_operation_id && ! $record->operations()->whereKey($record->active_operation_id)->whereNotNull('completed_at')->exists();
-        if ($working || $this->evidenceState === $this->evidenceStateFor($record)) { $this->skipRender(); }
+        if ($this->evidenceState === $this->evidenceStateFor($record)) { $this->skipRender(); }
     }
 
     /** Refresh expired readiness in the queue, once; never auto-retry failed comparisons. */
@@ -125,7 +130,7 @@ final class ViewManagedServer extends ViewRecord
 
     protected function getHeaderActions(): array
     {
-        return [
+        $actions = [
             Action::make('handoffManualStart')->label('Hand over manual start')->color('warning')
                 ->visible(fn () => \Arcturus\ModpackManager\Native\HandoffDiagnostics::available(ManagedServer::lightweight()->findOrFail($this->getRecord()->id)))
                 ->schema([TextInput::make('reference')->label('Successful recovery reference UUID (optional)')->nullable()])
@@ -412,6 +417,17 @@ final class ViewManagedServer extends ViewRecord
             }),
             EditAction::make(),
         ];
+
+        $advanced = ['filesystemBackend', 'testFilesystem', 'directoryDecisions', 'inspectRuntime', 'reassociate', 'verifyRecovery', 'version', 'prepare', 'edit'];
+        $settings = [];
+        foreach ($actions as $key => $action) {
+            if (in_array($action->getName(), $advanced, true)) {
+                $settings[] = $action;
+                unset($actions[$key]);
+            }
+        }
+
+        return [...array_values($actions), ActionGroup::make($settings)->label('Server tools')->icon('heroicon-o-cog-6-tooth')->button()->color('gray')];
     }
 
     private function queuePreparation(bool $baseline): void

@@ -1,4 +1,4 @@
-<div wire:poll.3s.visible>
+<div @if($operation && !$operation->completed_at) wire:poll.3s.visible @endif>
     @if($operation && in_array($operation->kind, ['baseline', 'prepare', 'comparison'], true))
         @php($terminal = $operation->completed_at !== null)
         <x-filament::section :heading="$operation->kind === 'comparison' ? 'Installation comparison' : ($terminal ? 'Last preparation' : 'Background operation')">
@@ -88,7 +88,5 @@
                 </div>
             </details>
         </x-filament::section>
-    @else
-        <p class="text-sm text-gray-500">No active preparation. Check History for previous attempts.</p>
     @endif
 </div>

@@ -14,7 +14,14 @@ function environment() {
     window.location = { origin: 'https://panel.test' };
     const lines = [], requests = [], timers = new Map();
     let timerId = 0;
-    let response = { lines: [], cursor: 0 };
+    const status = { textContent: '' };
+    const rendered = { children: [], replaceChildren(...children) { this.children = children; } };
+    const history = { hidden: true, open: false };
+    const widget = { hidden: true, style: { display: 'none' } };
+    const panel = { closest: () => widget, querySelector: selector => ({ '[data-status]': status, '[data-lines]': rendered, '[data-history]': history }[selector]) };
+    document.getElementById = () => panel;
+    document.createElement = () => ({ textContent: '' });
+    let response = { operation_id: null, lines: [], cursor: 0 };
     let failed = false;
     const context = vm.createContext({ window, document, URL, AbortController, Map, Object, Number,
         CustomEvent: class extends Event { constructor(name, options) { super(name); this.detail = options.detail; } },
@@ -31,12 +38,13 @@ function environment() {
     const hook = () => vm.runInContext(`(() => { ${hookSource} })()`, context);
     const load = () => vm.runInContext(`(() => { const serverUuid = 'server-a'; const endpoint = 'https://panel.test/feed'; ${client} })()`, context);
     const tick = async () => { const item = timers.entries().next().value; assert.ok(item); timers.delete(item[0]); item[1](); await flush(); };
-    return { window, document, context, lines, requests, timers, hook, load, tick,
-        reply: value => { response = value; }, fail: value => { failed = value; } };
+    return { window, document, context, lines, requests, timers, hook, load, tick, widget, status, rendered, history,
+        reply: value => { response = { operation_id: 'operation-a', ...value }; }, fail: value => { failed = value; } };
 }
 const e = environment();
 e.load(); await flush();
 assert.equal(e.requests.length, 1, 'Unpatched Panel must poll the authorized fallback feed');
+assert.equal(e.widget.hidden, true, 'Idle server showed the plugin widget');
 e.reply({ lines: [{ id: 1, text: '[Modpack] Waiting for the locked Pelican backup' }], cursor: 1 });
 e.hook(); await flush();
 assert.equal(e.lines.length, 1, 'Offline Minecraft must not block the Panel feed');
@@ -75,4 +83,21 @@ assert.equal(fresh.lines.length, 2, 'New terminal did not replay recent history 
 assert.ok(!fresh.requests[0].url.includes('after='), 'A blank terminal incorrectly inherited the previous terminal cursor');
 vm.runInContext('tornDown = true;', fresh.context);
 assert.equal(fresh.window.PelicanConsoleAppend.append({ serverUuid: 'server-a', source: 'test', id: 99, text: 'stale' }), false);
-console.log('Console hook/client: optional fallback, offline output, isolation, reconnect, refresh, sanitization and navigation cleanup passed');
+const fallback = environment(); fallback.load(); await flush();
+assert.equal(fallback.widget.style.display, 'none', 'Idle fallback left a gap in the widget grid');
+fallback.reply({ lines: [{ id: 1, text: '[Modpack] Backing up' }, { id: 2, text: '[Modpack] Deploying' }], cursor: 2 });
+await fallback.tick();
+assert.equal(fallback.widget.hidden, false);
+assert.equal(fallback.status.textContent, 'Deploying');
+assert.equal(fallback.history.hidden, false);
+assert.equal(fallback.rendered.children[0].textContent, 'Backing up');
+fallback.reply({ operation_id: null, lines: [], cursor: 2 }); await fallback.tick();
+assert.equal(fallback.widget.hidden, true, 'The entire widget must disappear when the update finishes');
+assert.equal(fallback.widget.style.display, 'none');
+assert.equal(fallback.rendered.children.length, 0, 'Completed update left old rows');
+fallback.reply({ operation_id: 'operation-b', lines: [{ id: 3, text: '[Modpack] Waiting for approval' }], cursor: 3 });
+await fallback.tick();
+assert.equal(fallback.status.textContent, 'Waiting for approval');
+assert.equal(fallback.widget.hidden, false);
+assert.equal(fallback.history.hidden, true, 'New operation inherited old history');
+console.log('Console client: active-only visibility, offline output, isolation, reconnect, sanitization and navigation cleanup passed');

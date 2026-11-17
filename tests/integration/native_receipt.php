@@ -42,6 +42,6 @@ check(Artisan::call('arcturus-modpack:native-measurements', ['operation' => $op-
 $export = Artisan::output(); check(! str_contains($export, 'must-not-export') && is_array(json_decode($export, true, flags: JSON_THROW_ON_ERROR)['metrics']), 'Measurement export leaked unrelated context');
 check($encryptedBefore === $op->fresh()->getRawOriginal('context'), 'Read-only export changed receipt');
 $rendered = view('arcturus-modpack-manager::deployment-status', ['operation' => $op->fresh(), 'context' => $op->fresh()->context, 'receiptReadable' => true])->render();
-check(str_contains($rendered, 'Native deployment measurements') && str_contains($rendered, 'Transferred MiB') && str_contains($rendered, 'db checkpoint') && ! str_contains($rendered, 'must-not-export'), 'Deployment status did not render recorded telemetry safely');
+check(str_contains($rendered, 'Timing and measurements') && str_contains($rendered, 'Transferred MiB') && str_contains($rendered, 'db checkpoint') && ! str_contains($rendered, 'must-not-export'), 'Deployment status did not render recorded telemetry safely');
 echo "Native receipt: throttled pulses, forced ownership, fresh merge, no DB retry, terminal/foreign fences and read-only metrics export passed\n";
 $GLOBALS['arcturus_integration_passed'] = true;

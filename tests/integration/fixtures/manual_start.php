@@ -72,7 +72,7 @@ $afterRepair = \Illuminate\Support\Facades\Cache::lock('arcturus-modpack-manager
 check($afterRepair->get() && $afterRepair->release(), 'Conditional orphan repair failed to permit a new mutation lease');
 $page = app(\Arcturus\ModpackManager\Filament\Admin\Resources\ManagedServers\Pages\ViewManagedServer::class); $page->record = $manualManaged;
 $actions = (new ReflectionMethod($page, 'getHeaderActions'))->invoke($page);
-$handoffAction = array_values(array_filter($actions, fn ($action) => $action->getName() === 'handoffManualStart'))[0];
+$handoffAction = array_values(array_filter($actions, fn ($action) => $action instanceof \Filament\Actions\Action && $action->getName() === 'handoffManualStart'))[0];
 check($handoffAction->isVisible(), 'Handoff action hidden for existing Native manual_intervention');
 Auth::guard()->setUser($adminUser);
 $webDiagnostics = (new \Arcturus\ModpackManager\Http\Controllers\HandoffDiagnosticsController)($manualManaged->id)->getData(true);

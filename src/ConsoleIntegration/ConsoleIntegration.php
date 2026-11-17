@@ -18,7 +18,7 @@ final class ConsoleIntegration
 {
     public static function managed(?Server $server): ?ManagedServer
     {
-        return $server ? ManagedServer::lightweight()->where('pelican_server_uuid', $server->uuid)->first() : null;
+        return $server ? ManagedServer::where('pelican_server_uuid', $server->uuid)->first(['id', 'active_operation_id']) : null;
     }
 
     public static function canUpdate(?Server $server): bool
