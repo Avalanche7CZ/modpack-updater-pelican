@@ -23,7 +23,8 @@ jobs:
           tools: none
       - run: bash scripts/test.sh
   pelican:
-    runs-on: ubuntu-latest
+    # Playwright 1.58.2 does not support the Ubuntu 26.04 runner image.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         panel: ['v1.0.0-rc.2', 'v1.0.0-rc.3']
