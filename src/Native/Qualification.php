@@ -99,17 +99,29 @@ final class Qualification
         if ($server->keep_existing_crucible_runtime || CrucibleRuntime::configured($pelican)) {
             return (new CrucibleRuntime)->inspect($pelican, $files);
         }
-        // Only scoped launcher/configuration candidates; never recursively inspect worlds or follow links.
-        $paths = array_keys($server->file_inventory['files'] ?? []); $texts = [];
-        foreach (array_unique([...array_keys($base['files']), ...$paths, ...SameHostDeployment::LAUNCH_FILES]) as $path) {
-            if (! in_array($path, SameHostDeployment::LAUNCH_FILES, true) && ! str_ends_with($path, '/unix_args.txt')) { continue; }
-            if (str_ends_with($path, '.jar')) { continue; }
-            $meta = $path === 'unix_args.txt' ? $files->linkMetadata($path) : $files->stat($path);
-            if ($meta === null || ($meta['symlink'] ?? false)) { continue; }
-            if (count($texts) >= 64) { throw new RuntimeException('Too many current launcher files; the active startup is ambiguous.'); }
-            $texts[$path] = $files->read($path, 1048576); $paths[] = $path;
+        // Installed Forge/NeoForge argument files may be generated locally, outside either manifest or the delta inventory.
+        $startup = $pelican->startup;
+        $direct = null;
+        if (preg_match('/^java[ \t]+/', $startup) && ! preg_match('/[;&|<>`$\r\n]/', $startup) && substr_count($startup, '@') === 1 &&
+            preg_match('~(?<!\S)@(?:\./)?(libraries/net/(?:minecraftforge/forge|neoforged/(?:neoforge|forge))/[0-9][A-Za-z0-9_.+-]{0,100}/unix_args\.txt)(?=\s|$)~', $startup, $match)) {
+            $direct = $match[1];
         }
-        $current = (new RuntimeInspector)->inspect(array_values(array_unique($paths)), $texts, $pelican->startup, $pelican->image);
+        // Only scoped launcher/configuration candidates; never recursively inspect worlds or follow links.
+        if ($direct !== null) {
+            $paths = [$direct];
+            $texts = [$direct => $files->read($direct, 1048576)];
+        } else {
+            $paths = array_keys($server->file_inventory['files'] ?? []); $texts = [];
+            foreach (array_unique([...array_keys($base['files']), ...$paths, ...SameHostDeployment::LAUNCH_FILES]) as $path) {
+                if (! in_array($path, SameHostDeployment::LAUNCH_FILES, true) && ! str_ends_with($path, '/unix_args.txt')) { continue; }
+                if (str_ends_with($path, '.jar')) { continue; }
+                $meta = $path === 'unix_args.txt' ? $files->linkMetadata($path) : $files->stat($path);
+                if ($meta === null || ($meta['symlink'] ?? false)) { continue; }
+                if (count($texts) >= 64) { throw new RuntimeException('Too many current launcher files; the active startup is ambiguous.'); }
+                $texts[$path] = $files->read($path, 1048576); $paths[] = $path;
+            }
+        }
+        $current = (new RuntimeInspector)->inspect(array_values(array_unique($paths)), $texts, $startup, $pelican->image);
         if (empty($current['minecraft']) || empty($current['loader'])) {
             throw new RuntimeException('Cannot identify the current Minecraft/loader from Pelican Startup and scoped launcher files: '.$pelican->startup.'. '.implode('; ', $current['warnings']));
         }
