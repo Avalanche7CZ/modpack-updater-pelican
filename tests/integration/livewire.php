@@ -241,6 +241,7 @@ $brokenDeployment = Operation::create(['id' => (string) Str::uuid(), 'managed_se
     'kind' => 'deploy', 'phase' => 'verifying', 'context' => ['from' => 'old', 'to' => 'new'], 'heartbeat_at' => now()]);
 \Illuminate\Support\Facades\DB::table('arcturus_modpack_operations')->where('id', $brokenDeployment->id)
     ->update(['context' => '{"plaintext":"must-not-be-trusted"}']);
+$record->update(['active_operation_id' => $brokenDeployment->id]);
 $badStatus = Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\DeploymentStatus::class, ['managedServerId' => $record->id]);
 check(str_contains($badStatus->html(), 'encrypted deployment receipt cannot be read') &&
     str_contains($badStatus->html(), $brokenDeployment->id) && ! str_contains($badStatus->html(), 'must-not-be-trusted'),

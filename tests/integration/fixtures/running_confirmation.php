@@ -18,7 +18,12 @@ $service = app(ManualStart::class);
     $t->id(); $t->string('uuid'); $t->boolean('force_outgoing_ip')->default(false); $t->json('file_denylist')->nullable(); $t->json('features')->nullable();
 });
 foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as $placeholder) {
-    Http::swap(new \Illuminate\Http\Client\Factory); Http::fake($wings); Auth::guard()->setUser($adminUser); $mode = 'success';
+    // The large-config fixture records route/method evidence in $requests. Avoid the
+    // HTTP fake retaining every response body, which real HTTP clients do not retain.
+    $http = getenv('ARCTURUS_QUEUED_CONFIRMATION_ONLY') ? new class extends \Illuminate\Http\Client\Factory {
+        public function recordRequestResponsePair($request, $response) {}
+    } : new \Illuminate\Http\Client\Factory;
+    Http::swap($http); Http::fake($wings); Auth::guard()->setUser($adminUser); $mode = 'success';
     $managed = $make(false, false, false, true); $uuid = $managed->pelican_server_uuid;
     $store = app(ReleaseStore::class); $base = $store->load($managed->base_manifest_path); $target = $store->load($managed->target_manifest_path);
     $stage = (new Preparation($managed))->stage($managed->target_metadata['prepared']['node_operation_id'], $managed->target_metadata['prepared']['manifest_sha256']);
@@ -30,6 +35,10 @@ foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as
         if (getenv('ARCTURUS_CONFIG_SET_ONLY')) {
             foreach (['default', 'gregtech', 'other'] as $recipe) { $configTargets['config/opencomputers/'.$recipe.'.recipes'] = '# verified '.$recipe."\n"; }
             mkdir($stage.'/config/opencomputers', 0700, true);
+        }
+        if (getenv('ARCTURUS_QUEUED_CONFIRMATION_ONLY')) {
+            config(['arcturus-modpack-manager.native_bulk_staging' => false]);
+            for ($i = 0; $i < 205; $i++) { $configTargets['config/gtpp-'.$i.'.cfg'] = "feature=true\n"; }
         }
         foreach ($configTargets as $configPath => $bytes) { $target['files'][$configPath] = hash('sha256', $bytes); file_put_contents($stage.'/'.$configPath, $bytes); }
         $base['files']['config/removed.cfg'] = hash('sha256', 'old removed config');
@@ -94,6 +103,7 @@ foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as
     $systems[$uuid]['state'] = 'running'; $systems[$uuid]['boot_started'] = microtime(true) - 120; $systems[$uuid]['omit_uptime'] = false;
     unset($systems[$uuid]['data']['logs/latest.log']); $systems[$uuid]['console'] = [];
     $beforeConfirmation = count($requests);
+    if (getenv('ARCTURUS_QUEUED_CONFIRMATION_ONLY')) { require __DIR__.'/queued_confirmation.php'; continue; }
     if (getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY')) { require __DIR__.(getenv('ARCTURUS_CONFIG_SET_ONLY') ? '/config_set.php' : '/config_acceptance.php'); continue; }
     rejects(fn () => $service->verify($operation->id, 1), 'Normal Verify fabricated missing boot evidence');
     rejects(fn () => $service->confirmRunningDeployment($operation->id, 999), 'Non-admin confirmed running deployment');
@@ -107,8 +117,11 @@ foreach ((getenv('ARCTURUS_CONFIG_ACCEPTANCE_ONLY') ? [true] : [false, true]) as
     check($managed->fresh()->installed_version === '2.8.1' && $managed->fresh()->active_operation_id === $operation->id, 'Review completed the operation');
     if ($placeholder) {
         $component = \Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\DeploymentStatus::class, ['managedServerId' => $managed->id]);
-        check(str_contains($component->html(), 'Confirm running server'), 'Confirmation action not in the waiting deployment card');
+        $component->call('reviewRunningDeployment', $operation->id);
+        check(str_contains($component->html(), 'Confirm running server'), 'Confirmation action absent from explicit review');
         $component->call('confirmRunningDeployment', $operation->id);
+        check(str_contains($component->html(), 'Confirmation queued'), 'Expected queued confirmation in the card');
+        app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
     } else {
         $slowReview = $managed->events()->where('kind', 'running_deploy_review')->latest('id')->firstOrFail();
         $slowReview->update(['created_at' => now()->subMinutes(14)]);

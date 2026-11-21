@@ -8,6 +8,7 @@ use Arcturus\ModpackManager\Contracts\RequiredFileResolver;
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Models\Operation;
 use Arcturus\ModpackManager\Modpacks\ProviderRegistry;
+use Arcturus\ModpackManager\Modpacks\Providers\GtnhArtifact;
 use Arcturus\ModpackManager\Remote\ServerFilesFactory;
 use Arcturus\ModpackManager\Local\LocalWorker;
 use RuntimeException;
@@ -39,9 +40,10 @@ final class PrepareRelease
                 }
             });
         }
+        $trust = app(GtnhArchiveTrust::class);
         if ($operation->phase === 'queued') {
             $release = $this->providers->get($server->provider)->release($server->source, $context['version'], $server->asset_pattern);
-            if (! $release->canPrepare()) {
+            if (! $release->canPrepare() && ! $release->canInspectArchive()) {
                 $missing = count(array_filter($release->downloads, fn ($d) => empty($d['hashes']))) > 0;
                 throw new PreparationException(['code' => $missing ? 'CHECKSUM_MISSING' : 'RELEASE_UNVERIFIED', 'phase' => 'queued']);
             }
@@ -50,6 +52,27 @@ final class PrepareRelease
             }
             $context['recipe'] = $release->recipe();
             $context['recipe']['limits'] = ['max_archive_bytes' => (int) config('arcturus-modpack-manager.max_archive_bytes', 8589934592)];
+            if ($release->canInspectArchive()) {
+                $artifact = $release->gtnhArtifact;
+                $pin = $trust->evidence($artifact);
+                $context['recipe']['gtnh_archive'] = $artifact->identity();
+                $this->archiveProgress($operation, $artifact);
+                if (($pin['level'] ?? null) === 'rejected') {
+                    throw new PreparationException(['code' => 'GTNH_ARCHIVE_REJECTED']);
+                }
+                if ($trust->usable($pin, $server)) {
+                    $context['recipe'] = $this->pinnedRecipe($context['recipe'], $pin);
+                } elseif ($pin !== null) {
+                    $this->tracker->transition($operation, 'archive_review_required');
+                    return true;
+                } else {
+                    if (! ($worker->request('capabilities')['gtnh_archive_quarantine'] ?? false)) {
+                        throw new PreparationException(['code' => 'GTNH_QUARANTINE_UNAVAILABLE']);
+                    }
+                    $context['recipe']['gtnh_quarantine'] = true;
+                    $context['recipe']['downloads'] = [];
+                }
+            }
             $context['release_name'] = $release->name;
             $operation->update(['context' => $context]);
             // Save intent before sending: a crash after submission resumes using the SAME operation ID.
@@ -59,6 +82,25 @@ final class PrepareRelease
         $status = $worker->request('prepare', ['operation_id' => $operation->node_operation_id, 'recipe' => $context['recipe']]);
         if (($status['operation_id'] ?? null) !== $operation->node_operation_id) {
             throw new RuntimeException('Node returned a mismatched operation ID');
+        }
+        if (($context['recipe']['gtnh_quarantine'] ?? false) && ($status['state'] ?? null) === 'archive_measured') {
+            $artifact = GtnhArtifact::fromArray($context['recipe']['gtnh_archive']);
+            $pin = $trust->measure($artifact, $status['measurement'] ?? [], $server, $operation);
+            $this->archiveProgress($operation, $artifact);
+            if (($pin['level'] ?? null) === 'rejected') {
+                throw new PreparationException(['code' => 'GTNH_ARCHIVE_REJECTED']);
+            }
+            if (! $trust->usable($pin, $server->refresh())) {
+                $this->tracker->transition($operation, 'archive_review_required');
+                return true;
+            }
+            // A second, pinned worker operation has a distinct immutable recipe and stage.
+            $operation->update(['node_operation_id' => bin2hex(random_bytes(16)), 'heartbeat_at' => now(),
+                'context' => [...$context, 'recipe' => $this->pinnedRecipe($context['recipe'], $pin)]]);
+            return false;
+        }
+        if (($context['recipe']['gtnh_quarantine'] ?? false) && in_array($status['state'] ?? null, ['completed', 'extracting', 'hashing', 'awaiting_resolution'], true)) {
+            throw new RuntimeException('A GTNH quarantine operation cannot expose a preparation stage.');
         }
         if (($status['state'] ?? null) === 'awaiting_resolution') {
             $provider = $this->providers->get($server->provider);
@@ -101,7 +143,11 @@ final class PrepareRelease
             return true;
         }
         if ($state === 'failed') {
-            throw new PreparationException($status['diagnostic'] ?? ['code' => 'PREPARATION_FAILED', 'phase' => $operation->progress['current']['phase'] ?? 'queued']);
+            $diagnostic = $status['diagnostic'] ?? ['code' => 'PREPARATION_FAILED', 'phase' => $operation->progress['current']['phase'] ?? 'queued'];
+            if (isset($context['recipe']['gtnh_archive']) && ($diagnostic['code'] ?? null) === 'CHECKSUM_MISMATCH') {
+                $diagnostic['code'] = 'GTNH_ARCHIVE_CHANGED';
+            }
+            throw new PreparationException($diagnostic);
         }
         if ($state !== 'completed') {
             $phase = match ($state) {
@@ -123,8 +169,25 @@ final class PrepareRelease
         if (Operation::whereKey($operation->id)->value('cancel_requested_at')) {
             throw new PreparationException(['code' => 'CANCELLED', 'phase' => $operation->progress['current']['phase'] ?? 'queued']);
         }
+        $archiveEvidence = [];
+        if (isset($context['recipe']['gtnh_archive'])) {
+            $artifact = GtnhArtifact::fromArray($context['recipe']['gtnh_archive']);
+            $pin = $trust->evidence($artifact);
+            if (! $trust->usable($pin, $server->refresh()) || $this->pinnedRecipe($context['recipe'], $pin)['downloads'] !== $context['recipe']['downloads']) {
+                throw new RuntimeException('GTNH archive trust changed before preparation completed.');
+            }
+            $archiveEvidence = ['archive_trust' => [...$artifact->identity(), ...$pin]];
+        }
         $manifest = $worker->request('manifest', ['operation_id' => $operation->node_operation_id]);
         (new BaselineGuard)->require($manifest, $server->provider, $server->source, $context['version']);
+        if ($archiveEvidence) {
+            $reported = $manifest['artifacts'][0] ?? [];
+            $pin = $archiveEvidence['archive_trust'];
+            if (count($manifest['artifacts']) !== 1 || ($reported['sha256'] ?? null) !== $pin['sha256'] ||
+                ($reported['hashes']['sha256'] ?? null) !== $pin['sha256'] || ($reported['bytes'] ?? null) !== $pin['size']) {
+                throw new PreparationException(['code' => 'GTNH_ARCHIVE_CHANGED', 'phase' => 'verifying']);
+            }
+        }
         $preparedNodeId = $operation->node_operation_id;
         $preparedDigest = $status['manifest_sha256'];
         if ($server->transport === 'native' && $operation->kind !== 'baseline') {
@@ -148,7 +211,7 @@ final class PrepareRelease
         $path = $this->store->put($manifest);
         $provenance = ['operation_id' => $operation->id, 'node_operation_id' => $preparedNodeId, 'transport' => $server->transport ?? 'wings',
             'provider' => $server->provider, 'project' => $server->source, 'version' => $context['version'],
-            'manifest_sha256' => $preparedDigest, 'verification' => 'upstream-checksums'];
+            'manifest_sha256' => $preparedDigest, 'verification' => $archiveEvidence ? 'recorded-archive-pin' : 'upstream-checksums', ...$archiveEvidence];
         $this->tracker->transition($operation, 'comparing');
         PreparationProgress::phase($operation, 'comparing', 'inventory_enumeration');
         if ($operation->kind === 'baseline') {
@@ -168,5 +231,18 @@ final class PrepareRelease
         $this->tracker->transition($operation, 'completed');
 
         return true;
+    }
+
+    private function archiveProgress(Operation $operation, GtnhArtifact $artifact): void
+    {
+        $operation->update(['progress' => [...($operation->progress ?? []), 'gtnh_archive' => $artifact->identity()]]);
+    }
+
+    private function pinnedRecipe(array $recipe, array $pin): array
+    {
+        unset($recipe['gtnh_quarantine']);
+        $recipe['downloads'] = [['url' => $recipe['gtnh_archive']['url'], 'archive' => true,
+            'hashes' => ['sha256' => $pin['sha256']], 'size' => $pin['size']]];
+        return $recipe;
     }
 }

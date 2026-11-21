@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import shutil
 import ssl
 import stat
 import threading
@@ -79,6 +80,7 @@ class ManagedPathFailure(ValueError):
 
 # Public diagnostics are constructed from this vocabulary, never from exception strings.
 FAILURES = {
+    'GTNH_ARCHIVE_CHANGED': ('The official GTNH archive differs from its recorded SHA-256 or size.', 'Retain the existing pin and investigate the exact official archive before preparing again.'),
     'CHECKSUM_MISSING': ('An independently verified upstream checksum is missing.', 'Select a release with published checksums or an operator-reviewed verified recipe.'),
     'CHECKSUM_INVALID': ('The declared upstream checksum is invalid.', 'Correct the reviewed release metadata; do not disable checksum verification.'),
     'CHECKSUM_MISMATCH': ('Downloaded bytes do not match the upstream checksum.', 'Retain the partial stage and verify the exact upstream asset before an explicit retry.'),
@@ -214,7 +216,7 @@ class ProgressState:
         phase = values.pop('phase', values.get('state'))
         if phase not in PHASES:
             phase = old or 'queued'
-        terminal = values.get('state') in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution')
+        terminal = values.get('state') in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution', 'archive_measured')
         changed = phase != old
         if changed:
             previous = self.data.get('progress', {})
@@ -246,7 +248,7 @@ class ProgressState:
         progress['download_total_bytes'] = self.data.get('download_total_bytes')
         if 'bytes_downloaded' in values:
             self.data['bytes_downloaded'] = values['bytes_downloaded']
-        if values.get('state') == 'completed':
+        if values.get('state') in ('completed', 'archive_measured'):
             progress['finished'] = True
         self.data.setdefault('stages', {})[phase] = dict(progress)
         if force or terminal or now - self.last_write >= 2:
@@ -407,9 +409,14 @@ def validate_checksums(hashes):
 
 
 def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress=lambda n: None,
-          cancelled=lambda: False, report=lambda **values: None):
+          cancelled=lambda: False, report=lambda **values: None, *, measurement=False, exact_url=False):
     """Pinned HTTPS with bounded gateway retries before file creation; no partial-transfer replay."""
-    validate_checksums(hashes)
+    if measurement:
+        if not exact_url or hashes:
+            raise PreparationFailure('METADATA_INVALID')
+    else:
+        validate_checksums(hashes)
+    deadline = time.monotonic() + 3600
     response = connection = None
     try:
         origin_url = url
@@ -439,6 +446,8 @@ def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress
                 connection.request('GET', p.path + ('?' + p.query if p.query else ''), headers=headers)
                 response = connection.getresponse()
                 if response.status in (301, 302, 303, 307, 308):
+                    if exact_url:
+                        raise PreparationFailure('DOWNLOAD_POLICY', reason='URL_INVALID', host=host)
                     url = urljoin(url, response.getheader('Location', ''))
                     response.close(); connection.close()
                     response = connection = None
@@ -464,14 +473,23 @@ def fetch(url, destination, hosts, hashes, maximum, expected_size=None, progress
         length = response.getheader('Content-Length')
         if length is not None and (not length.isdigit() or int(length) > maximum):
             raise PreparationFailure('DOWNLOAD_LIMIT')
+        if exact_url and length is not None and expected_size is not None and int(length) != expected_size:
+            raise PreparationFailure('GTNH_ARCHIVE_CHANGED')
         total = int(length) if length is not None else expected_size
+        if exact_url and (total or 0) + 64 * 1024**2 > shutil.disk_usage(destination.parent).free:
+            raise PreparationFailure('DISK_FULL')
         report(state='downloading', step=None, bytes_done=0, bytes_total=total, files_done=0, files_total=1)
         digests = {a: hashlib.new(a) for a in set(hashes) | {'sha256'}}
         size = 0
         with destination.open('xb') as output:
-            while chunk := response.read(1024 * 1024):
+            while chunk := (response.read1(1024 * 1024) if exact_url else response.read(1024 * 1024)):
                 if cancelled():
                     raise InterruptedError('Operation cancelled')
+                if exact_url:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError('GTNH transfer deadline')
+                    if shutil.disk_usage(destination.parent).free < 64 * 1024**2:
+                        raise PreparationFailure('DISK_FULL')
                 size += len(chunk)
                 if size > maximum:
                     raise PreparationFailure('DOWNLOAD_LIMIT')
@@ -532,14 +550,15 @@ def local_artifact(identifier, destination, entry, hashes, maximum, report=lambd
     return digests['sha256'].hexdigest(), size
 
 
-def extract_zip(archive, destination, maximum, cancelled=lambda: False, report=lambda **values: None):
-    """Validate the entire central directory before extracting a single entry."""
+def extract_zip(archive, destination, maximum, cancelled=lambda: False, report=lambda **values: None, *, require_space=False):
+    """Validate the directory, then check entry bytes with or without writing them."""
+    phase = 'verifying' if destination is None else 'extracting'
     with zipfile.ZipFile(archive) as source:
         entries = source.infolist()
         if len(entries) > MAX_FILES:
             raise PreparationFailure('ARCHIVE_LIMIT')
-        seen, total, files_total = set(), 0, sum(not item.is_dir() for item in entries)
-        report(state='extracting', step='validating_archive', bytes_done=0, bytes_total=None,
+        seen, regular, total, files_total = set(), set(), 0, sum(not item.is_dir() for item in entries)
+        report(state=phase, step='validating_archive', bytes_done=0, bytes_total=None,
                files_done=0, files_total=files_total, entries_validated=0)
         for index, item in enumerate(entries):
             try:
@@ -550,38 +569,57 @@ def extract_zip(archive, destination, maximum, cancelled=lambda: False, report=l
             if name in seen or stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR) or item.flag_bits & 1:
                 raise PreparationFailure('ARCHIVE_UNSAFE', entry_index=index + 1)
             seen.add(name)
+            if destination is None and not item.is_dir():
+                regular.add(name)
             total += item.file_size
             if total > maximum or item.file_size > max(1048576, item.compress_size * 1000):
                 raise PreparationFailure('ARCHIVE_LIMIT', entry_index=index + 1)
-            report(state='extracting', entries_validated=index + 1)
+            report(state=phase, entries_validated=index + 1)
+        if destination is None:
+            roots = {'mods': set(), 'config': set()}
+            for name in regular:
+                parts = name.split('/')
+                if any('/'.join(parts[:i]) in regular for i in range(1, len(parts))):
+                    raise PreparationFailure('ARCHIVE_UNSAFE')
+                for index, part in enumerate(parts[:-1][:2]):
+                    if part in roots:
+                        roots[part].add(tuple(parts[:index]))
+            if not roots['mods'].intersection(roots['config']):
+                raise PreparationFailure('ARCHIVE_INVALID')
+        if require_space and total + 64 * 1024**2 > shutil.disk_usage(destination).free:
+            raise PreparationFailure('DISK_FULL')
         written, files_done = 0, 0
-        report(state='extracting', step='extracting_files', bytes_done=0, bytes_total=total)
+        report(state=phase, step='validating_archive' if destination is None else 'extracting_files', bytes_done=0, bytes_total=total)
         for index, item in enumerate(entries):
             if cancelled():
                 raise InterruptedError('Operation cancelled')
-            dest = destination / item.filename
+            dest = destination / item.filename if destination is not None else None
             if item.is_dir():
-                dest.mkdir(parents=True, exist_ok=True, mode=0o750)
+                if dest is not None:
+                    dest.mkdir(parents=True, exist_ok=True, mode=0o750)
                 continue
-            dest.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+            if dest is not None:
+                dest.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
             count = 0
             try:
-                with source.open(item) as src, dest.open('xb') as out:
+                with source.open(item) as src, (dest.open('xb') if dest is not None else contextlib.nullcontext()) as out:
                     while chunk := src.read(1024 * 1024):
                         if cancelled():
                             raise InterruptedError('Operation cancelled')
                         count += len(chunk)
                         if count > item.file_size:
                             raise PreparationFailure('ARCHIVE_INVALID', entry_index=index + 1)
-                        out.write(chunk)
-                        report(state='extracting', bytes_done=written + count, bytes_total=total)
+                        if out is not None:
+                            out.write(chunk)
+                        report(state=phase, bytes_done=written + count, bytes_total=total)
             except zipfile.BadZipFile:
                 raise PreparationFailure('ARCHIVE_INVALID', entry_index=index + 1)
             if count != item.file_size:
                 raise PreparationFailure('ARCHIVE_INVALID', entry_index=index + 1)
-            os.chmod(dest, 0o750 if (item.external_attr >> 16) & 0o111 else 0o640)
+            if dest is not None:
+                os.chmod(dest, 0o750 if (item.external_attr >> 16) & 0o111 else 0o640)
             written += count; files_done += 1
-            report(state='extracting', bytes_done=written, bytes_total=total, files_done=files_done)
+            report(state=phase, bytes_done=written, bytes_total=total, files_done=files_done)
 
 def mod_metadata(root, path, expected_sha256=None, *, strict=False):
     """Bounded JAR metadata, including legacy Forge mcmod.info. Never infer IDs from names."""
@@ -731,7 +769,7 @@ class Worker:
                 continue  # Retain corrupt upstream evidence; never label it complete or replay it.
             if not isinstance(data, dict) or not isinstance(data.get('state'), str):
                 continue
-            if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution'):
+            if data['state'] not in ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_resolution', 'archive_measured'):
                 data.update(state='interrupted', error=FAILURES['INTERRUPTED'][0], diagnostic=diagnostic(PreparationFailure('INTERRUPTED'), data.get('progress', {}).get('phase', data.get('state'))))
                 atomic_json(path, data)
 
@@ -1062,6 +1100,28 @@ class Worker:
                 return candidate
         return None
 
+    def gtnh_archive(self, recipe):
+        artifact = recipe['gtnh_archive']
+        version = recipe.get('version')
+        runtime = recipe.get('runtime', {})
+        variant = artifact.get('variant')
+        maximum_java = runtime.get('java_max')
+        java = runtime.get('java')
+        if (recipe.get('provider') != 'gtnh' or recipe.get('project') != 'gtnh' or recipe.get('format') != 'zip'
+                or runtime.get('minecraft') != '1.7.10' or not isinstance(version, str)
+                or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9][a-zA-Z0-9.-]{0,60})?', version)
+                or (variant, java) not in (('java8', 8), ('java17plus', 17))
+                or type(maximum_java) is not int or maximum_java < java or (java == 8 and maximum_java != 8)):
+            raise PreparationFailure('METADATA_INVALID')
+        suffix = '8' if java == 8 else f'17-{maximum_java}'
+        filename = f'GT_New_Horizons_{version}_Server_Java_{suffix}.zip'
+        host = 'downloads.gtnewhorizons.com'
+        url = artifact.get('url')
+        if (artifact != {'provider': 'gtnh', 'version': version, 'variant': variant, 'url': url, 'filename': filename}
+                or url not in [f'https://{host}/ServerPacks/{folder}{filename}' for folder in ('', 'betas/')]):
+            raise PreparationFailure('DOWNLOAD_POLICY')
+        return url, host
+
     def _prepare(self, server, base, recipe):
         path = base / 'operation.json'
         data = json.loads(path.read_text())
@@ -1074,11 +1134,32 @@ class Worker:
             try:
                 entry = self.entry(server)
                 maximum = min(entry.get('max_archive_bytes', 8 * 1024**3), recipe.get('limits', {}).get('max_archive_bytes', 8 * 1024**3))
-                files = base / 'files'
-                files.mkdir(mode=0o700)
                 if recipe.get('blockers') or not recipe.get('version') or not recipe.get('project') or not recipe.get('provider'):
                     raise PreparationFailure('METADATA_INVALID')
                 items = recipe.get('downloads', [])
+                gtnh = self.gtnh_archive(recipe) if 'gtnh_archive' in recipe else None
+                if recipe.get('gtnh_quarantine') is True:
+                    if gtnh is None or items:
+                        raise PreparationFailure('METADATA_INVALID')
+                    url, host = gtnh
+                    if host not in entry.get('allowed_hosts', []):
+                        raise PreparationFailure('DOWNLOAD_POLICY', reason='HOST_NOT_ALLOWED', host=host)
+                    dest = base / 'quarantine.zip'
+                    sha, size = fetch(url, dest, [host], {}, maximum, cancelled=cancelled,
+                                      progress=lambda n: update(bytes_downloaded=n), report=update,
+                                      measurement=True, exact_url=True)
+                    extract_zip(dest, None, maximum, cancelled, report=update)
+                    if cancelled():
+                        raise InterruptedError('Operation cancelled')
+                    update(state='archive_measured', measurement={'sha256': sha, 'size': size})
+                    return
+                if gtnh is not None and (len(items) != 1 or items[0].get('url') != gtnh[0]
+                        or set(items[0]) != {'url', 'archive', 'hashes', 'size'}
+                        or items[0].get('archive') is not True or set(items[0].get('hashes', {})) != {'sha256'}
+                        or type(items[0].get('size')) is not int or items[0]['size'] <= 0):
+                    raise PreparationFailure('CHECKSUM_MISSING')
+                files = base / 'files'
+                files.mkdir(mode=0o700)
                 if not items or len(items) > MAX_FILES:
                     raise PreparationFailure('METADATA_INVALID')
                 total = 0
@@ -1089,7 +1170,7 @@ class Worker:
                         raise InterruptedError('Operation cancelled')
                     update(state='downloading', current_file=i + 1, total_files=len(items))
                     dest = base / ('download-%d' % i)
-                    cached = self.cached_artifact(server, data['recipe_sha256'], i, base)
+                    cached = None if gtnh else self.cached_artifact(server, data['recipe_sha256'], i, base)
                     if cached is not None:
                         try:
                             sha, size = local_artifact('retained', dest,
@@ -1111,9 +1192,15 @@ class Worker:
                             if item.get('size') is not None and item['size'] != size:
                                 raise PreparationFailure('TRANSFER_SIZE')
                         else:
-                            sha, size = fetch(item['url'], dest, entry.get('allowed_hosts', []), item['hashes'],
-                                              maximum - total, item.get('size'),
-                                              lambda n: update(bytes_downloaded=total + n), cancelled, report=lambda **v: transfer_report(update, total, **v))
+                            try:
+                                sha, size = fetch(item['url'], dest, entry.get('allowed_hosts', []), item['hashes'],
+                                                  maximum - total, item.get('size'), lambda n: update(bytes_downloaded=total + n),
+                                                  cancelled, report=lambda **v: transfer_report(update, total, **v),
+                                                  **({'exact_url': True} if gtnh else {}))
+                            except PreparationFailure as error:
+                                if gtnh and error.code == 'CHECKSUM_MISMATCH':
+                                    raise PreparationFailure('GTNH_ARCHIVE_CHANGED') from error
+                                raise
                     total += size
                     artifacts.append({'sha256': sha, 'bytes': size, 'path': item.get('path'), 'hashes': item['hashes']})
                     if item.get('archive'):
@@ -1122,7 +1209,7 @@ class Worker:
                         update(state='extracting')
                         unpack = base / 'unpacked'
                         unpack.mkdir(mode=0o700)
-                        extract_zip(dest, unpack, maximum, cancelled, report=update)
+                        extract_zip(dest, unpack, maximum, cancelled, report=update, **({'require_space': True} if gtnh else {}))
                         if recipe.get('format') == 'curseforge':
                             manifest_path = unpack / 'manifest.json'
                             if manifest_path.stat().st_size > MAX_REQUEST:
@@ -1209,7 +1296,7 @@ class Worker:
                   'version': recipe['version'], 'files': manifest, 'identities': identities, 'metadata': metadata,
                   'runtime': recipe.get('runtime', {}), 'artifacts': artifacts,
                   'managed_directories': sorted(self.managed_directories(server)), 'directory_discovery': discovery,
-                  'verification': 'upstream-checksums', 'bytes': bytes_hashed}
+                  'verification': 'recorded-archive-pin' if 'gtnh_archive' in recipe else 'upstream-checksums', 'bytes': bytes_hashed}
         atomic_json(base / 'manifest.json', result)
         update(state='completed', manifest_sha256=hashlib.sha256((base / 'manifest.json').read_bytes()).hexdigest())
 
@@ -1412,7 +1499,7 @@ class Worker:
             scoped.settings = {**self.settings, 'servers': {**self.settings['servers'], server: entry}}
             return scoped.handle(server, operation, {k: v for k, v in payload.items() if k != 'directory_scope'})
         if operation == 'capabilities':
-            return {'protocol': 1, 'scoped_inventory': 1, 'directory_policy': 1, 'mod_identity': 2, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True,
+            return {'protocol': 1, 'scoped_inventory': 1, 'directory_policy': 1, 'mod_identity': 2, 'hashes': True, 'inventory': True, 'prepare': True, 'curseforge_resolution': True, 'gtnh_archive_quarantine': True,
                     'deploy': False, 'preserve_exclusions': False,
                     'reason': 'Remote destructive transactions and restore verification require a disposable Pelican/Wings integration qualification'}
         if operation == 'hashes':

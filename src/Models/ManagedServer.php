@@ -100,7 +100,7 @@ final class ManagedServer extends Model
             if ($server->isDirty(['base_manifest_path', 'provider', 'source', 'installed_version'])) {
                 $server->forceFill(['comparison_status' => 'incomplete', 'comparison_diagnostic' => null, 'adoption_report' => null]);
             }
-            if ($server->isDirty(['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'policy', 'directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime'])) {
+            if ($server->isDirty(['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'policy', 'directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime', 'gtnh_trust_mode'])) {
                 (new \Arcturus\ModpackManager\Services\DirectoryPolicy)->normalize($server->directory_decisions ?? []);
                 (new UpdatePlanner)->plan([], [], [], $server->file_rules ?? [], [], $server->disabled_mods ?? []);
                 $server->forceFill(['approved_plan_sha256' => null, 'approved_at' => null, 'approved_by' => null,
@@ -109,7 +109,7 @@ final class ManagedServer extends Model
         });
         self::updated(function (self $server): void {
             if ($server->wasChanged('policy_revision')) {
-                $fields = array_intersect_key($server->getChanges(), array_flip(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime']));
+                $fields = array_intersect_key($server->getChanges(), array_flip(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime', 'gtnh_trust_mode']));
                 $before = [];
                 $after = [];
                 foreach ($fields as $key => $value) {

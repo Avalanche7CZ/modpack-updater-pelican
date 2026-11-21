@@ -5,6 +5,9 @@ namespace Arcturus\ModpackManager\Livewire;
 
 use Arcturus\ModpackManager\Models\ManagedServer;
 use Arcturus\ModpackManager\Models\Operation;
+use Arcturus\ModpackManager\Modpacks\Providers\GtnhArtifact;
+use Arcturus\ModpackManager\Services\GtnhArchiveTrust;
+use Filament\Notifications\Notification;
 use Arcturus\ModpackManager\Security\Access;
 use Arcturus\ModpackManager\Services\PreparationDiagnostic;
 use Livewire\Attributes\Locked;
@@ -48,10 +51,27 @@ final class PreparationStatus extends Component
             ] : null], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
+    public function decideArchive(string $operationId, string $sha, int $size, bool $approve): void
+    {
+        Access::requireAdmin();
+        $server = ManagedServer::findOrFail($this->managedServerId);
+        $operation = $server->operations()->whereIn('kind', ['baseline', 'prepare'])
+            ->where('phase', 'archive_review_required')->findOrFail($operationId);
+        $artifact = GtnhArtifact::fromArray($operation->progress['gtnh_archive']);
+        abort_unless($server->provider === 'gtnh' && $server->asset_pattern === $artifact->variant
+            && ($operation->kind === 'baseline' ? $server->installed_version : $server->targetVersion()) === $artifact->version, 409);
+        try {
+            app(GtnhArchiveTrust::class)->decide($artifact, $sha, $size, (int) auth()->id(), $approve);
+            Notification::make()->title($approve ? 'Archive approved. Run preparation again.' : 'Archive rejected.')->success()->send();
+        } catch (\RuntimeException $error) {
+            Notification::make()->title('Archive decision could not be saved')->body($error->getMessage())->danger()->send();
+        }
+    }
+
     public function render()
     {
         Access::requireAdmin();
-        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id', 'target_manifest_path']);
+        $server = ManagedServer::findOrFail($this->managedServerId, ['id', 'active_operation_id', 'target_manifest_path', 'gtnh_trust_mode']);
         $event = $server->events()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->latest('id')->first(['details', 'status']);
         $id = $server->active_operation_id ?: ($event?->details['operation_id'] ?? null);
         $operation = $id ? $server->operations()->find($id, ['id', 'kind', 'phase', 'node_operation_id', 'heartbeat_at', 'completed_at', 'cancel_requested_at', 'progress']) : null;
@@ -76,6 +96,18 @@ final class PreparationStatus extends Component
         if ($operation?->kind === 'comparison') {
             $presentation['rows'] = array_values(array_filter($presentation['rows'], fn ($row) => $row['key'] === 'comparing'));
         }
-        return view('arcturus-modpack-manager::preparation-status', compact('operation', 'report', 'diagnostic', 'legacy', 'presentation'));
+        $archive = null; $approvalRequired = false;
+        if (isset($report['gtnh_archive'])) {
+            $artifact = GtnhArtifact::fromArray($report['gtnh_archive']);
+            $trust = app(GtnhArchiveTrust::class);
+            $pin = $trust->evidence($artifact);
+            $archive = [...$artifact->identity(), ...($pin ?? ['level' => 'unmeasured'])];
+            $approvalRequired = $pin !== null && $pin['level'] !== 'rejected' && ! $trust->usable($pin, $server);
+            if ($operation->phase === 'archive_review_required') {
+                $presentation['status'] = $approvalRequired ? 'Archive approval required' : 'Archive review recorded';
+                $presentation['color'] = 'warning';
+            }
+        }
+        return view('arcturus-modpack-manager::preparation-status', compact('operation', 'report', 'diagnostic', 'legacy', 'presentation', 'archive', 'approvalRequired'));
     }
 }

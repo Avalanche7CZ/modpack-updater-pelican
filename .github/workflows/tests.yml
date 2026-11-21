@@ -68,6 +68,8 @@ jobs:
           php tests/integration/manual_lease.php
           php tests/integration/native_config_acceptance.php
           php tests/integration/native_config_set.php
+          php -d memory_limit=128M tests/integration/native_queued_confirmation.php
+          php tests/integration/gtnh_archive_trust.php
           php tests/integration/native_running_confirmation.php
           php tests/integration/native_restore_policy.php
           php tests/integration/native_deployment.php

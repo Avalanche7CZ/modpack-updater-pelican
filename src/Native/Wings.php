@@ -201,11 +201,11 @@ final class Wings implements BulkStaging
     }
 
     /** Fresh snapshots are local to ONE read-only batch. Never reused by writes or another phase. */
-    public function hashBatch(array $paths): array
+    public function hashBatch(array $paths, ?\Closure $inspect = null): array
     {
         if (count($paths) > 32 || ! array_is_list($paths)) { throw new RuntimeException('Native hash batch must contain at most 32 explicit paths.'); }
         $before = $this->batchMetadata($paths);
-        $hashes = $this->parallelHashes($paths, $before[0]);
+        $hashes = $this->parallelHashes($paths, $before[0], $inspect);
         if ($this->batchMetadata($paths) !== $before) { throw new RuntimeException('Native batch file or ancestor changed during verification.'); }
         return $hashes;
     }
@@ -221,7 +221,7 @@ final class Wings implements BulkStaging
     }
 
     /** Async curl transfers use disk sinks: stream=true would select Guzzle's synchronous handler. */
-    private function parallelHashes(array $paths, array $metadata): array
+    private function parallelHashes(array $paths, array $metadata, ?\Closure $inspect = null): array
     {
         $hashes = [];
         $batches = []; $batch = []; $bytes = 0;
@@ -259,7 +259,7 @@ final class Wings implements BulkStaging
                 // Settle every launched read before releasing resources, even if another read failed.
                 $results = \GuzzleHttp\Promise\Utils::settle($promises)->wait();
                 foreach ($results as $path => $result) {
-                    $this->measured('hash-read', function () use ($result, $path, $metadata, &$hashes): void {
+                    $this->measured('hash-read', function () use ($result, $path, $metadata, &$hashes, $inspect): void {
                         if ($result['state'] !== 'fulfilled') { throw $result['reason']; }
                         $response = $result['value'];
                         if ($response instanceof \Throwable) { throw $response; }
@@ -273,9 +273,10 @@ final class Wings implements BulkStaging
                                 if ($bytes > $metadata[$path]['size'] || ($chunk === '' && ! $stream->eof())) { throw new RuntimeException('Invalid Wings verification stream.'); }
                                 hash_update($hash, $chunk); $this->heartbeat?->__invoke(); $this->budget?->timeout(600);
                             }
+                            if ($bytes !== $metadata[$path]['size']) { throw new RuntimeException('Truncated parallel Wings read.'); }
+                            $hashes[$path] = hash_final($hash);
+                            if ($inspect !== null) { $inspect($path, $hashes[$path], $bytes, $stream); }
                         } finally { $stream->close(); }
-                        if ($bytes !== $metadata[$path]['size']) { throw new RuntimeException('Truncated parallel Wings read.'); }
-                        $hashes[$path] = hash_final($hash);
                     });
                 }
             } finally {

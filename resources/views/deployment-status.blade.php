@@ -1,4 +1,4 @@
-<div @if(($isActive ?? false) && !$operation->completed_at && !in_array($operation->phase, ['awaiting_manual_start', 'manual_intervention'], true)) wire:poll.3s.visible @endif>
+<div @if(($confirmationPending ?? false) || (($isActive ?? false) && !$operation->completed_at && !in_array($operation->phase, ['awaiting_manual_start', 'manual_intervention'], true))) wire:poll.3s.visible @endif>
     @if($operation)
         @php($phaseLabel = match ($operation->phase) { 'completed' => 'Update complete', 'awaiting_manual_start' => 'Waiting for startup confirmation', 'manual_intervention' => 'Recovery needs attention', 'restored' => 'Original installation restored', default => str_replace('_', ' ', ucfirst($operation->phase)) })
         @php($phaseColor = match ($operation->phase) { 'completed', 'restored' => 'success', 'manual_intervention', 'awaiting_manual_start' => 'warning', 'failed', 'interrupted' => 'danger', 'cancelled' => 'gray', default => 'primary' })
@@ -65,10 +65,30 @@
             @if($operation->phase === 'awaiting_manual_start')
                 <p class="mt-3 text-sm">{{ ($context['native_manual_start']['role'] ?? '') === 'deploy' ? 'Updated files are in place.' : 'The original files have been restored.' }} Use Pelican to start Minecraft if it is stopped, then verify startup. Another update is blocked until this one is closed.</p>
             @endif
-            @if($canConfirmRunning ?? false)
+            @if($confirmation ?? null)
+                <div role="status" class="mt-3 text-sm">
+                    <p class="font-semibold">{{ match ($confirmation->state) {
+                        'queued' => 'Confirmation queued',
+                        'checking_server' => 'Checking running server',
+                        'verifying_files' => 'Verifying deployed files',
+                        'validating_configs' => 'Validating configuration changes',
+                        'finalizing' => 'Completing update',
+                        'completed' => 'Confirmation completed',
+                        'blocked' => 'Confirmation blocked by another deployment or recovery writer',
+                        'dispatch_pending' => 'Confirmation saved and waiting for queue dispatch',
+                        default => 'Confirmation failed',
+                    } }}</p>
+                    <p>Confirmation <code>{{ $confirmation->id }}</code></p>
+                    @if($confirmation->error)<p class="break-words">{{ $confirmation->error }}</p>@endif
+                    @if(($canConfirmRunning ?? false) && (int) auth()->id() === $confirmation->actor_id && in_array($confirmation->state, ['blocked', 'dispatch_pending'], true))
+                        <x-filament::button class="mt-2" color="gray" wire:click="retryConfirmation('{{ $confirmation->id }}')" wire:loading.attr="disabled">Retry confirmation</x-filament::button>
+                    @endif
+                </div>
+            @endif
+            @if(($canConfirmRunning ?? false) && ! ($confirmationPending ?? false))
                 <div class="mt-4 flex flex-wrap items-center gap-2">
                     <x-filament::button color="primary" wire:click="reviewCurrentConfiguration('{{ $operation->id }}')" wire:loading.attr="disabled" wire:target="reviewCurrentConfiguration,acceptCurrentConfiguration">Review current configuration</x-filament::button>
-                    <span wire:loading wire:target="reviewCurrentConfiguration,acceptCurrentConfiguration" role="status" class="text-sm">Checking through Wings. This can take a while.</span>
+                    <span wire:loading wire:target="reviewCurrentConfiguration" role="status" class="text-sm">Checking through Wings. This can take a while.</span>
                 </div>
                 @if(($configurationSetReview ?? null) && ($configurationSetReview['operation_id'] ?? null) === $operation->id)
                     <div class="mt-3 overflow-x-auto">
@@ -105,12 +125,14 @@
                     <summary class="cursor-pointer">Individual verification options</summary>
                     <div class="mt-2 flex flex-wrap gap-2">
                         <x-filament::button color="gray" wire:click="reviewRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled">Review files individually</x-filament::button>
-                        <x-filament::button color="gray" wire:click="confirmRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled"
+                        @if(($deploymentReview['can_confirm'] ?? false) && ($deploymentReview['operation_id'] ?? null) === $operation->id)
+                            <x-filament::button color="gray" wire:click="confirmRunningDeployment('{{ $operation->id }}')" wire:loading.attr="disabled"
                             wire:confirm="I connected to the server and verified it is running {{ $context['to'] ?? '' }}. Continue without automatic startup verification? Unresolved file differences will block completion.">Confirm running server</x-filament::button>
+                        @endif
                     </div>
                 </details>
             @endif
-            @if($canConfirmRunning ?? false)
+            @if(($canConfirmRunning ?? false) && ! ($confirmationPending ?? false))
                 @if(($deploymentReview ?? null) && ($deploymentReview['operation_id'] ?? null) === $operation->id)
                     <div class="mt-3 overflow-x-auto">
                         <p class="text-sm">Cílový manifest: <code>{{ $deploymentReview['target_manifest_sha256'] }}</code>. Přijetí mění pouze audit lokálního hashe, nikoli soubory nebo upstream baseline.</p>

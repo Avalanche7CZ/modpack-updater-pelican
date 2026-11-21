@@ -77,7 +77,7 @@ final class GtnhProvider implements ModpackProvider
         return $catalog;
     }
 
-    private static function versionId(string $version): bool
+    public static function versionId(string $version): bool
     {
         return preg_match('/^\d+\.\d+\.\d+(?:-[a-z0-9][a-z0-9.-]{0,60})?$/iD', $version) === 1;
     }
@@ -110,21 +110,18 @@ final class GtnhProvider implements ModpackProvider
         $stableUrl = 'https://'.self::HOST.'/ServerPacks/'.$filename;
         $betaUrl = 'https://'.self::HOST.'/ServerPacks/betas/'.$filename;
         $downloads = [];
+        $artifact = null;
         $blockers = [];
         if (! is_int($maxJava) || $maxJava < $runtime['java'] || ! in_array($url, [$stableUrl, $betaUrl], true)) {
             $blockers[] = 'GTNH catalog has no valid official server ZIP for the selected exact release and Java variant.';
         } else {
-            // The upstream catalog lists URLs, not checksums. Pins are reviewed
-            // independently of the worker and are never taken from live files.
-            $pin = GtnhArchivePins::FILES[$filename] ?? null;
-            if ($pin === null) {
-                $blockers[] = 'No reviewed SHA-256 pin for this GTNH server ZIP. Use a verified custom recipe or update the plugin.';
-            }
+            $artifact = new GtnhArtifact($version, $variant, $url, $filename);
+            $pin = $artifact->reviewedPin();
             $downloads[] = ['url' => $url, 'archive' => true, 'hashes' => $pin === null ? [] : ['sha256' => $pin['sha256']]]
                 + ($pin === null ? [] : ['size' => $pin['size']]);
         }
 
         return new Release(self::SOURCE, self::SOURCE, $version, 'GTNH '.$version.' · '.self::VARIANTS[$variant],
-            $downloads, $runtime, $blockers, 'zip', 'https://www.gtnewhorizons.com/version-history/');
+            $downloads, $runtime, $blockers, 'zip', 'https://www.gtnewhorizons.com/version-history/', gtnhArtifact: $artifact);
     }
 }

@@ -14,7 +14,20 @@ In **Adopt Existing Server**, choose **GTNH · Official downloads**, select the 
 
 The adapter reads the [official GTNH release index](https://downloads.gtnewhorizons.com/versions.json), takes the matching server ZIP, and only promotes stable releases in automatic checks. It does not construct a client download or switch to a different Java variant. Native deployment checks the verified Java runtime against the advertised range and still verifies the loader and existing startup independently. In particular, the provider does not convert an upstream Forge launcher to Crucible or approve a custom Crucible startup by itself. Review the world migration separately.
 
-The official index does not provide archive SHA-256 digests. The plugin ships independently measured pins (SHA-256 and exact size) for the official Java 8 and Java 17+ ZIPs of **2.8.1** and **2.9.0**, plus the **Java 17–26 server ZIP of 2.9.1**. The 2.9.1 pin is based on the operator-measured SHA-256 and exact byte size of the archive downloaded from the official release URL; it is not a publisher-issued digest. The worker verifies the pin before extraction. A newer release without a reviewed pin remains visible but cannot be prepared until a plugin update adds a pin or an operator supplies an independently verified custom recipe. Do not substitute a multipart ETag or hash a live server to generate a pin. Legacy node workers additionally need `downloads.gtnewhorizons.com` in their exact host allowlist.
+### Archive trust
+
+The official stable/server catalog currently supplies URLs and Java ranges. It supplies no SHA-256 or signatures for those ZIPs. The bundled reviewed HTTPS measurements for GTNH 2.8.1 and 2.9.0 (both variants) and 2.9.1 (Java 17–26) remain authoritative for their exact stable URLs.
+
+- **Strict** is the default, including for existing servers. Run preparation to measure an unknown ZIP in private staging. When the operation reports **Archive approval required**, check the exact URL, variant, byte size and SHA-256. Prefer publisher-authenticated evidence if GTNH provides it through a separate channel. A root administrator can approve the recorded digest or reject the artifact. After approval, run preparation again.
+- **Automatic TOFU** is an explicit per-server opt-in under **GTNH archive trust**. The worker streams and validates the first official HTTPS download and the Panel atomically records its SHA-256 and exact size. TOFU can pin compromised first-download bytes. A strict server requires root approval before using a digest enrolled by another server in TOFU mode.
+
+Records are global for each exact provider, release, Java variant, URL and filename. Approval changes the trust level of the same digest. Rejection of a quarantined artifact blocks that identity across all servers. A changed size or digest fails preparation, leaving the original record intact. Investigate a republished ZIP with the publisher. Use a new exact artifact identity or the independently reviewed custom recipe workflow if the publisher confirms a replacement.
+
+Quarantine uses the existing Python staging worker, its allowed host and public-address checks, direct HTTPS with certificate validation, bounded streaming, ZIP entry validation and the configured byte limits. The worker validates ZIP payloads without extracting files and retains the quarantined ZIP separately from usable stages. An interrupted or truncated transfer cannot produce a trust record. After approval or TOFU enrollment, a separate preparation downloads the ZIP again and checks both fields before extraction. Allow staging space for the quarantined ZIP, the pinned download and its expanded files. Clean up retired private stages under the existing operator retention process.
+
+Apply the archive-trust migration when upgrading and update any legacy remote worker before preparing an unpinned GTNH release. Native and same-host preparation use the bundled worker. Existing baseline manifests and installed versions remain usable.
+
+GTNH archive-trust regressions ran against Pelican RC2 and RC3 using disposable SQLite databases and worker HTTP fixtures. They cover strict approval and rejection, opt-in TOFU, Java variant mismatch, immutable pins across concurrent processes, archive replacement, truncation, byte limits and the boundary before extraction.
 
 ## GitHub Releases
 

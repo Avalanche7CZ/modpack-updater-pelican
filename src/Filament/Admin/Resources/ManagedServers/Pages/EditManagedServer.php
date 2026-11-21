@@ -46,7 +46,7 @@ final class EditManagedServer extends EditRecord
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
         $data = ReleaseSourceFields::normalize($data);
-        $attributes = array_intersect_key($data, array_flip(['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport']));
+        $attributes = array_intersect_key($data, array_flip(['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'label', 'policy', 'enabled', 'asset_pattern', 'gtnh_trust_mode', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport']));
         $attributes += array_intersect_key($data, array_flip(DiscordSettings::FIELDS));
         try {
             app(ServerPolicyService::class)->save($record, $data['file_rules'] ?? [], $data['disabled_mods'] ?? [], $this->policyRevision, $attributes);

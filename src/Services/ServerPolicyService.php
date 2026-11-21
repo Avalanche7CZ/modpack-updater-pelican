@@ -19,7 +19,7 @@ final class ServerPolicyService
     public function save(ManagedServer $server, array $rules, array $disabled, int $revision, array $attributes = []): void
     {
         Access::requireAdmin();
-        $allowed = ['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'directory_decisions', 'label', 'policy', 'enabled', 'asset_pattern', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport', 'keep_existing_crucible_runtime', ...DiscordSettings::FIELDS];
+        $allowed = ['maintenance_time', 'maintenance_timezone', 'restart_when_current', 'deploy_enabled', 'directory_decisions', 'label', 'policy', 'enabled', 'asset_pattern', 'gtnh_trust_mode', 'backup_mode', 'backup_excluded_directories', 'mod_identity_mappings', 'pelican_server_uuid', 'provider', 'source', 'installed_version', 'transport', 'keep_existing_crucible_runtime', ...DiscordSettings::FIELDS];
         if (array_diff(array_keys($attributes), $allowed)) {
             throw new RuntimeException('Invalid policy settings');
         }
@@ -55,6 +55,7 @@ final class ServerPolicyService
                 }
                 Validator::make($attributes, [
                     'pelican_server_uuid' => ['sometimes', 'required', 'uuid', 'exists:servers,uuid', Rule::unique('arcturus_modpack_servers', 'pelican_server_uuid')->ignore($fresh->id)],
+                    'gtnh_trust_mode' => ['sometimes', Rule::in(['strict', 'tofu'])],
                     'provider' => ['sometimes', 'required', Rule::in(array_keys(ProviderRegistry::PROVIDERS))],
                     'source' => ['sometimes', 'required', 'string', 'max:255', 'not_regex:/[\\x00-\\x1f\\x7f]/'],
                     'installed_version' => ['sometimes', 'required', 'string', 'max:120', 'not_regex:/[\\x00-\\x1f\\x7f]/'],
@@ -81,6 +82,11 @@ final class ServerPolicyService
                     $fresh->source !== \Arcturus\ModpackManager\Modpacks\Providers\GtnhProvider::SOURCE || $fresh->baseline_status !== 'verified')) {
                     throw new RuntimeException('Keeping Crucible is available only for an official GTNH installation with a verified baseline.');
                 }
+                if ($rebound || $fresh->provider !== 'gtnh') { $fresh->gtnh_trust_mode = 'strict'; }
+                if ($fresh->isDirty('gtnh_trust_mode') && ! $associationChanged) {
+                    $fresh->forceFill(array_fill_keys(['target_manifest_path', 'prepared_root', 'preview_summary', 'last_preview_at'], null));
+                    $fresh->target_metadata = array_diff_key($fresh->target_metadata ?? [], ['prepared' => true]);
+                }
                 if ($associationChanged) {
                     $clear = ['available_version', 'available_asset_url', 'available_asset_sha256', 'available_release_url',
                         'release_metadata', 'selected_version', 'target_metadata', 'base_manifest_path', 'target_manifest_path',
@@ -95,11 +101,11 @@ final class ServerPolicyService
                         $fresh->forceFill(array_fill_keys(['local_root', 'staging_parent', 'worker_key', 'backup_root', 'last_backup_uuid', 'runtime_report'], null));
                     }
                     // Share the policy revision guard so stale forms/comparisons cannot revive old evidence.
-                    if (! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime'])) {
+                    if (! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime', 'gtnh_trust_mode'])) {
                         $fresh->policy_revision++;
                     }
                 }
-                if (! $associationChanged && $transport !== $fresh->transport && ! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime'])) {
+                if (! $associationChanged && $transport !== $fresh->transport && ! $fresh->isDirty(['directory_decisions', 'file_rules', 'disabled_mods', 'mod_identity_mappings', 'backup_mode', 'backup_excluded_directories', 'keep_existing_crucible_runtime', 'gtnh_trust_mode'])) {
                     $fresh->policy_revision++;
                 }
                 $fresh->save();

@@ -586,6 +586,7 @@ class DownloadTests(unittest.TestCase):
         response.status = status
         data = io.BytesIO(body)
         response.read.side_effect = data.read
+        response.read1.side_effect = data.read
         response.getheader.side_effect = lambda k, default=None: (headers or {}).get(k, default)
         return response
 
@@ -594,6 +595,101 @@ class DownloadTests(unittest.TestCase):
             transport.return_value.getresponse.side_effect = responses
             return w.fetch('https://github.com/fixture', Path(temp) / 'file', ['github.com'],
                            {'sha256': expected or w.hashlib.sha256(b'content').hexdigest()}, 1000, cancelled=cancelled)
+
+    def gtnh_recipe(self, version='3.0.0'):
+        filename = f'GT_New_Horizons_{version}_Server_Java_17-26.zip'
+        url = f'https://downloads.gtnewhorizons.com/ServerPacks/{filename}'
+        identity = {'provider': 'gtnh', 'version': version, 'variant': 'java17plus', 'url': url, 'filename': filename}
+        return {'provider': 'gtnh', 'project': 'gtnh', 'version': version, 'format': 'zip',
+                'runtime': {'minecraft': '1.7.10', 'java': 17, 'java_max': 26},
+                'gtnh_quarantine': True, 'gtnh_archive': identity, 'downloads': [], 'limits': {'max_archive_bytes': 4096}}
+
+    @staticmethod
+    def gtnh_zip(config=b'upstream config'):
+        target = io.BytesIO()
+        with zipfile.ZipFile(target, 'w') as archive:
+            archive.writestr('config/test.cfg', config)
+            archive.writestr('mods/example.jar', b'mod fixture')
+        return target.getvalue()
+
+    def gtnh_operation(self, root, worker, server, recipe, response):
+        operation_id = uuid.uuid4().hex
+        with patch.object(w, 'public_address', return_value='1.1.1.1'), patch.object(w, 'PinnedHTTPS') as transport:
+            transport.return_value.getresponse.return_value = response
+            worker.prepare(server, recipe, operation_id)
+            worker.threads[(server, operation_id)].join(timeout=5)
+        return operation_id, root / operation_id, worker.status(server, operation_id)
+
+    def test_gtnh_quarantine_validation_and_separate_trusted_stage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            staging = root / 'staging'
+            staging.mkdir(mode=0o700)
+            live = root / 'live'
+            live.mkdir()
+            server = str(uuid.uuid4())
+            config = {'servers': {server: {'root': str(live), 'staging': str(staging), 'token': 'a' * 64,
+                                           'allowed_hosts': ['downloads.gtnewhorizons.com']}}}
+            worker = w.Worker(config)
+            recipe = self.gtnh_recipe()
+            archive = self.gtnh_zip()
+            response = lambda raw: self.response(raw, headers={'Content-Length': str(len(raw))})
+            operation_id, stage, result = self.gtnh_operation(staging, worker, server, recipe, response(archive))
+            expected = {'sha256': w.hashlib.sha256(archive).hexdigest(), 'size': len(archive)}
+            self.assertEqual(result['state'], 'archive_measured')
+            self.assertEqual(result['measurement'], expected)
+            self.assertEqual(sorted(p.name for p in stage.iterdir()), ['operation.json', 'quarantine.zip'])
+            worker = w.Worker(config)
+            self.assertEqual(worker.status(server, operation_id)['measurement'], expected)
+            with self.assertRaises(ValueError):
+                worker.handle(server, 'manifest', {'operation_id': operation_id})
+            with self.assertRaises(ValueError):
+                worker.handle(server, 'stage_file', {'operation_id': operation_id, 'path': 'config/test.cfg'})
+            recipe.pop('gtnh_quarantine')
+            recipe['downloads'] = [{'url': recipe['gtnh_archive']['url'], 'archive': True, 'size': expected['size'],
+                                    'hashes': {'sha256': expected['sha256']}}]
+            trusted_id, trusted, result = self.gtnh_operation(staging, worker, server, recipe, response(archive))
+            self.assertEqual(result['state'], 'completed', result.get('diagnostic'))
+            self.assertEqual((trusted / 'files/config/test.cfg').read_bytes(), b'upstream config')
+            self.assertEqual(worker.handle(server, 'manifest', {'operation_id': trusted_id})['verification'], 'recorded-archive-pin')
+
+            for replacement in (self.gtnh_zip(b'different data!'), self.gtnh_zip(b'longer upstream config')):
+                _, changed, result = self.gtnh_operation(staging, worker, server, recipe, response(replacement))
+                self.assertEqual(result['diagnostic']['code'], 'GTNH_ARCHIVE_CHANGED')
+                self.assertFalse((changed / 'manifest.json').exists())
+                self.assertFalse((changed / 'unpacked').exists())
+
+    def test_gtnh_quarantine_rejects_truncation_wrong_variant_and_invalid_responses(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp) / 'staging'
+            stage.mkdir(mode=0o700)
+            live = Path(temp) / 'live'
+            live.mkdir()
+            server = str(uuid.uuid4())
+            worker = w.Worker({'servers': {server: {'root': str(live), 'staging': str(stage), 'token': 'a' * 64,
+                                                        'allowed_hosts': ['downloads.gtnewhorizons.com']}}})
+            archive = self.gtnh_zip()
+            for code, response in [
+                ('TRANSFER_SIZE', self.response(archive[:-5], headers={'Content-Length': str(len(archive))})),
+                ('DOWNLOAD_LIMIT', self.response(archive, headers={'Content-Length': '4097'})),
+                ('HTTP_STATUS', self.response(status=404)),
+                ('DOWNLOAD_POLICY', self.response(status=302, headers={'Location': '/other.zip'})),
+                ('ARCHIVE_INVALID', self.response(b'invalid zip')),
+            ]:
+                with self.subTest(code=code):
+                    _, path, result = self.gtnh_operation(stage, worker, server, self.gtnh_recipe(), response)
+                    self.assertEqual(result['diagnostic']['code'], code)
+                    self.assertNotIn('measurement', result)
+                    self.assertFalse((path / 'files').exists())
+            for changed in ({'java_max': 16}, {'java': 8}):
+                recipe = self.gtnh_recipe()
+                recipe['runtime'].update(changed)
+                _, _, result = self.gtnh_operation(stage, worker, server, recipe, self.response(archive))
+                self.assertEqual(result['diagnostic']['code'], 'METADATA_INVALID')
+            recipe = self.gtnh_recipe()
+            recipe['gtnh_archive']['url'] = recipe['gtnh_archive']['url'].replace('_17-26.zip', '_8.zip')
+            _, _, result = self.gtnh_operation(stage, worker, server, recipe, self.response(archive))
+            self.assertEqual(result['diagnostic']['code'], 'DOWNLOAD_POLICY')
 
     def test_streamed_download_verifies_checksum(self):
         digest, size = self.run_fetch([self.response()])

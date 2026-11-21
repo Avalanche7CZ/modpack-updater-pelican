@@ -3,7 +3,8 @@
 declare(strict_types=1);
 namespace Arcturus\ModpackManager\Livewire;
 
-use Arcturus\ModpackManager\Models\Operation;
+use Arcturus\ModpackManager\Models\{DeploymentConfirmation, Operation};
+use Arcturus\ModpackManager\Services\QueueDeploymentConfirmation;
 use Arcturus\ModpackManager\Security\Access;
 use Livewire\Attributes\Locked;
 use Livewire\Component;
@@ -25,6 +26,9 @@ final class DeploymentStatus extends Component
     #[Locked]
     public ?array $configurationSetReview = null;
 
+    #[Locked]
+    public ?string $confirmationId = null;
+
     public function reviewCurrentConfiguration(string $operationId): void
     {
         Access::requireAdmin();
@@ -40,11 +44,27 @@ final class DeploymentStatus extends Component
         $review = $this->configurationSetReview;
         if (! ($review['can_confirm'] ?? false) || empty($review['proof'])) { return; }
         Operation::where('managed_server_id', $this->managedServerId)->findOrFail($review['operation_id']);
+        $this->queueConfirmation($review, true);
+    }
+
+    private function queueConfirmation(array $review, bool $configurationSet): void
+    {
         try {
-            $result = app(\Arcturus\ModpackManager\Native\ManualStart::class)->acceptCurrentConfiguration($review['operation_id'], (int) auth()->id(), true, $review['proof']);
-            $this->configurationSetReview = null;
-            \Filament\Notifications\Notification::make()->title('Nasazení dokončeno s přijatou lokální konfigurací')->body($result['message'])->success()->send();
-        } catch (\Throwable $error) { $this->configurationSetReview = null; $this->reviewFailure($error); }
+            $confirmation = app(QueueDeploymentConfirmation::class)->enqueue($review['operation_id'], (int) auth()->id(),
+                (int) ($review['review_event_id'] ?? 0), $review['proof'], $configurationSet);
+            $this->confirmationId = $confirmation->id;
+            $this->configurationSetReview = $this->deploymentReview = $this->configReview = null;
+        } catch (\Throwable $error) { $this->reviewFailure($error); }
+    }
+
+    public function retryConfirmation(string $confirmationId): void
+    {
+        Access::requireAdmin();
+        $confirmation = DeploymentConfirmation::whereIn('deployment_id', Operation::where('managed_server_id', $this->managedServerId)->select('id'))
+            ->findOrFail($confirmationId);
+        try {
+            $this->confirmationId = app(QueueDeploymentConfirmation::class)->retry($confirmation->id, (int) auth()->id())->id;
+        } catch (\Throwable $error) { $this->reviewFailure($error); }
     }
 
     public function mount(int $managedServerId, bool $showLast = true): void
@@ -57,18 +77,10 @@ final class DeploymentStatus extends Component
     public function confirmRunningDeployment(string $operationId): void
     {
         Access::requireAdmin();
-        $operation = Operation::where('managed_server_id', $this->managedServerId)->findOrFail($operationId);
-        try {
-            $service = app(\Arcturus\ModpackManager\Native\ManualStart::class);
-            $review = $service->confirmRunningDeployment($operation->id, (int) auth()->id());
-            $this->deploymentReview = $review;
-            if (! ($review['can_confirm'] ?? false)) { \Filament\Notifications\Notification::make()->title('Nasazené soubory vyžadují kontrolu')->body('Všechny rozdíly jsou uvedeny v kartě. Přijměte jednotlivé textové configy po kontrole diffu; striktní cesty musí souhlasit.')->warning()->send(); return; }
-            $result = $service->confirmRunningDeployment($operation->id, (int) auth()->id(), true, $review['proof'], true, $review['target_version']);
-            \Filament\Notifications\Notification::make()->title('Běh nasazení potvrdil admin')->body($result['message'])->success()->send();
-        } catch (\Throwable $error) {
-            report($error);
-            \Filament\Notifications\Notification::make()->title('Nasazení nebylo uzavřeno')->body($error instanceof \RuntimeException ? $error->getMessage() : 'Inspect the private Panel log; the checkpoint remains active. No power or restore was sent.')->danger()->send();
-        }
+        Operation::where('managed_server_id', $this->managedServerId)->findOrFail($operationId);
+        $review = $this->deploymentReview;
+        if (($review['operation_id'] ?? null) !== $operationId || ! ($review['can_confirm'] ?? false) || empty($review['proof'])) { return; }
+        $this->queueConfirmation($review, false);
     }
 
     public function reviewRunningDeployment(string $operationId): void
@@ -113,8 +125,10 @@ final class DeploymentStatus extends Component
     {
         Access::requireAdmin();
         $active = \Arcturus\ModpackManager\Models\ManagedServer::whereKey($this->managedServerId)->value('active_operation_id');
+        $submitted = $this->confirmationId ? DeploymentConfirmation::find($this->confirmationId, ['id', 'deployment_id']) : null;
         $operation = ($active ? Operation::where('managed_server_id', $this->managedServerId)->where('kind', 'deploy')->find($active) : null)
-            ?? ($this->showLast ? Operation::where('managed_server_id', $this->managedServerId)->where('kind', 'deploy')->latest('created_at')->first() : null);
+            ?? ($submitted ? Operation::where('managed_server_id', $this->managedServerId)->find($submitted->deployment_id) : null)
+            ?? ($this->showLast ? Operation::where('managed_server_id', $this->managedServerId)->where('kind', 'deploy')->latest('created_at')->latest('id')->first() : null);
         $isActive = $operation && $operation->id === $active;
         $context = []; $receiptReadable = true;
         if ($operation) {
@@ -126,6 +140,12 @@ final class DeploymentStatus extends Component
             }
         }
         $canConfirmRunning = $receiptReadable && $isActive && \Arcturus\ModpackManager\Native\ManualStart::canConfirmRunningDeployment($operation);
-        return view('arcturus-modpack-manager::deployment-status', compact('operation', 'context', 'isActive', 'receiptReadable', 'canConfirmRunning'));
+        $pendingStates = QueueDeploymentConfirmation::PENDING;
+        $placeholders = implode(', ', array_fill(0, count($pendingStates), '?'));
+        $confirmation = $operation ? DeploymentConfirmation::where('deployment_id', $operation->id)
+            ->orderByRaw("CASE WHEN state IN ($placeholders) THEN 0 ELSE 1 END", $pendingStates)
+            ->latest('updated_at')->latest('review_event_id')->first(['id', 'state', 'actor_id', 'error', 'updated_at']) : null;
+        $confirmationPending = $confirmation && in_array($confirmation->state, QueueDeploymentConfirmation::PENDING, true);
+        return view('arcturus-modpack-manager::deployment-status', compact('operation', 'context', 'isActive', 'receiptReadable', 'canConfirmRunning', 'confirmation', 'confirmationPending'));
     }
 }

@@ -169,6 +169,7 @@ $wings = function ($request) use (&$systems, &$snapshots, &$requests, &$mode, &$
     if (str_ends_with($path, '/files/contents')) {
         if (isset($sys['during_file_read'])) { $interleave = $sys['during_file_read']; unset($sys['during_file_read']); $interleave(); }
         $file = ltrim($q['file'], '/'); check(! str_starts_with($file, 'world/'), 'Plugin attempted to read world data');
+        if (($sys['confirmation_read_fault'] ?? null) === $file) { return Http::response(['error' => 'fixture transfer failure'], 503, $headers); }
         $contents = $sys['data'][$file];
         if ($mode === 'prebackup_failure' && $sys['state'] === 'offline' && $file === 'config/options.cfg') { $contents = 'bad'; }
         if ($file === 'logs/latest.log' && isset($sys['pending_boot_log'])) {

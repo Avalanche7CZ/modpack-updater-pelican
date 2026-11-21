@@ -22,6 +22,7 @@ final class Release
         array $blockers = [], public readonly string $format = 'files',
         public readonly ?string $url = null, public readonly string $notes = '',
         array $additionalManagedDirectories = [],
+        public readonly ?Providers\GtnhArtifact $gtnhArtifact = null,
     ) {
         $this->sourceBlockers = $blockers;
         $additionalManagedDirectories = ManagedPaths::reviewedAdditions($additionalManagedDirectories);
@@ -68,13 +69,18 @@ final class Release
     public function withManagedDirectories(array $directories): self
     {
         return new self($this->provider, $this->project, $this->version, $this->name, $this->downloads,
-            $this->runtime, $this->sourceBlockers, $this->format, $this->url, $this->notes, $directories);
+            $this->runtime, $this->sourceBlockers, $this->format, $this->url, $this->notes, $directories, $this->gtnhArtifact);
     }
 
     public function canPrepare(): bool
     {
         return $this->blockers === [] && $this->downloads !== [] &&
             count(array_filter($this->downloads, fn ($f) => $f['hashes'] === [])) === 0;
+    }
+
+    public function canInspectArchive(): bool
+    {
+        return $this->gtnhArtifact !== null && $this->blockers === [];
     }
 
     public function recipe(): array

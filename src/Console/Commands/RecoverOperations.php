@@ -58,6 +58,8 @@ final class RecoverOperations extends Command
         foreach (\Arcturus\ModpackManager\Models\NativeScheduleRun::whereNull('completed_at')->get(['id']) as $run) {
             \Arcturus\ModpackManager\Jobs\RunNativeSchedule::dispatch($run->id);
         }
+        try { app(\Arcturus\ModpackManager\Services\QueueDeploymentConfirmation::class)->recover(); }
+        catch (\Throwable $error) { report($error); }
         app(DiscordNotifier::class)->recover();
 
         return self::SUCCESS;

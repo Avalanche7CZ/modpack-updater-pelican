@@ -24,6 +24,9 @@ final class ReleaseSourceFields
             Select::make('gtnh_variant')->label('GTNH server ZIP variant')->options(GtnhProvider::VARIANTS)->required()->native(false)
                 ->visible(fn ($get) => $get('provider') === 'gtnh')
                 ->helperText('Choose the variant your server was installed from. Java 21 and 25 use Java 17+.'),
+            Select::make('gtnh_trust_mode')->label('GTNH archive trust')->options(['strict' => 'Strict', 'tofu' => 'Automatic TOFU'])->default('strict')->required()->native(false)
+                ->visible(fn ($get) => $get('provider') === 'gtnh')
+                ->helperText('Strict requires root approval for a newly measured archive. Automatic Trust On First Use pins the first validated HTTPS download and can trust compromised first-download bytes.'),
             TextInput::make('installed_version')->label(fn ($get) => $get('provider') === 'gtnh' ? 'Exact installed GTNH version' : 'Exact installed release ID / tag')
                 ->required()->maxLength(120)
                 ->helperText(fn ($get) => $get('provider') === 'gtnh' ? 'Enter the version currently installed, for example 2.8.1.'
@@ -41,10 +44,18 @@ final class ReleaseSourceFields
             if (! is_string($variant) || ! isset(GtnhProvider::VARIANTS[$variant])) {
                 throw ValidationException::withMessages(['data.gtnh_variant' => 'Select the GTNH Java variant that matches the installed server.']);
             }
+            $mode = $data['gtnh_trust_mode'] ?? 'strict';
+            if (! in_array($mode, ['strict', 'tofu'], true)) {
+                throw ValidationException::withMessages(['data.gtnh_trust_mode' => 'Choose Strict or Automatic TOFU.']);
+            }
+            $data['gtnh_trust_mode'] = $mode;
             $data['source'] = GtnhProvider::SOURCE;
             $data['asset_pattern'] = $variant;
         } elseif (isset($data['provider']) && $data['provider'] !== 'github') {
             $data['asset_pattern'] = null;
+        }
+        if (isset($data['provider']) && $data['provider'] !== 'gtnh') {
+            $data['gtnh_trust_mode'] = 'strict';
         }
         unset($data['gtnh_variant']);
 

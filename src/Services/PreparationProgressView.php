@@ -18,7 +18,7 @@ final class PreparationProgressView
         $phase = $current['phase'] ?? $operationPhase;
         $status = $terminal ? match ($operationPhase) {
             'completed' => ['Completed', 'success'], 'failed' => ['Failed', 'danger'],
-            'cancelled' => ['Cancelled', 'gray'], default => ['Interrupted', 'warning'],
+            'cancelled' => ['Cancelled', 'gray'], 'archive_review_required' => ['Archive approval required', 'warning'], default => ['Interrupted', 'warning'],
         } : ($cancelling ? ['Cancellation requested', 'warning'] : ['In progress', 'primary']);
         $rows = [];
         foreach (self::LABELS as $key => $label) {
@@ -29,7 +29,7 @@ final class PreparationProgressView
             $active = $selected && ! $terminal;
             $finished = $snapshot && (($snapshot['finished'] ?? false) || ($terminal && $operationPhase === 'completed'));
             [$state, $color] = match (true) {
-                $selected && $terminal && $operationPhase !== 'completed' => $status,
+                $selected && $terminal && ! in_array($operationPhase, ['completed', 'archive_review_required'], true) => $status,
                 $active && $cancelling => ['Cancelling', 'warning'],
                 $active => ['In progress', 'primary'],
                 (bool) $finished => ['Completed', 'success'],
@@ -46,7 +46,7 @@ final class PreparationProgressView
                 }
                 $done = $snapshot['files_done'] ?? null; $total = $snapshot['files_total'] ?? null;
                 if ($key !== 'downloading' && $done !== null && ($done > 0 || $total !== null)) {
-                    $unit = $key === 'verifying' ? 'checksums compared' : 'files processed';
+                    $unit = $key === 'verifying' && ($snapshot['step'] ?? null) !== 'validating_archive' ? 'checksums compared' : 'files processed';
                     $metrics[] = number_format($done).($total !== null ? ' / '.number_format($total) : '').' '.$unit;
                 } elseif ($selected && $key === 'hashing') {
                     $metrics[] = $active ? 'Counting staged files — hashing total not recorded yet' : 'No hashing file count was recorded';

@@ -94,12 +94,16 @@ foreach ([...$recipePaths, 'config/Botania.cfg', 'config/Another.cfg', 'server.p
 // UI must apply its displayed proof, never silently replace it with a new review.
 $systems[$uuid]['data']['server.properties'] .= '# stale UI';
 $component->call('acceptCurrentConfiguration');
+check(str_contains($component->html(), 'Confirmation queued'), 'Expected queued confirmation in the card');
+app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
 check($operation->fresh()->phase === ManualStart::PHASE, 'UI accepted an undisplayed properties hash');
 $component->call('reviewCurrentConfiguration', $operation->id);
 $slowReview = $managed->events()->where('kind', 'running_config_set_review')->latest('id')->firstOrFail();
 $slowReview->update(['created_at' => now()->subMinutes(14)]);
 $systems[$uuid]['during_file_read'] = static function (): void { \Arcturus\ModpackManager\Tests\FixtureClock::advance(120); };
 $component->call('acceptCurrentConfiguration');
+check(str_contains($component->html(), 'Confirmation queued'), 'Expected queued confirmation in the card');
+app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
 $operation->refresh(); $managed->refresh();
 check($operation->phase === 'completed' && $managed->installed_version === '2.9.0' && $managed->active_operation_id === null, 'One configuration-set confirmation did not complete 2.9.0');
 check(now()->diffInSeconds($slowReview->created_at, true) > 900 && $operation->context['native_admin_running_confirmation']['review_event_id'] === $slowReview->id, 'Slow apply did not retain the review admitted before expiry');

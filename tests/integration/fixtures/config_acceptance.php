@@ -75,10 +75,12 @@ $blocked = $service->confirmRunningDeployment($operation->id, 1); $byPath = arra
 check(! $blocked['can_confirm'] && ! $byPath['config/Botania.cfg']['accepted'] && $byPath['config/Another.cfg']['accepted'], 'Later config rewrite retained stale acceptance');
 rejects(fn () => $service->confirmRunningDeployment($operation->id, 1, true, $ready['proof'], true), 'Old global proof bypassed later config rewrite');
 $component->call('confirmRunningDeployment', $operation->id);
+app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
 check($operation->fresh()->phase === ManualStart::PHASE, 'UI silently completed a changed config');
 $newSha = hash('sha256', $systems[$uuid]['data']['config/Botania.cfg']);
 $component->call('reviewDeploymentConfig', $operation->id, 'config/Botania.cfg', $newSha)->call('acceptDeploymentConfig');
 $component->call('confirmRunningDeployment', $operation->id);
+app('queue.worker')->runNextJob('deployment-fixture', 'default', new \Illuminate\Queue\WorkerOptions(sleep: 0, timeout: 0));
 $operation->refresh(); $managed->refresh();
 check($operation->phase === 'completed' && $managed->installed_version === '2.9.0' && $managed->active_operation_id === null, 'Deploy was not closed as 2.9.0 after exact individual acceptances');
 check($operation->context['native_after'] === $originalAfter && $managed->base_manifest_path === $targetPath && file_get_contents($targetPath) === $targetBytes, 'Accepted local config rewrote deployed receipt or upstream baseline');

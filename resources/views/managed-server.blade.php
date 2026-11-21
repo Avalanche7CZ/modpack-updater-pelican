@@ -6,6 +6,10 @@
     @php($runtimeObservation = array_replace($record->runtime_report ?? [], $preview['qualification']['current'] ?? []))
     @php($target = $record->target_metadata ?? $record->release_metadata ?? [])
     @php($activeOperation = $record->active_operation_id ? $record->operations()->whereKey($record->active_operation_id)->first(['id', 'kind', 'phase']) : null)
+    @php($showUpdateStatus = in_array($this->tab, ['overview', 'updates'], true))
+    @php($confirmedDeploymentId = !$activeOperation && $showUpdateStatus ? \Arcturus\ModpackManager\Models\DeploymentConfirmation::where('state', 'completed')
+        ->where('deployment_id', $record->operations()->where('kind', 'deploy')->latest('created_at')->latest('id')->select('id')->limit(1)->toBase())
+        ->value('deployment_id') : null)
     <div wire:poll.10s.visible="pollEvidence" class="amm-dashboard">
         @include('arcturus-modpack-manager::dashboard-styles')
         <x-filament::tabs label="Modpack management">
@@ -14,10 +18,11 @@
             @endforeach
         </x-filament::tabs>
         <div class="mt-4 space-y-4">
-            @if(($activeOperation?->kind === 'deploy' && in_array($this->tab, ['overview', 'updates'], true)) || $this->tab === 'history')
-                @livewire(\Arcturus\ModpackManager\Livewire\DeploymentStatus::class, ['managedServerId' => $record->id, 'showLast' => $this->tab === 'history'], key('deployment-status-'.$record->id.'-'.($this->tab === 'history' ? 'history' : $activeOperation?->id)))
+            @if(($showUpdateStatus && ($activeOperation?->kind === 'deploy' || $confirmedDeploymentId)) || $this->tab === 'history')
+                @livewire(\Arcturus\ModpackManager\Livewire\DeploymentStatus::class, ['managedServerId' => $record->id], key('deployment-status-'.$record->id.'-'.($this->tab === 'history' ? 'history' : ($activeOperation?->id ?? $confirmedDeploymentId))))
             @endif
-            @if((in_array($activeOperation?->kind, ['baseline', 'prepare', 'comparison'], true) && in_array($this->tab, ['overview', 'updates', 'changes'], true)) || ($this->tab === 'updates' && !$activeOperation && $record->comparison_status === 'failed'))
+            @if((in_array($activeOperation?->kind, ['baseline', 'prepare', 'comparison'], true) && in_array($this->tab, ['overview', 'updates', 'changes'], true))
+                || (!$activeOperation && (($record->provider === 'gtnh' && $showUpdateStatus) || ($this->tab === 'updates' && $record->comparison_status === 'failed'))))
                 @livewire(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id, 'purpose' => $this->tab === 'updates' ? 'target' : 'all'], key('preparation-status-'.$record->id.'-'.$this->tab.'-'.($activeOperation?->id ?? 'failed')))
             @endif
             @if(in_array($activeOperation?->kind, ['baseline', 'prepare', 'comparison'], true) && in_array($this->tab, ['overview', 'updates', 'changes'], true))

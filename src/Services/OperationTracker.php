@@ -13,7 +13,7 @@ use RuntimeException;
 /** Persistent exclusion survives cache loss, a worker crash, and queue retry. */
 final class OperationTracker
 {
-    public const TERMINAL = ['completed', 'failed', 'cancelled', 'interrupted', 'restored', 'manual_intervention'];
+    public const TERMINAL = ['completed', 'failed', 'cancelled', 'interrupted', 'restored', 'manual_intervention', 'archive_review_required'];
 
     public function create(ManagedServer $server, string $kind, array $context = [], ?string $requestId = null): Operation
     {

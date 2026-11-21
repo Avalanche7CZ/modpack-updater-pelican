@@ -67,14 +67,14 @@ rejects(fn () => $gtnh->release('gtnh', '2.8.10', 'java17plus'), 'GTNH accepted 
 $future = $gtnhEntry('3.0.0', 27);
 $http->responses[GtnhProvider::INDEX] = ['versions' => ['3.0.0' => $future] + $catalog];
 $unverified = $gtnh->latest('gtnh', 'java17plus');
-check($unverified->version === '3.0.0' && ! $unverified->canPrepare() && $unverified->downloads[0]['hashes'] === [], 'GTNH hid a new stable version or silently trusted unpinned bytes');
+check($unverified->version === '3.0.0' && ! $unverified->canPrepare() && $unverified->canInspectArchive() && $unverified->downloads[0]['hashes'] === [], 'GTNH hid a new stable version or silently trusted unpinned bytes');
 foreach (['https://github.com/ServerPacks/GT_New_Horizons_2.8.1_Server_Java_17-25.zip',
     'https://downloads.gtnewhorizons.com/Multi_mc_downloads/GT_New_Horizons_2.8.1_Server_Java_17-25.zip',
     $catalog['2.8.1']['server']['java8Url'], null] as $wrong) {
     $http->responses[GtnhProvider::INDEX] = $catalog;
     $http->responses[GtnhProvider::INDEX]['2.8.1']['server']['java17_2XUrl'] = $wrong;
     $release = $gtnh->release('gtnh', '2.8.1', 'java17plus');
-    check(! $release->canPrepare() && $release->downloads === [], 'GTNH accepted an untrusted, client, wrong-Java or missing archive');
+    check(! $release->canPrepare() && $release->downloads === [] && ! $release->canInspectArchive(), 'GTNH accepted an untrusted, client, wrong-Java or missing archive');
 }
 
 $cf = new CurseForgeProvider($http);

@@ -1,6 +1,6 @@
 # Potvrdit běžící nasazení bez restartu
 
-Po aktualizaci pluginu je přímo v kartě čekajícího nasazení akce **Confirm running server**. Použije ji root admin, který se připojil k cílovému Minecraft serveru a výslovně potvrzuje běh nasazené verze. Nejde o automatický důkaz bootu. Akce neodesílá Start, Stop, Restart, Restore, sync ani nový deploy.
+V kartě čekajícího nasazení je po kontrole dostupná akce **Confirm running server**. Použije ji root admin, který se připojil k cílovému Minecraft serveru a výslovně potvrzuje běh nasazené verze. Nejde o automatický důkaz bootu. Akce neodesílá Start, Stop, Restart, Restore, sync ani nový deploy.
 
 ## Jedno potvrzení celé aktuální konfigurace
 
@@ -8,17 +8,21 @@ Root admin může v kartě aktivního ověřeného deploye zvolit **Review curre
 
 Po kontrole seznamu stačí jednou zvolit **Accept configuration and finish update** a potvrdit běh cílové verze. Otevírání jednotlivých diffů není potřeba. Všechny přijímané rozdíly musí být běžné UTF-8 textové configy do 1 MiB; JARy, runtime závislosti/launcher, chybějící soubory, očekávané odstraněné cesty a ostatní cesty zůstávají striktní. Blokující rozdíly se zobrazí ve stejném přehledu a dokončení nepovolí.
 
-Závěrečná akce znovu získá mutation lease, ověří přesnou aktivní operaci, autentizovaný cílový manifest, dokončenou zamčenou zálohu, launcher/nastavení i stejnou běžící instanci. Znovu načte přesné hashe celého potvrzeného seznamu i striktních cest. Změna hashe, množiny rozdílů, manifestu, checkpointu nebo běžící instance zneplatní původní proof; UI jej nesmí nahradit novým neviděným seznamem. Přijetí všech lokálních hashů, audit a dokončení verze/baseline proběhnou v jedné DB transakci. Původní souborový receipt a upstream manifest zůstanou nezměněny, záloha zamčená. Akce neprovádí souborový zápis, Start/Stop/Restart, Restore, sync ani nový deploy. Běh potvrzuje admin; nevzniká automaticky ověřený boot.
+Závěrečná akce během webového požadavku uloží schválení a zobrazí ID potvrzení. Použije přesný přehled, aktivní checkpoint a ID root administrátora. Stáří přehledu se ověří při odeslání do fronty (15 minut). Čekání ve frontě a pomalé čtení Wings platnost včas podaného schválení nezkrátí.
 
-Pro současnou 2.9.0 tedy po aktualizaci pluginu otevři tento přehled, ověř seznam (zejména Botania, railcraft a server.properties) a potvrď jej jednou. Následující individuální postup zůstává dostupný jako alternativa.
+Queue worker znovu ověří aktivní checkpoint, autentizovaný cílový manifest, zamčenou zálohu, spouštěcí konfiguraci, běžící instanci a přesnou sadu hashů ze schváleného přehledu. Wings soubory ověřuje po dávkách a UTF-8 kontroluje ze stejných omezených diskových bufferů. Při změně obsahu nebo instance vytvoř a schval nový přehled. Karta ukazuje stav fronty, kontroly souborů a dokončení.
 
-Pro již běžící GTNH 2.9.0 s chybějícím boot záznamem:
+Lease pro deploy/recovery se získá až při dokončení v databázi. Přijetí lokálních hashů, audit, verze a baseline se zapíší v téže transakci jako stav **Confirmation completed**. Zůstane zachovaný původní upstream manifest, souborový receipt i zamčená záloha. Worker posílá na Wings pouze čtecí požadavky. Audit odlišuje potvrzení běhu administrátorem a automatický boot.
 
-1. Načti nový kód pluginu také ve webovém PHP runtime podle běžného upgrade postupu. Nic na maty zde nebylo provedeno.
-2. Otevři ManagedServer 2 a kartu **konkrétního aktivního nasazení do 2.9.0**. Ponech původní checkpoint i zamčenou zálohu. Nepoužívej staré UUID rollbacku 2.8.1.
-3. Jako root admin klikni **Review files individually**. Přehled obsahuje všechny odlišné nasazené cesty a jejich očekávané/skutečné SHA-256. U `config/Botania.cfg` (a každého dalšího configu, který chceš přijmout) klikni **Ověřit text a zobrazit diff**, zkontroluj změnu proti ověřenému cíli a výslovně zvol **Přijmout tuto cestu a hash jako lokální změnu**. Přijetí samo deploy neuzavírá.
-4. Po vyřešení všech rozdílů klikni **Confirm running server** a potvrď, že ses připojil a ověřil běh této cílové verze.
-5. Pokud kontroly projdou, historie uvede „Běh nasazení potvrdil admin; boot nebyl automaticky ověřen“, installed_version bude 2.9.0 a baseline bude přesný původní upstream manifest připravené 2.9.0. Pouze tento checkpoint se uzavře. Záloha a audit zůstanou.
+Pro upgrade spusť migrace pluginu a načti nový kód v queue workeru. Potvrzení používá stávající asynchronní databázovou nebo Redis frontu. Timeout jobu je 3 600 sekund a fronta musí mít `retry_after` nad 3 660 sekund. Běžná konfigurace pro Native přípravu používá 14 520 sekund. Opakovaný klik použije stejný čekající záznam. Při ztraceném dispatchi nebo přerušení čtecího pokusu použije plánované `arcturus-modpack:recover` původní schválení a znovu ověří checkpoint. Při aktivním deploy/recovery lease karta nabídne původnímu schvalovateli **Retry confirmation**, až se lease uvolní.
+
+Při tvrdém ukončení procesu v krátké fázi dokončení může zůstat původní čtyřhodinový lease. V diagnostice je ID potvrzení, pokus, checkpoint a PID. Starý PHP-FPM lease i lease jiné operace podléhá stávající ochraně a přirozenému vypršení. Potvrzení nemaže cache ani nevynucuje uvolnění lease.
+
+## Individuální postup
+
+1. Jako root admin klikni **Review files individually**. Přehled obsahuje všechny odlišné nasazené cesty a jejich očekávané/skutečné SHA-256. U `config/Botania.cfg` (a každého dalšího configu, který chceš přijmout) klikni **Ověřit text a zobrazit diff**, zkontroluj změnu proti ověřenému cíli a výslovně zvol **Přijmout tuto cestu a hash jako lokální změnu**. Přijetí samo deploy neuzavírá.
+2. Po vyřešení všech rozdílů klikni **Confirm running server** a potvrď, že ses připojil a ověřil běh této cílové verze.
+3. Po doběhnutí potvrzení ve frontě, pokud kontroly projdou, historie uvede „Běh nasazení potvrdil admin; boot nebyl automaticky ověřen“, installed_version bude 2.9.0 a baseline bude přesný původní upstream manifest připravené 2.9.0. Pouze tento checkpoint se uzavře. Záloha a audit zůstanou.
 
 Akce vyžaduje aktivní Native deploy v `awaiting_manual_start`, `native_deploy_files_verified=true`, předané ovládání v roli deploy, žádný nejasný Wings zápis a přesnou dokončenou zamčenou zálohu. Kontroluje aktuální běžící instanci včetně postupujícího uptime, Startup/image/proměnné Wings, obsah aktivního launcheru a argumentů, očekávaný cílový runtime, identitu operace a neměnný autentizovaný cílový manifest. Nepotřebuje původní použitelný Start záznam ani Done log.
 
@@ -99,3 +103,7 @@ Lokálně prošly cílené regrese na oficiálním RC2 `f64a167` i RC3 `6095cea`
 Regrese individuálního přijetí configů navíc pokrývá souhrn šesti rozdílů najednou, diff proti ověřeným cílovým bajtům, odmítnutí binárního configu, striktní JAR/runtime/removal kontroly, vazbu na konkrétní cestu/operaci/manifest/hash, odmítnutí zastaralého review a opětovné kontroly při dokončení. Přes CLI i kartu dokončí testovací GTNH 2.9.0 bez boot logu, změny živých souborů a power/restore/sync požadavků; původní receipt, čistý upstream manifest, zamčená záloha a jednotlivá přijetí zůstanou v auditu. Tato cílená regrese prošla na RC2 i RC3 se stejnými lokálními fixture/SQLite omezeními.
 
 Hromadné potvrzení (`native_config_set.php`) prošlo na RC2 i RC3: společný přehled Botania/Another/railcraft a kořenového server.properties bez individuálních diffů, root autorizace, striktní JAR/runtime/odstraněné cesty a binární config, odmítnutí jiné než kořenové properties cesty, změny hashe/seznamu/aktivní operace/manifestu/běžící instance a odmítnutí neviděného nového hashe v UI. Test potvrzuje dokončení 2.9.0 s lokálními receipt záznamy, původním upstream manifestem i zamčenou zálohou a jen GET požadavky na Wings. Produkční maty nebylo kontaktováno.
+
+## Ověření fronty
+
+Na Pelican RC2 i RC3 s PHP 8.4 a izolovanou SQLite byly spuštěny regrese fronty, hromadného i individuálního přijetí, ručního potvrzení, FileStore lease, Wings batch hashů, receiptů, obnovy a Livewire karet. Nový scénář používá více než 200 změněných configů včetně velkého UTF-8 souboru při limitu 128 MiB. Nastaví 30sekundový PHP limit pro kliknutí a ověří nulový počet Wings požadavků v tomto požadavku. Pomalou odpověď Wings modeluje posunem času ve fixture. Scénář také ověří přerušení workeru během čtení, převzetí stejného schválení po prodlevě a FileStore lease při dokončení. Používá skutečnou databázovou frontu Laravelu a HTTP fixture Wings.

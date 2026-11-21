@@ -8,6 +8,35 @@
                 </x-filament::badge>
                 <span class="text-sm text-gray-500 dark:text-gray-400">Last report {{ $operation->heartbeat_at?->diffForHumans() ?? 'unavailable' }}</span>
             </div>
+            @if($archive ?? null)
+                <div class="mt-3 text-sm">
+                    <p class="break-all">{{ $archive['filename'] }} · {{ $archive['version'] }} · {{ $archive['variant'] }}</p>
+                    <p class="break-all">{{ $archive['url'] }}</p>
+                    <p>{{ match ($archive['level']) {
+                        'reviewed_pin' => 'Bundled reviewed HTTPS measurement',
+                        'pending' => 'Quarantined HTTPS measurement',
+                        'admin_reviewed' => 'Administrator-approved HTTPS measurement'.($archive['provenance'] === 'official_https_tofu_measurement' ? ' (initially pinned by TOFU)' : ''),
+                        'tofu' => 'Automatic TOFU · first validated HTTPS download',
+                        'rejected' => 'Rejected HTTPS measurement',
+                        default => 'Waiting for an archive measurement',
+                    } }}</p>
+                    @if(isset($archive['sha256'], $archive['size']))
+                        <p>SHA-256 <code class="break-all">{{ $archive['sha256'] }}</code> · {{ number_format($archive['size']) }} bytes</p>
+                        <p>The recorded provenance is an HTTPS archive measurement. The publisher did not supply this digest.</p>
+                    @endif
+                    @if($approvalRequired && $operation->phase === 'archive_review_required')
+                        <p>Explicit root administrator approval is required before preparation.</p>
+                        <div class="mt-2 flex flex-wrap gap-2">
+                            <x-filament::button size="sm" wire:click="decideArchive(@js($operation->id), @js($archive['sha256']), {{ $archive['size'] }}, true)" wire:confirm="Approve this exact official archive SHA-256 and byte size?" wire:loading.attr="disabled">Approve archive</x-filament::button>
+                            @if($archive['level'] === 'pending')
+                                <x-filament::button size="sm" color="danger" wire:click="decideArchive(@js($operation->id), @js($archive['sha256']), {{ $archive['size'] }}, false)" wire:confirm="Reject this exact archive identity for all managed servers?" wire:loading.attr="disabled">Reject archive</x-filament::button>
+                            @endif
+                        </div>
+                    @elseif($operation->phase === 'archive_review_required' && $archive['level'] !== 'rejected')
+                        <p>Run preparation again to download the archive against its recorded pin.</p>
+                    @endif
+                </div>
+            @endif
             @if(!$terminal && $operation->cancel_requested_at)
                 <p class="mt-3 text-sm">Waiting for the worker to confirm cancellation. Partial staging will be retained.</p>
             @endif

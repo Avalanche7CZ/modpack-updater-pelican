@@ -38,7 +38,7 @@ final class PreparationProgress
             if (is_array($stage) && ($clean = self::normalize($stage)) && $clean['phase'] === $phase) { $stages[$phase] = $clean; }
         }
         $stages[$current['phase']] = $current;
-        $stored = ['current' => $current, 'stages' => $stages];
+        $stored = [...$stored, 'current' => $current, 'stages' => $stages];
         if (isset($snapshot['diagnostic'])) { $stored['diagnostic'] = PreparationDiagnostic::normalize($snapshot['diagnostic']); }
         $operation->update(['progress' => $stored, 'heartbeat_at' => now()]);
     }

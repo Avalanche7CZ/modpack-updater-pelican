@@ -23,7 +23,7 @@ The default backend is **Native Pelican / Wings**. It uses the existing node con
 
 ## Requirements and installation
 
-Target: Pelican Panel **1.0.0-rc.2**, API version 1, PHP 8.4/8.5, Filament 5 and Python 3.11+. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. Keep the shared persistent database/cache, scheduler and asynchronous database/Redis queue operational. The plugin sets its queue visibility window to at least 14,520 seconds; restart existing workers after updates. Preparation and deployment never run synchronously in a Livewire request.
+Targets: Pelican Panel **1.0.0-rc.2 and 1.0.0-rc.3**, API version 1, PHP 8.4/8.5, Filament 5 and Python 3.11+. PHP cURL, ZIP, mbstring, intl and Pelican's normal database/queue dependencies are required. Keep the shared persistent database/cache, scheduler and asynchronous database/Redis queue operational. The plugin sets its queue visibility window to at least 14,520 seconds; restart existing workers after updates. Preparation, deployment and final running-deployment confirmation use the asynchronous queue.
 
 1. Download `arcturus-modpack-manager.zip` and `SHA256SUMS.txt` from a successful [GitHub Release](https://github.com/Avalanche7CZ/modpack-updater-pelican/releases).
 2. Verify `sha256sum -c SHA256SUMS.txt`.
@@ -62,12 +62,14 @@ These are **starting templates**, not immutable rules in the update planner. The
 | Provider | Source | Preparation behavior |
 | --- | --- | --- |
 | FTB | Numeric pack ID | Official exact server file manifest, supported hashes, targets and permitted dependency downloads; generated loader runtime requires separate qualification |
-| GTNH | Official catalog, selected automatically | Java 8 or Java 17+ server ZIP with an exact SHA-256 pin; 2.8.1 and 2.9.0 (both variants), 2.9.1 (Java 17–26) |
+| GTNH | Official catalog, selected automatically | Java 8 or Java 17+ server ZIP; bundled pins, root approval in Strict mode, or explicit per-server Automatic TOFU |
 | GitHub Releases | `owner/repository` | Exact tag and one explicitly selected server ZIP with GitHub SHA-256 digest; otherwise use a pinned custom recipe |
 | Modrinth | Project slug/ID | `.mrpack`, index checksums, server environments and server overrides; optional files require explicit normalization |
 | CurseForge | Numeric project ID | API key required; official server packs and checkpointed client-manifest resolution with complete verified downloads; unknown server runtime remains blocked |
 | ATLauncher | Pack safe name | Metadata and permitted checksummed mods; unsigned config archives, browser-only downloads and bot protection fail closed |
 | Custom | Approved HTTPS recipe or operator-owned JSON path | Schema-2 recipes with exact URLs or configured node-local artifact IDs and independent checksums |
+
+For a new GTNH archive, **Strict** preparation records the quarantined SHA-256 and byte size for root review. **Automatic TOFU** can pin the first validated official download for an opted-in server. Both modes check the recorded pin before extraction. See [GTNH archive trust](docs/providers.md#archive-trust).
 
 See [provider setup and custom recipes](docs/providers.md). A version being listed does not imply it can be prepared or deployed. No licensing restriction, API distribution opt-out or required-file error is bypassed.
 
@@ -95,6 +97,9 @@ A truncating restore would destroy excluded folders if they remain inside the vo
 
 A cleared Pelican restore status alone is not success: the native exact-backup `restore-complete` callback and supplementary file checks are required. Failed or uncertain recovery leaves the server stopped and requires manual intervention. A Minecraft `Done` marker does not prove a world migrated correctly. For a verified restore with a manually repaired launcher, use [manual power handoff and fresh boot verification](docs/manual-start.md), without another restore. Manual deployments may also defer Start using the existing approval dialog. If the restored original is already running, use [Verify running original installation](docs/verify-running-original.md) instead of another restore/start. The CLI supports audited root-operator Docker log evidence when GTNH startup headers are absent from latest.log; new boots retain startup facts from Wings console output.
 
+
+For a waiting manual deployment, use **Review current configuration** and **Accept configuration and finish update**. The final click records approval and returns a confirmation ID while the queue worker rechecks the exact files and running instance. The update completes after the receipt commits. See [running-deployment confirmation](docs/confirm-running-deployment.md).
+
 ## Permissions and settings
 
 Root administrators manage associations, credentials, protection rules and update review. The isolated **Arcturus Modpack** server page is read-only for owners and subusers with Pelican's `file.read` permission on that server. It exposes no provider credentials, worker configuration, host paths or destructive actions.
@@ -107,7 +112,7 @@ Background Operation shows persisted phase progress, actual downloaded bytes, kn
 
 - **Node capability unavailable:** install/configure the worker and HTTPS proxy; check the exact server UUID/token mapping.
 - **Unverified baseline:** prepare the exact original release, not a manifest derived from live customized files.
-- **Missing checksum / restricted download:** select the correct official server pack or provide an independently pinned custom recipe. Do not invent digests or mirror prohibited files.
+- **Missing checksum / restricted download:** for GTNH, review the quarantined measurement. For other providers, select a checksummed server pack or use an independently pinned custom recipe. Do not invent digests or mirror prohibited files.
 - **Unknown Java/loader or startup change:** review the real container/runtime and pack migration notes. Image names alone do not establish compatibility.
 - **Stale operation:** use Reconcile preparation or `php artisan arcturus-modpack:recover`. This resumes non-destructive preparations and may redispatch the same untouched queued approval receipt. Interrupted destructive work remains locked for [manual recovery](docs/manual-deployment.md#failed-update-and-recovery).
 - **Queue not running:** checks/staging remain queued. Configure Pelican's normal queue worker and scheduler.
