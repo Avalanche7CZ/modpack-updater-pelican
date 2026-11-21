@@ -20,5 +20,8 @@ final class GtnhArchivePins
         'GT_New_Horizons_2.9.0_Server_Java_17-26.zip' => [
             'sha256' => '0ab3de26e4d0de80a2df286916570d9af31c3394cb1f44aee8b9aa1f2ead9831', 'size' => 568348402,
         ],
+        'GT_New_Horizons_2.9.1_Server_Java_17-26.zip' => [
+            'sha256' => 'df20c7bb5423f1b5170047498d4278ad8342aef7632b0bacf7352e100296cae0', 'size' => 572227086,
+        ],
     ];
 }
