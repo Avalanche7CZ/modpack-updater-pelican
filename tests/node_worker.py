@@ -612,12 +612,14 @@ class DownloadTests(unittest.TestCase):
             archive.writestr('mods/example.jar', b'mod fixture')
         return target.getvalue()
 
-    def gtnh_operation(self, root, worker, server, recipe, response):
+    def gtnh_operation(self, root, worker, server, recipe, response, transfers=None):
         operation_id = uuid.uuid4().hex
         with patch.object(w, 'public_address', return_value='1.1.1.1'), patch.object(w, 'PinnedHTTPS') as transport:
             transport.return_value.getresponse.return_value = response
             worker.prepare(server, recipe, operation_id)
             worker.threads[(server, operation_id)].join(timeout=5)
+            if transfers is not None:
+                self.assertEqual(transport.call_count, transfers)
         return operation_id, root / operation_id, worker.status(server, operation_id)
 
     def test_gtnh_quarantine_validation_and_separate_trusted_stage(self):
@@ -648,10 +650,17 @@ class DownloadTests(unittest.TestCase):
             recipe.pop('gtnh_quarantine')
             recipe['downloads'] = [{'url': recipe['gtnh_archive']['url'], 'archive': True, 'size': expected['size'],
                                     'hashes': {'sha256': expected['sha256']}}]
-            trusted_id, trusted, result = self.gtnh_operation(staging, worker, server, recipe, response(archive))
+            recipe['gtnh_quarantine_source'] = operation_id
+            trusted_id, trusted, result = self.gtnh_operation(staging, worker, server, recipe, response(archive), transfers=0)
             self.assertEqual(result['state'], 'completed', result.get('diagnostic'))
             self.assertEqual((trusted / 'files/config/test.cfg').read_bytes(), b'upstream config')
             self.assertEqual(worker.handle(server, 'manifest', {'operation_id': trusted_id})['verification'], 'recorded-archive-pin')
+
+            (stage / 'quarantine.zip').write_bytes(self.gtnh_zip(b'different data!'))
+            _, trusted, result = self.gtnh_operation(staging, worker, server, recipe, response(archive), transfers=1)
+            self.assertEqual(result['state'], 'completed', result.get('diagnostic'))
+            self.assertEqual((trusted / 'files/config/test.cfg').read_bytes(), b'upstream config')
+            self.assertNotEqual((stage / 'quarantine.zip').read_bytes(), archive)
 
             for replacement in (self.gtnh_zip(b'different data!'), self.gtnh_zip(b'longer upstream config')):
                 _, changed, result = self.gtnh_operation(staging, worker, server, recipe, response(replacement))

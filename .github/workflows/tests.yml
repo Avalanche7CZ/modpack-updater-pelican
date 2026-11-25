@@ -80,13 +80,15 @@ jobs:
           php tests/integration/discord.php
           php tests/integration/discord_deployment.php
           php tests/integration/deployment.php
-      - name: Render updater and native game output in the same xterm
+      - name: Exercise console output and GTNH archive decisions in Chromium
         run: |
           npm install --prefix /tmp/arcturus-console-browser --ignore-scripts --no-audit --no-fund playwright@1.58.2 @xterm/xterm@6.0.0
           /tmp/arcturus-console-browser/node_modules/.bin/playwright install --with-deps chromium
           PLAYWRIGHT_MODULE=/tmp/arcturus-console-browser/node_modules/playwright/index.mjs \
           XTERM_SCRIPT=/tmp/arcturus-console-browser/node_modules/@xterm/xterm/lib/xterm.js \
           PELICAN_SOURCE=/tmp/arcturus-panel node tests/console_browser.mjs
+          PLAYWRIGHT_MODULE=/tmp/arcturus-console-browser/node_modules/playwright/index.mjs \
+          PELICAN_SOURCE=/tmp/arcturus-panel node tests/gtnh_archive_browser.mjs
   package:
     # Build the downloadable preview even if a validation job fails; release.yml still requires all checks.
     runs-on: ubuntu-latest

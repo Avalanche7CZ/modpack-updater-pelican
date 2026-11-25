@@ -72,9 +72,21 @@ final class ViewManagedServer extends ViewRecord
     #[Locked]
     public ?string $evidenceState = null;
 
-    private function evidenceStateFor($record): string
+    #[Locked]
+    public ?int $lastPreparationEventId = null;
+
+    private function preparationEventId(ManagedServer $record): ?int
     {
-        return hash('sha256', json_encode([$record->policy_revision, $record->comparison_status, $record->active_operation_id, (string) $record->updated_at], JSON_THROW_ON_ERROR));
+        if ($record->active_operation_id) {
+            return null;
+        }
+        return $record->events()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->latest('id')->value('id');
+    }
+
+    private function evidenceStateFor(ManagedServer $record, ?int $preparationEventId): string
+    {
+        return hash('sha256', json_encode([$record->policy_revision, $record->comparison_status,
+            $record->active_operation_id, (string) $record->updated_at, $preparationEventId], JSON_THROW_ON_ERROR));
     }
 
     public function pollEvidence(): void
@@ -82,7 +94,13 @@ final class ViewManagedServer extends ViewRecord
         Access::requireAdmin();
         if ($this->tab === 'updates' && $this->refreshExpiredComparison()) { return; }
         $record = ManagedServer::query()->select(['id', 'policy_revision', 'comparison_status', 'active_operation_id', 'updated_at'])->findOrFail($this->getRecord()->id);
-        if ($this->evidenceState === $this->evidenceStateFor($record)) { $this->skipRender(); }
+        if ($this->evidenceState === $this->evidenceStateFor($record, $this->preparationEventId($record))) { $this->skipRender(); }
+    }
+
+    #[\Livewire\Attributes\On('archive-decision-recorded')]
+    public function refreshPreparationState(): void
+    {
+        $this->managed();
     }
 
     /** Refresh expired readiness in the queue, once; never auto-retry failed comparisons. */
@@ -108,7 +126,8 @@ final class ViewManagedServer extends ViewRecord
 
         $record = $this->getRecord();
         $record->setRawAttributes(ManagedServer::lightweight()->findOrFail($record->id)->getAttributes(), true);
-        $this->evidenceState = $this->evidenceStateFor($record);
+        $this->lastPreparationEventId = $this->preparationEventId($record);
+        $this->evidenceState = $this->evidenceStateFor($record, $this->lastPreparationEventId);
         $record->evidenceProjection = true;
         $record->unsetRelations();
         return $record;

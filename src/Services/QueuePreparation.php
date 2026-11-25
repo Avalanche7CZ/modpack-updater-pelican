@@ -7,10 +7,76 @@ namespace Arcturus\ModpackManager\Services;
 use Arcturus\ModpackManager\Jobs\PrepareUpdate;
 use Arcturus\ModpackManager\Local\LocalWorker;
 use Arcturus\ModpackManager\Models\ManagedServer;
+use Arcturus\ModpackManager\Models\Operation;
+use Arcturus\ModpackManager\Modpacks\Providers\GtnhArtifact;
+use Arcturus\ModpackManager\Security\Access;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
+use Throwable;
 
 final class QueuePreparation
 {
+    public function decideArchive(int $serverId, string $reviewId, string $artifactId, string $sha, int $size, bool $approve): ?Operation
+    {
+        Access::requireAdmin();
+        return DB::transaction(function () use ($serverId, $reviewId, $artifactId, $sha, $size, $approve): ?Operation {
+            $server = ManagedServer::lightweight()->lockForUpdate()->findOrFail($serverId);
+            $latest = $server->events()->whereIn('kind', ['baseline', 'prepare', 'comparison'])->latest('id')->first(['details']);
+            if ($server->active_operation_id || ($latest?->details['operation_id'] ?? null) !== $reviewId) {
+                throw new RuntimeException('This archive review is no longer current. Check the updated preparation status.');
+            }
+            $review = $server->operations()->whereIn('kind', ['baseline', 'prepare'])
+                ->where('phase', 'archive_review_required')->whereNull('cancel_requested_at')->lockForUpdate()->findOrFail($reviewId);
+            $artifact = GtnhArtifact::fromArray($review->progress['gtnh_archive']);
+            $baseline = $review->kind === 'baseline';
+            $version = $baseline ? $server->installed_version : $server->targetVersion();
+            if ($server->provider !== 'gtnh' || $server->source !== 'gtnh' || $server->asset_pattern !== $artifact->variant ||
+                $version !== $artifact->version || $artifact->id() !== $artifactId) {
+                throw new RuntimeException('The selected archive has changed. Review the current release before deciding.');
+            }
+            if ($approve) {
+                if (! $baseline && $server->baseline_status !== 'verified') {
+                    throw new RuntimeException('Verify the installed baseline before continuing update preparation.');
+                }
+                if (in_array($server->transport, ['local', 'native'], true)) {
+                    $this->requireLocalQueue();
+                } elseif (! in_array(config('queue.connections.'.config('queue.default').'.driver'), ['database', 'redis'], true)) {
+                    throw new RuntimeException('Continuing preparation requires an asynchronous database or Redis queue.');
+                }
+            }
+            app(GtnhArchiveTrust::class)->decide($artifact, $sha, $size, (int) auth()->id(), $approve);
+            if (! $approve) {
+                return null;
+            }
+
+            // Keep the terminal review and its worker stage as evidence. The continuation
+            // is a read-only preparation, independent of any originating scheduled update.
+            $previous = $review->context;
+            $operation = app(OperationTracker::class)->create($server, $review->kind, [
+                'provider' => 'gtnh', 'source' => 'gtnh', 'version' => $version,
+                'archive_approval' => ['review_id' => $review->id, 'artifact_id' => $artifact->id(), 'sha256' => $sha, 'size' => $size],
+                'recipe' => $previous['recipe'] ?? null,
+                'quarantine_id' => ($previous['recipe']['gtnh_quarantine'] ?? false) ? $review->node_operation_id : null,
+                'release_name' => $previous['release_name'] ?? null,
+            ]);
+            $operation->update(['progress' => ['gtnh_archive' => $artifact->identity()]]);
+
+            DB::afterCommit(function () use ($server, $baseline, $operation): void {
+                try {
+                    Bus::dispatch(new PrepareUpdate($server->id, $baseline, $operation->id));
+                } catch (Throwable $error) {
+                    report($error);
+                    // Scheduled recovery can dispatch the same durable operation ID.
+                    Operation::whereKey($operation->id)->where('phase', 'queued')->update([
+                        'error' => 'Archive approval saved. Preparation is waiting for queue dispatch.',
+                    ]);
+                }
+            });
+            return $operation;
+        }, 3);
+    }
+
     public function requireLocalQueue(): void
     {
         $connection = config('queue.default');

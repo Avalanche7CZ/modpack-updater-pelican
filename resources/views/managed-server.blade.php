@@ -23,7 +23,7 @@
             @endif
             @if((in_array($activeOperation?->kind, ['baseline', 'prepare', 'comparison'], true) && in_array($this->tab, ['overview', 'updates', 'changes'], true))
                 || (!$activeOperation && (($record->provider === 'gtnh' && $showUpdateStatus) || ($this->tab === 'updates' && $record->comparison_status === 'failed'))))
-                @livewire(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id, 'purpose' => $this->tab === 'updates' ? 'target' : 'all'], key('preparation-status-'.$record->id.'-'.$this->tab.'-'.($activeOperation?->id ?? 'failed')))
+                @livewire(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $record->id, 'purpose' => $this->tab === 'updates' ? 'target' : 'all'], key('preparation-status-'.$record->id.'-'.$this->tab.'-'.($activeOperation?->id ?? $this->lastPreparationEventId ?? 'idle')))
             @endif
             @if(in_array($activeOperation?->kind, ['baseline', 'prepare', 'comparison'], true) && in_array($this->tab, ['overview', 'updates', 'changes'], true))
                 <div class="flex flex-wrap gap-2">

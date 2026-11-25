@@ -77,11 +77,19 @@ $managedPage = \Livewire\Livewire::test(\Arcturus\ModpackManager\Filament\Admin\
 check(str_contains($managedPage->html(), 'Archive approval required'), 'Managed server hid the terminal GTNH quarantine operation');
 $ui = \Livewire\Livewire::test(\Arcturus\ModpackManager\Livewire\PreparationStatus::class, ['managedServerId' => $server->id]);
 check(str_contains($ui->html(), $measurement['sha256']) && str_contains($ui->html(), 'Archive approval required'), 'Trust UI omitted pending archive evidence');
-$ui->call('decideArchive', $operation->id, $measurement['sha256'], $measurement['size'], true);
+$ui->call('mountAction', 'approveArchive', ['operation_id' => $operation->id, 'artifact_id' => $strict->id(),
+    'filename' => $strict->filename, 'url' => $strict->url, ...$measurement])->call('callMountedAction');
 check(str_contains($ui->html(), 'Administrator-approved HTTPS measurement'), 'Trust UI omitted approval');
 check((new GtnhArchiveTrust)->evidence($strict)['level'] === 'admin_reviewed', 'Approval was not persistent');
-$retry = app(OperationTracker::class)->create($server, 'baseline', ['version' => '3.0.0', 'provider' => 'gtnh', 'source' => 'gtnh']);
-check(! $prepare->tick($server->fresh(), $retry) && end($submissions)['recipe']['downloads'][0]['hashes']['sha256'] === $measurement['sha256'],
+$retry = $server->operations()->findOrFail($server->fresh()->active_operation_id);
+check(DB::table('jobs')->count() === 1 && $retry->context['archive_approval']['review_id'] === $operation->id,
+    'Approval did not enqueue one continuation for the reviewed operation');
+rejects(fn () => app(\Arcturus\ModpackManager\Services\QueuePreparation::class)->decideArchive(
+    $server->id, $operation->id, $strict->id(), $measurement['sha256'], $measurement['size'], true),
+    'Duplicate approval enqueued another preparation');
+check(DB::table('jobs')->count() === 1, 'Duplicate approval added a job');
+check(! $prepare->tick($server->fresh(), $retry) && end($submissions)['recipe']['downloads'][0]['hashes']['sha256'] === $measurement['sha256']
+    && end($submissions)['recipe']['gtnh_quarantine_source'] === $operation->node_operation_id,
     'Approved digest was not used in the pinned download recipe');
 
 [$auto, $operation] = $make('3.0.1', 'tofu');
@@ -114,6 +122,13 @@ $changed = false;
 $before = count($submissions);
 check($prepare->tick($strictServer, $strictOp) && $strictOp->phase === 'archive_review_required' && count($submissions) === $before,
     'Strict server inherited another server’s TOFU opt-in');
+$strictOp->update(['context' => array_diff_key($strictOp->context, ['recipe' => true, 'release_name' => true])]);
+$continuation = app(\Arcturus\ModpackManager\Services\QueuePreparation::class)->decideArchive(
+    $strictServer->id, $strictOp->id, $autoArtifact->id(), $measurement['sha256'], $measurement['size'], true);
+check(! $prepare->tick($strictServer->fresh(), $continuation)
+    && end($submissions)['recipe']['downloads'][0]['hashes']['sha256'] === $measurement['sha256']
+    && ! isset(end($submissions)['recipe']['gtnh_quarantine_source']),
+    'A legacy review of a pin from another server did not continue against the exact pin');
 [$otherVariant, $otherOp] = $make('3.0.1', 'tofu', 'java8');
 rejects(fn () => $trust->measure($autoArtifact, $measurement, $otherVariant, $otherOp), 'Worker measurement crossed Java variants');
 

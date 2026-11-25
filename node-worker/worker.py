@@ -1122,6 +1122,42 @@ class Worker:
             raise PreparationFailure('DOWNLOAD_POLICY')
         return url, host
 
+    def reuse_gtnh_quarantine(self, server, base, recipe, item, dest, maximum, update, cancelled):
+        source_id = recipe.get('gtnh_quarantine_source')
+        if source_id is None or source_id == base.name:
+            return None
+        quarantine = self.operation_path(server, source_id)
+        original = {key: value for key, value in recipe.items() if key != 'gtnh_quarantine_source'}
+        original.update(gtnh_quarantine=True, downloads=[])
+        fingerprint = hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest()
+        try:
+            with open_regular(quarantine.parent, source_id + '/operation.json') as receipt:
+                previous = json.loads(receipt.read(MAX_REQUEST))
+        except (OSError, ValueError):
+            return None
+        expected = {'sha256': item['hashes']['sha256'], 'size': item['size']}
+        if (not isinstance(previous, dict) or previous.get('state') != 'archive_measured'
+                or previous.get('operation_id') != source_id or previous.get('recipe_sha256') != fingerprint
+                or previous.get('measurement') != expected):
+            return None
+
+        candidate = quarantine / 'quarantine.zip'
+        try:
+            sha, size = local_artifact('retained', dest, {**self.entry(server), 'artifacts': {'retained': str(candidate)}},
+                item['hashes'], min(maximum, item['size']), cancelled=cancelled,
+                report=lambda **values: update(state='verifying', step='checking_retained_archive',
+                    **{key: values[key] for key in ('bytes_done', 'bytes_total', 'files_done', 'files_total') if key in values}))
+            if size == item['size']:
+                return sha, size
+        except PreparationFailure as error:
+            if error.code not in ('CHECKSUM_MISMATCH', 'DOWNLOAD_LIMIT', 'DOWNLOAD_POLICY'):
+                raise
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            pass
+        # Keep the original quarantine as evidence. Only a newly verified copy is extractable.
+        dest.unlink(missing_ok=True)
+        return None
+
     def _prepare(self, server, base, recipe):
         path = base / 'operation.json'
         data = json.loads(path.read_text())
@@ -1158,18 +1194,22 @@ class Worker:
                         or items[0].get('archive') is not True or set(items[0].get('hashes', {})) != {'sha256'}
                         or type(items[0].get('size')) is not int or items[0]['size'] <= 0):
                     raise PreparationFailure('CHECKSUM_MISSING')
+                if gtnh is not None and gtnh[1] not in entry.get('allowed_hosts', []):
+                    raise PreparationFailure('DOWNLOAD_POLICY', reason='HOST_NOT_ALLOWED', host=gtnh[1])
                 files = base / 'files'
                 files.mkdir(mode=0o700)
                 if not items or len(items) > MAX_FILES:
                     raise PreparationFailure('METADATA_INVALID')
                 total = 0
-                update(download_total_bytes=sum(item['size'] for item in items) if all(type(item.get('size')) is int for item in items) else None)
+                download_total = sum(item['size'] for item in items) if all(type(item.get('size')) is int for item in items) else None
                 artifacts = []
                 for i, item in enumerate(items):
                     if cancelled():
                         raise InterruptedError('Operation cancelled')
-                    update(state='downloading', current_file=i + 1, total_files=len(items))
                     dest = base / ('download-%d' % i)
+                    retained = self.reuse_gtnh_quarantine(server, base, recipe, item, dest, maximum, update, cancelled) if gtnh else None
+                    if retained is None:
+                        update(state='downloading', current_file=i + 1, total_files=len(items), download_total_bytes=download_total)
                     cached = None if gtnh else self.cached_artifact(server, data['recipe_sha256'], i, base)
                     if cached is not None:
                         try:
@@ -1186,7 +1226,9 @@ class Worker:
                             cached.rename(cached.with_name(cached.name + '.unverified-' + str(time.time_ns())))
                             dest.unlink()
                             cached = None
-                    if cached is None:
+                    if retained is not None:
+                        sha, size = retained
+                    elif cached is None:
                         if 'artifact_id' in item:
                             sha, size = local_artifact(item['artifact_id'], dest, entry, item['hashes'], maximum - total, report=lambda **v: transfer_report(update, total, **v), cancelled=cancelled)
                             if item.get('size') is not None and item['size'] != size:

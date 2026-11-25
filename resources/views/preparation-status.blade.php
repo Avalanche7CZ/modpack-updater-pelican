@@ -3,11 +3,17 @@
         @php($terminal = $operation->completed_at !== null)
         <x-filament::section :heading="$operation->kind === 'comparison' ? 'Installation comparison' : ($terminal ? 'Last preparation' : 'Background operation')">
             <div class="flex flex-wrap items-center justify-between gap-3">
-                <x-filament::badge :color="$presentation['color']" :icon="$terminal ? ($presentation['color'] === 'success' ? 'heroicon-m-check-circle' : 'heroicon-m-exclamation-circle') : null">
+                <x-filament::badge role="status" :color="$presentation['color']" :icon="$terminal ? ($presentation['color'] === 'success' ? 'heroicon-m-check-circle' : 'heroicon-m-exclamation-circle') : null">
                     {{ $presentation['status'] }}
                 </x-filament::badge>
                 <span class="text-sm text-gray-500 dark:text-gray-400">Last report {{ $operation->heartbeat_at?->diffForHumans() ?? 'unavailable' }}</span>
             </div>
+            @error('archiveDecision')
+                <p role="alert" class="mt-3 text-sm">{{ $message }}</p>
+            @enderror
+            @if($operation->phase === 'queued' && $operation->error)
+                <p role="status" class="mt-3 text-sm">{{ $operation->error }}</p>
+            @endif
             @if($archive ?? null)
                 <div class="mt-3 text-sm">
                     <p class="break-all">{{ $archive['filename'] }} · {{ $archive['version'] }} · {{ $archive['variant'] }}</p>
@@ -24,18 +30,26 @@
                         <p>SHA-256 <code class="break-all">{{ $archive['sha256'] }}</code> · {{ number_format($archive['size']) }} bytes</p>
                         <p>The recorded provenance is an HTTPS archive measurement. The publisher did not supply this digest.</p>
                     @endif
-                    @if($approvalRequired && $operation->phase === 'archive_review_required')
-                        <p>Explicit root administrator approval is required before preparation.</p>
-                        <div class="mt-2 flex flex-wrap gap-2">
-                            <x-filament::button size="sm" wire:click="decideArchive(@js($operation->id), @js($archive['sha256']), {{ $archive['size'] }}, true)" wire:confirm="Approve this exact official archive SHA-256 and byte size?" wire:loading.attr="disabled">Approve archive</x-filament::button>
-                            @if($archive['level'] === 'pending')
-                                <x-filament::button size="sm" color="danger" wire:click="decideArchive(@js($operation->id), @js($archive['sha256']), {{ $archive['size'] }}, false)" wire:confirm="Reject this exact archive identity for all managed servers?" wire:loading.attr="disabled">Reject archive</x-filament::button>
-                            @endif
-                        </div>
-                    @elseif($operation->phase === 'archive_review_required' && $archive['level'] !== 'rejected')
-                        <p>Run preparation again to download the archive against its recorded pin.</p>
+                    @if($operation->phase === 'archive_review_required')
+                        @if($approvalRequired)
+                            <p class="mt-2">A root administrator must approve this archive before preparation can continue.</p>
+                            @php($review = ['operation_id' => $operation->id] + \Illuminate\Support\Arr::only($archive, ['artifact_id', 'filename', 'url', 'sha256', 'size']))
+                            <div class="mt-2 flex flex-wrap gap-2">
+                                {{ ($this->approveArchiveAction)($review) }}
+                                @if($archive['level'] === 'pending')
+                                    {{ ($this->rejectArchiveAction)($review) }}
+                                @endif
+                            </div>
+                        @elseif($archive['level'] === 'rejected')
+                            <p class="mt-2">Preparation is blocked for this archive on all managed servers.</p>
+                        @elseif(isset($archive['sha256'], $archive['size']))
+                            <p class="mt-2">This archive already has a usable pin. Use <strong>{{ $operation->kind === 'baseline' ? 'Prepare installed baseline' : 'Prepare update' }}</strong> to prepare this server.</p>
+                        @endif
                     @endif
                 </div>
+            @endif
+            @if(!$terminal && $archive && ($archive['level'] ?? null) === 'admin_reviewed')
+                <p role="status" class="mt-3 text-sm">Archive approved. Preparation continues automatically.</p>
             @endif
             @if(!$terminal && $operation->cancel_requested_at)
                 <p class="mt-3 text-sm">Waiting for the worker to confirm cancellation. Partial staging will be retained.</p>
@@ -61,6 +75,9 @@
                                         <span>{{ $row['fresh'] ? 'Working — total not known yet' : 'Waiting for the next progress sample' }}</span>
                                     </div>
                                 @endif
+                            @endif
+                            @if($row['active'] && ($row['snapshot']['step'] ?? null) === 'checking_retained_archive')
+                                <p class="mt-1 text-sm">Verifying the retained quarantined archive.</p>
                             @endif
                             @if($row['active'] && ($row['snapshot']['step'] ?? null) === 'retrying_download')
                                 <p class="mt-1 text-sm">Temporary upstream gateway error. Retrying the original download URL before writing any files.</p>
@@ -90,7 +107,7 @@
                     <p class="break-words text-sm font-medium">{{ $diagnostic['description'] }}</p>
                     <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ $diagnostic['action'] }}</p>
                 </div>
-            @elseif($terminal && $operation->phase !== 'completed')
+            @elseif($terminal && !in_array($operation->phase, ['completed', 'archive_review_required'], true))
                 <p class="mt-3 text-sm">No structured diagnostic was recorded. Use the operation IDs in technical details to inspect retained evidence.</p>
             @endif
             <div class="mt-3" x-data="{ copied: false, copyError: false }">
@@ -118,4 +135,5 @@
             </details>
         </x-filament::section>
     @endif
+    <x-filament-actions::modals />
 </div>
